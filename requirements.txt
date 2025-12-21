@@ -1,0 +1,5 @@
+streamlit
+pandas
+yt-dlp
+beautifulsoup4
+requests
