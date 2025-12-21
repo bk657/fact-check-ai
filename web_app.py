@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 # --- [1. 시스템 설정] ---
 st.set_page_config(page_title="Fact-Check Center v46.0", layout="wide", page_icon="⚖️")
 DB_NAME = 'youtube_analysis.db'
-YOUTUBE_API_KEY = "AIzaSyDRSHb8t71MizDlY3anM5uYxQPfe7ghuKw"
+YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
 
 # 가중치 설정
 WEIGHT_NEWS_DEFAULT = 45       
