@@ -1,5 +1,5 @@
 import streamlit as st
-import sqlite3
+from supabase import create_client, Client
 import re
 import requests
 import time
@@ -13,9 +13,23 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v46.0", layout="wide", page_icon="⚖️")
-DB_NAME = 'youtube_analysis.db'
-YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
+st.set_page_config(page_title="Fact-Check Center v47.0 (Cloud DB)", layout="wide", page_icon="⚖️")
+
+# 🌟 Secrets에서 키 가져오기 (보안 필수)
+try:
+    YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+except:
+    st.error("❌ API 키가 설정되지 않았습니다. Streamlit Secrets를 확인해주세요.")
+    st.stop()
+
+# 🌟 Supabase 클라이언트 연결 (캐싱으로 성능 최적화)
+@st.cache_resource
+def init_supabase():
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+supabase = init_supabase()
 
 # 가중치 설정
 WEIGHT_NEWS_DEFAULT = 45       
@@ -34,7 +48,7 @@ VITAL_KEYWORDS = [
     '확진', '심정지', '뇌사', '중태', '압수수색', '소환', '퇴진', '탄핵', '못넘긴다'
 ]
 
-# VIP 인물 사전 (참조용, 이제 알고리즘이 자동으로 처리하지만 보조 수단으로 유지)
+# VIP 인물 사전
 VIP_ENTITIES = [
     '윤석열', '대통령', '이재명', '한동훈', '김건희', '문재인', '박근혜', '이명박',
     '트럼프', '바이든', '푸틴', '젤렌스키', '시진핑', '정은', 
@@ -110,32 +124,33 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-def setup_system():
-    conn = sqlite3.connect(DB_NAME)
-    conn.execute("""CREATE TABLE IF NOT EXISTS analysis_history 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, channel_name TEXT, video_title TEXT, 
-                 fake_prob INTEGER, analysis_date TEXT, video_url TEXT, keywords TEXT)""")
-    conn.commit()
-    conn.close()
-
+# 🌟 [Supabase용] DB 저장 함수
 def save_analysis(channel, title, prob, url, keywords):
-    conn = sqlite3.connect(DB_NAME)
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    conn.execute("INSERT INTO analysis_history (channel_name, video_title, fake_prob, analysis_date, video_url, keywords) VALUES (?,?,?,?,?,?)",
-                 (channel, title, prob, now, url, keywords))
-    conn.commit()
-    conn.close()
-
-def train_dynamic_vector_engine():
-    conn = sqlite3.connect(DB_NAME)
+    data = {
+        "channel_name": channel,
+        "video_title": title,
+        "fake_prob": prob,
+        "analysis_date": now,
+        "video_url": url,
+        "keywords": keywords
+    }
     try:
-        t_cursor = conn.execute("SELECT video_title FROM analysis_history WHERE fake_prob < 30")
-        dynamic_truth = [row[0] for row in t_cursor.fetchall()]
-        f_cursor = conn.execute("SELECT video_title FROM analysis_history WHERE fake_prob > 70")
-        dynamic_fake = [row[0] for row in f_cursor.fetchall()]
+        supabase.table("analysis_history").insert(data).execute()
+    except Exception as e:
+        # st.error(f"데이터 저장 실패: {e}") # 사용자에게 에러 보여주지 않음
+        pass
+
+# 🌟 [Supabase용] 학습 데이터 로드 및 벡터 엔진 훈련
+def train_dynamic_vector_engine():
+    try:
+        response_truth = supabase.table("analysis_history").select("video_title").lt("fake_prob", 30).execute()
+        dynamic_truth = [row['video_title'] for row in response_truth.data]
+        
+        response_fake = supabase.table("analysis_history").select("video_title").gt("fake_prob", 70).execute()
+        dynamic_fake = [row['video_title'] for row in response_fake.data]
     except:
         dynamic_truth, dynamic_fake = [], []
-    conn.close()
     
     final_truth = STATIC_TRUTH_CORPUS + dynamic_truth
     final_fake = STATIC_FAKE_CORPUS + dynamic_fake
@@ -185,7 +200,7 @@ def render_score_breakdown(data_list):
 def witty_loading_sequence(count):
     messages = [
         f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...",
-        "🔄 '윤석열(Modifier) + 모친(Head)' 역방향 결합(Back-Merge) 중...",
+        "🔄 '주어(Modifier)' + '핵심어(Head)' 역방향 결합(Back-Merge) 중...",
         "🎯 문맥을 통합하여 완벽한 검색어(Contextual Query) 생성...",
         "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
     ]
@@ -202,9 +217,8 @@ def extract_nouns(text):
     nouns = re.findall(r'[가-힣]{2,}', text)
     return list(dict.fromkeys([n for n in nouns if n not in noise]))
 
-# 🌟 [수정] 역방향 결합(Backward Merging) 로직
+# 🌟 핀포인트 쿼리 생성 (역방향 결합 적용)
 def generate_pinpoint_query(title, hashtags):
-    # 1. 텍스트 정리 (특수문자 제거 및 해시태그 통합)
     clean_text = title + " " + " ".join([h.replace("#", "") for h in hashtags])
     words = clean_text.split()
     
@@ -212,34 +226,25 @@ def generate_pinpoint_query(title, hashtags):
     object_word = ""
     vital_word = ""
     
-    # 2. 핵심 상태어 찾기
     for vital in VITAL_KEYWORDS:
         if vital in clean_text:
             vital_word = vital
             break
             
-    # 3. 조사 기반 파싱 + 역방향 결합 (Back-Merge)
     for i, word in enumerate(words):
-        # 정규식으로 명사와 조사 분리 (예: 모친이 -> 모친, 이)
         match = re.match(r'([가-힣A-Za-z0-9]+)(은|는|이|가|을|를|에|에게|로서|로)', word)
         
         if match:
             noun = match.group(1)
             josa = match.group(2)
             
-            # 노이즈 단어 필터링
             if noun in ['오늘밤', '지금', '이유', '결국']: continue
 
-            # 주어 찾기 (은/는/이/가)
             if not subject_chunk and josa in ['은', '는', '이', '가']:
-                # 🌟 [핵심] 역방향 스캔: 바로 앞 단어가 명사(조사 없음)라면 합체!
-                # 예: [윤석열] [모친이] -> 윤석열 모친
                 prev_noun = ""
                 if i > 0:
                     prev_word = words[i-1]
-                    # 앞 단어가 조사 없이 명사로만 되어있는지 확인
                     if re.fullmatch(r'[가-힣A-Za-z0-9]+', prev_word):
-                        # 앞 단어가 노이즈가 아니고, 핵심어가 아니라면 결합
                         if prev_word not in VITAL_KEYWORDS and prev_word not in ['충격', '속보']:
                             prev_noun = prev_word
                 
@@ -248,17 +253,14 @@ def generate_pinpoint_query(title, hashtags):
                 else:
                     subject_chunk = noun
             
-            # 목적어/부사어 찾기 (을/를/에/에게)
             elif not object_word and josa in ['을', '를', '에', '에게', '로']:
                 if noun not in VITAL_KEYWORDS and noun not in subject_chunk:
                     object_word = noun
     
-    # 4. 파싱 실패 시 Fallback (기존 VIP 로직 + 명사 추출)
     if not subject_chunk:
         nouns = extract_nouns(title)
         return " ".join(nouns[:3])
     
-    # 5. 최종 쿼리 조합
     query_parts = []
     if subject_chunk: query_parts.append(subject_chunk)
     if object_word: query_parts.append(object_word)
@@ -468,7 +470,7 @@ def run_forensic_main(url):
                 current_weight_news = 70  
                 current_weight_vector = 10 
             
-            # 🌟 [수정] Back-Merge 적용된 쿼리 생성
+            # 🌟 핀포인트 쿼리 생성 (역방향 결합)
             refined_query = generate_pinpoint_query(title, all_hashtags)
             hashtag_display = ", ".join([f"#{t}" for t in all_hashtags]) if all_hashtags else "해시태그 없음"
             abuse_score, abuse_status = check_tag_abuse(title, all_hashtags, uploader)
@@ -707,8 +709,9 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [9. 실행부] ---
-setup_system()
-st.title("⚖️ Triple-Evidence Intelligence Forensic v46.0")
+# setup_system() <-- 필요 없음
+
+st.title("⚖️ Triple-Evidence Intelligence Forensic v47.0")
 
 with st.container(border=True):
     st.markdown("""
@@ -725,15 +728,14 @@ if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not
     else: st.warning("URL을 입력해주세요.")
 
 st.divider()
-st.subheader("🗂️ 학습 데이터 관리 (Active DB Cleanser)")
-st.caption("⚠️ 잘못 분석된 기록(오염된 데이터)이 있다면 체크 후 삭제하세요. AI의 정확도가 향상됩니다.")
+st.subheader("🗂️ 학습 데이터 관리 (Cloud Knowledge Base)")
+st.caption("☁️ 이 데이터는 서버가 재부팅되어도 사라지지 않는 영구적인 집단지성 데이터입니다.")
 
-conn = sqlite3.connect(DB_NAME)
 try:
-    df = pd.read_sql_query("SELECT id, analysis_date, video_title, fake_prob, keywords FROM analysis_history ORDER BY id DESC", conn)
+    response = supabase.table("analysis_history").select("*").order("id", desc=True).execute()
+    df = pd.DataFrame(response.data)
 except:
     df = pd.DataFrame()
-conn.close()
 
 if not df.empty:
     df['Delete'] = False
@@ -755,17 +757,13 @@ if not df.empty:
     if not to_delete.empty:
         if st.button(f"🗑️ 선택한 {len(to_delete)}건의 기록 영구 삭제", type="primary"):
             try:
-                conn = sqlite3.connect(DB_NAME)
                 for index, row in to_delete.iterrows():
-                    conn.execute("DELETE FROM analysis_history WHERE id=?", (row['id'],))
-                conn.commit()
-                try: conn.execute("VACUUM")
-                except: pass
-                conn.close()
-                st.success("✅ DB가 정화되었습니다.")
+                    supabase.table("analysis_history").delete().eq("id", row['id']).execute()
+                
+                st.success("✅ 클라우드 DB에서 데이터가 삭제되었습니다.")
                 time.sleep(1)
                 st.rerun()
             except Exception as e:
                 st.error(f"삭제 중 오류 발생: {e}")
 else:
-    st.info("저장된 분석 기록이 없습니다.")
+    st.info("☁️ 클라우드 DB에 저장된 분석 기록이 없습니다.")
