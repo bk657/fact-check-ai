@@ -86,8 +86,16 @@ VIP_ENTITIES = [
 ]
 
 OFFICIAL_CHANNELS = [
-    'MBC', 'KBS', 'SBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'YONHAP', 
-    'NEWS', '뉴스', '채널A', 'TV조선', '연합뉴스', '한겨레', '경향', '조선', '중앙', '동아'
+    # 지상파 및 종편
+    'MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS',
+    '채널A', 'TV조선', '연합뉴스', 'YONHAP',
+    
+    # 주요 일간지/경제지
+    '한겨레', '경향', '조선일보', '중앙일보', '동아일보', '한국일보', '국민일보', 
+    '서울신문', '세계일보', '문화일보', '매일경제', '한국경제', '서울경제',
+    
+    # 영문명 변형
+    'CHOSUN', 'JOONGANG', 'DONGA', 'HANKYOREH', 'KYUNGHYANG'
 ]
 
 STATIC_TRUTH_CORPUS = [
