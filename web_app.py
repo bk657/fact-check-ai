@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.9 (Final Stable)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v49.0 (Strict Verification)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -57,11 +57,11 @@ with st.sidebar:
 WEIGHT_NEWS_DEFAULT = 45; WEIGHT_VECTOR = 35; WEIGHT_CONTENT = 15; WEIGHT_SENTIMENT_DEFAULT = 10
 PENALTY_ABUSE = 20; PENALTY_MISMATCH = 30; PENALTY_NO_FACT = 25; PENALTY_SILENT_ECHO = 40
 
-VITAL_KEYWORDS = ['위독', '사망', '별세', '구속', '체포', '기소', '실형', '응급실', '이혼', '불화', '파경', '충격', '경악', '속보', '긴급', '폭로', '양성', '확진', '심정지', '뇌사', '중태', '압수수색', '소환', '퇴진', '탄핵', '내란']
+VITAL_KEYWORDS = ['위독', '사망', '별세', '구속', '체포', '기소', '실형', '응급실', '이혼', '불화', '파경', '충격', '경악', '속보', '긴급', '폭로', '양성', '확진', '심정지', '뇌사', '중태', '압수수색', '소환', '퇴진', '탄핵', '내란', '간첩']
 VIP_ENTITIES = ['윤석열', '대통령', '이재명', '한동훈', '김건희', '문재인', '박근혜', '이명박', '트럼프', '바이든', '푸틴', '젤렌스키', '시진핑', '정은', '이준석', '조국', '추미애', '홍준표', '유승민', '안철수', '손흥민', '이강인', '김민재', '류현진', '재용', '정의선', '최태원', '류중일', '감독', '조세호', '유재석', '장동민', '유호정', '이재룡']
 OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
 
-CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥']
+CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
 
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
 STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
@@ -133,9 +133,10 @@ def witty_loading_sequence(total, t_cnt, f_cnt):
         f"🧠 [Intelligence Level: {total}] 집단 지성 로드 중...",
         f"📚 학습된 진실 데이터: {t_cnt}건 | 거짓 데이터: {f_cnt}건",
         "📝 자막 전체(Full Text) 정밀 수집 중...", 
+        "🎯 [엄격 모드] 뉴스 일치도 임계값 상향 조정 중...",
         "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
     ]
-    with st.status("🕵️ Context Merger v48.9 가동 중...", expanded=True) as status:
+    with st.status("🕵️ Context Merger v49.0 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
@@ -297,6 +298,7 @@ def calculate_dual_match(news_item, query_nouns, transcript, query_str_full):
     c_score = 1.0 if (len(dn) > 0 and c_cnt/len(dn) >= 0.3) else 0.5 if (len(dn) > 0 and c_cnt/len(dn) >= 0.15) else 0
     match_score = int((t_score * 0.3 + c_score * 0.7) * 100)
     
+    # Critical Check
     for critical in CRITICAL_STATE_KEYWORDS:
         if critical in query_str_full and critical not in news_item.get('title', ''):
             return 0 
@@ -334,7 +336,6 @@ def fetch_news_regex(query):
 
 # --- [Main Execution] ---
 def run_forensic_main(url):
-    # 🌟 [Fix] Variable Rename: total_intelligence
     total_intelligence, t_cnt, f_cnt = train_dynamic_vector_engine()
     witty_loading_sequence(total_intelligence, t_cnt, f_cnt)
     
@@ -367,7 +368,6 @@ def run_forensic_main(url):
             abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
             
             summary = summarize_transcript(full_text, title)
-            
             agitation = count_sensational_words(full_text + title)
             
             ts, fs = vector_engine.analyze_position(query + " " + title)
@@ -395,10 +395,9 @@ def run_forensic_main(url):
             
             if is_silent:
                 if has_critical_claim:
-                    # ⚠️ Critical Vacuum -> Neutral Caution (+5)
-                    silent_penalty = 5  
-                    t_impact = 0        
-                    f_impact = 0        
+                    # 🌟 [v49.0] 60% 미만이면 사실상 불일치로 간주 (Strict)
+                    silent_penalty = 5
+                    t_impact = 0; f_impact = 0
                     is_gray_zone = True
                 elif agitation >= 3:
                     silent_penalty = PENALTY_SILENT_ECHO
@@ -406,9 +405,18 @@ def run_forensic_main(url):
                 else:
                     mismatch_penalty = 10
             elif is_controversial:
+                # 🌟 [v49.0] 60% 이상이어야 인정
                 news_score = PENALTY_NO_FACT if max_match < 60 else int((max_match/100)**2 * w_news) * -1
             else:
-                news_score = int((max_match/100)**2 * w_news) * -1
+                if max_match >= 60:
+                    news_score = int((max_match/100)**2 * w_news) * -1
+                    news_note = "Verified (High Match)"
+                elif max_match >= 30:
+                    news_score = 0
+                    news_note = "Ambiguous (30~59%)"
+                else:
+                    news_score = 15 # 낮은 일치도는 오히려 의심 (페널티)
+                    news_note = "Low Match Penalty"
                 
             if is_official: news_score = -50; mismatch_penalty = 0; silent_penalty = 0
             
@@ -437,7 +445,7 @@ def run_forensic_main(url):
             if is_official: st.success(f"🛡️ **공식 언론사 채널({uploader})입니다.**")
             
             if is_gray_zone:
-                st.warning("⚠️ **판단 보류 (Gray Zone)**: '이혼/별거' 등의 중대한 주장이 포함되어 있으나, 이를 뒷받침할 언론 보도가 확인되지 않았습니다. **단독 보도일 수도, 허위일 수도 있습니다.** 신중한 검증이 필요합니다.")
+                st.warning("⚠️ **판단 보류 (Gray Zone)**: '이혼/별거' 등의 중대한 주장이 포함되어 있으나, 이를 뒷받침할 언론 보도가 확인되지 않았습니다.")
             elif silent_penalty > 0: 
                 st.error("🔇 **침묵의 메아리(Silent Echo)**: 자극적인 주장이지만 근거가 부족합니다.")
 
@@ -454,12 +462,14 @@ def run_forensic_main(url):
                 st.write("**[Score Breakdown]**")
                 
                 silence_label = "미검증 주장 (판단 보류)" if is_gray_zone else "침묵의 메아리 (No News)"
+                # 🌟 [v49.0 Fix] news_note 변수 사용
+                news_note_display = locals().get('news_note', '')
                 
                 render_score_breakdown([
                     ["기본 위험도", 50, "Base Score"],
                     ["진실 맥락 보너스 (벡터)", t_impact, "Unknown" if is_gray_zone else ""], 
                     ["가짜 패턴 가점 (벡터)", f_impact, "Unknown" if is_gray_zone else ""],
-                    ["뉴스 교차 대조 (Dual)", news_score, ""],
+                    ["뉴스 교차 대조 (Dual)", news_score, news_note_display],
                     [silence_label, silent_penalty, "Gray Zone (+5)" if is_gray_zone else ""],
                     ["여론/제목/자막 가감", sent_score + clickbait, ""],
                     ["내용 불일치 기만", mismatch_penalty, ""], ["해시태그 어뷰징", abuse_score, ""]
@@ -497,7 +507,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.9")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v49.0")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
