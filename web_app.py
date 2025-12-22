@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v47.1 (Original)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v47.1 (Final Fix)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -230,7 +230,7 @@ def check_red_flags(comments):
     detected = [k for c in comments for k in ['가짜뉴스', '주작', '사기', '거짓말', '허위', '선동'] if k in c]
     return len(detected), list(set(detected))
 
-# --- [Main Execution] ---
+# --- [Main Execution] (함수를 먼저 정의해야 함!) ---
 def run_forensic_main(url):
     total_intelligence = train_dynamic_vector_engine()
     witty_loading_sequence(total_intelligence)
@@ -315,8 +315,8 @@ def run_forensic_main(url):
             col_a, col_b, col_c = st.columns(3)
             with col_a: st.metric("최종 가짜뉴스 확률", f"{prob}%", delta=f"{total - 50}")
             with col_b:
-                icon = "🟢" if final_prob < 30 else "🔴" if final_prob > 60 else "🟠"
-                verdict = "매우 안전" if final_prob < 30 else "위험 감지" if final_prob > 60 else "주의 요망"
+                icon = "🟢" if prob < 30 else "🔴" if prob > 60 else "🟠"
+                verdict = "매우 안전" if prob < 30 else "위험 감지" if prob > 60 else "주의 요망"
                 st.metric("종합 AI 판정", f"{icon} {verdict}")
             with col_c: st.metric("AI Intelligence Level", f"{total_intelligence} Knowledge Nodes", delta="+1 Added")
 
@@ -369,12 +369,13 @@ def run_forensic_main(url):
 
         except Exception as e: st.error(f"오류: {e}")
 
+# --- [UI Layout] (함수 정의 후에 실행됨!) ---
 st.title("⚖️ Triple-Evidence Intelligence Forensic v47.1")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
-url = st.text_input("🔗 유튜브 URL")
+url_input = st.text_input("🔗 분석할 유튜브 URL")
 if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not agree):
     if url_input: run_forensic_main(url_input)
     else: st.warning("URL을 입력해주세요.")
