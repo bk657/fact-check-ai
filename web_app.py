@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v47.1 (Fixed Order)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v47.5 (Semantic+)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -67,8 +67,8 @@ STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 �
 class VectorEngine:
     def __init__(self): self.vocab = set(); self.truth_vectors = []; self.fake_vectors = []
     def tokenize(self, t): return re.findall(r'[가-힣]{2,}', t)
-    def train(self, t_corpus, f_corpus):
-        for t in t_corpus + f_corpus: self.vocab.update(self.tokenize(t))
+    def train(self, t, f):
+        for text in t+f: self.vocab.update(self.tokenize(text))
         self.vocab = sorted(list(self.vocab))
         self.truth_vectors = [self.text_to_vector(t) for t in t_corpus]
         self.fake_vectors = [self.text_to_vector(t) for t in f_corpus]
@@ -97,7 +97,7 @@ def train_dynamic_vector_engine():
     vector_engine.train(STATIC_TRUTH_CORPUS + dt, STATIC_FAKE_CORPUS + df)
     return len(STATIC_TRUTH_CORPUS + dt) + len(STATIC_FAKE_CORPUS + df)
 
-# --- [UI Helper Functions] ---
+# --- [UI Utils] ---
 def colored_progress_bar(label, percent, color):
     st.markdown(f"""<div style="margin-bottom: 10px;"><div style="display: flex; justify-content: space-between; margin-bottom: 3px;"><span style="font-size: 13px; font-weight: 600; color: #555;">{label}</span><span style="font-size: 13px; font-weight: 700; color: {color};">{round(percent * 100, 1)}%</span></div><div style="background-color: #eee; border-radius: 5px; height: 8px; width: 100%;"><div style="background-color: {color}; height: 8px; width: {percent * 100}%; border-radius: 5px;"></div></div></div>""", unsafe_allow_html=True)
 
@@ -113,15 +113,28 @@ def render_score_breakdown(data_list):
     st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Silent Echo Protocol)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
 
 def witty_loading_sequence(count):
-    messages = [f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...", "🔄 '주어(Modifier)' + '핵심어(Head)' 역방향 결합(Back-Merge) 중...", "🎯 문맥을 통합하여 완벽한 검색어(Contextual Query) 생성...", "🚀 위성이 유튜브 본사 상공을 지나가는 중..."]
-    with st.status("🕵️ Context Merger v47.1 가동 중...", expanded=True) as status:
+    messages = [f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...", "📝 자막 전체(Full Text) 전수 조사 중...", "🔍 최다 반복 핵심 명사(Core Nouns) 추출 중...", "🚀 위성이 유튜브 본사 상공을 지나가는 중..."]
+    with st.status("🕵️ Context Merger v47.5 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
 def extract_nouns(text):
-    noise = ['충격', '경악', '실체', '난리', '공개', '반응', '명단', '동영상', '사진', '집안', '속보', '단독', '결국', 'MBC', '뉴스', '이미지', '너무', '다른', '알고보니', 'ㄷㄷ', '진짜', '정말', '영상', '사람', '생각', '오늘밤', '오늘', '내일', '지금', '못넘긴다', '넘긴다', '이유', '왜', '안']
+    noise = ['충격', '경악', '실체', '난리', '공개', '반응', '명단', '동영상', '사진', '집안', '속보', '단독', '결국', 'MBC', '뉴스', '이미지', '너무', '다른', '알고보니', 'ㄷㄷ', '진짜', '정말', '영상', '사람', '생각', '오늘밤', '오늘', '내일', '지금', '못넘긴다', '넘긴다', '이유', '왜', '안', '그냥', '이제', '사실']
     nouns = re.findall(r'[가-힣]{2,}', text)
     return list(dict.fromkeys([n for n in nouns if n not in noise]))
+
+# 🌟 [신규] 전체 자막 빈도 분석 함수
+def extract_top_keywords_from_transcript(text, top_n=5):
+    if not text: return []
+    # 1. 노이즈 제거된 명사만 추출
+    noise = ['충격', '경악', '속보', '긴급', '오늘', '내일', '지금', '결국', '뉴스', '영상', '대부분', '이유', '왜', '있는', '없는', '하는', '것', '수', '등', '진짜', '정말', '너무', '그냥', '이제', '사실', '국민', '우리', '대한민국', '여러분']
+    nouns = [n for n in re.findall(r'[가-힣]{2,}', text) if n not in noise]
+    
+    # 2. 빈도수 계산
+    counts = Counter(nouns)
+    
+    # 3. Top N 리턴 (단어, 횟수)
+    return counts.most_common(top_n)
 
 def generate_pinpoint_query(title, hashtags):
     clean_text = title + " " + " ".join([h.replace("#", "") for h in hashtags])
@@ -194,6 +207,7 @@ def fetch_real_transcript(info_dict):
                     if '-->' not in line and 'WEBVTT' not in line and line.strip():
                         t = re.sub(r'<[^>]+>', '', line).strip()
                         if t and t not in clean: clean.append(t)
+                # 🌟 [중요] 전체 자막을 리턴 (요약 X)
                 return " ".join(clean), "✅ 실제 자막 수집 성공"
     except: pass
     return None, "자막 다운로드 실패"
@@ -230,7 +244,7 @@ def check_red_flags(comments):
     detected = [k for c in comments for k in ['가짜뉴스', '주작', '사기', '거짓말', '허위', '선동'] if k in c]
     return len(detected), list(set(detected))
 
-# --- [8. 실행부 (함수 정의 완료 후 배치)] ---
+# --- [Main Execution] ---
 def run_forensic_main(url):
     total_intelligence = train_dynamic_vector_engine()
     witty_loading_sequence(total_intelligence)
@@ -246,6 +260,9 @@ def run_forensic_main(url):
             
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
+            
+            # 🌟 [v47.5] 자막에서 빈출 키워드 추출 (심층 분석)
+            top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
             is_official = check_is_official(uploader)
             is_ai, ai_msg = detect_ai_content(info)
@@ -310,7 +327,7 @@ def run_forensic_main(url):
             
             save_analysis(uploader, title, prob, url, query)
 
-            # --- UI (v47.1 Original) ---
+            # --- UI ---
             st.subheader("🕵️ 핵심 분석 지표 (Key Indicators)")
             col_a, col_b, col_c = st.columns(3)
             with col_a: st.metric("최종 가짜뉴스 확률", f"{prob}%", delta=f"{total - 50}")
@@ -335,7 +352,6 @@ def run_forensic_main(url):
                     st.caption("자막 데이터를 분석하여 핵심 문장 3개를 추출한 결과입니다.")
                     st.write(summary)
                 st.write("**[Score Breakdown]**")
-                # 🌟 변수명 news_score로 통일
                 render_score_breakdown([
                     ["기본 위험도", 50, "Base Score"],
                     ["진실 맥락 보너스 (벡터)", t_impact, ""], ["가짜 패턴 가점 (벡터)", f_impact, ""],
@@ -363,20 +379,28 @@ def run_forensic_main(url):
                 else: st.warning("⚠️ 댓글 수집 불가.")
                 st.markdown("**[증거 3] 자막 세만틱 심층 대조**")
                 st.caption(f"📝 **{t_status}** | 📚 전체 단어: **{len(full_text.split())}개**")
-                st.table(pd.DataFrame([["제목 낚시어", "있음" if clickbait > 0 else "없음"], ["선동성 지수", f"{agitation}회"], ["기사-영상 일치도", f"{max_match}%"]], columns=["분석 항목", "판정 결과"]))
+                # 🌟 [v47.5 UI] 최다 언급 키워드 표시
+                top_kw_str = ", ".join([f"{w}({c})" for w, c in top_transcript_keywords])
+                st.table(pd.DataFrame([
+                    ["영상 최다 언급 키워드", top_kw_str],
+                    ["제목 낚시어", "있음" if clickbait > 0 else "없음"], 
+                    ["선동성 지수", f"{agitation}회"], 
+                    ["기사-영상 일치도", f"{max_match}%"]
+                ], columns=["분석 항목", "판정 결과"]))
+                
                 st.markdown("**[증거 4] AI 최종 분석 판단**")
                 st.success(f"🔍 현재 분석된 종합 점수는 {prob}점입니다.")
                 if prob < 30 or prob > 70: st.toast(f"🤖 AI가 이 결과를 학습했습니다!", icon="🧠")
 
         except Exception as e: st.error(f"오류: {e}")
 
-# --- [UI Layout] (함수 정의 완료 후 배치) ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v47.1")
+# --- [UI Layout] ---
+st.title("⚖️ Triple-Evidence Intelligence Forensic v47.5")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
-url_input = st.text_input("🔗 분석할 유튜브 URL")
+url = st.text_input("🔗 분석할 유튜브 URL")
 if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not agree):
     if url_input: run_forensic_main(url_input)
     else: st.warning("URL을 입력해주세요.")
