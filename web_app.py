@@ -12,7 +12,7 @@ import pandas as pd
 from bs4 import BeautifulSoup 
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.7 (Auto-Refresh)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v48.8 (Callback)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -86,9 +86,9 @@ def colored_bar(label, val, color):
     st.markdown(f"<div style='margin-bottom:5px'><div style='display:flex;justify-content:space-between'><span>{label}</span><span style='color:{color};font-weight:bold'>{int(val*100)}%</span></div><div style='background:#eee;height:8px;border-radius:4px'><div style='background:{color};width:{val*100}%;height:100%;border-radius:4px'></div></div></div>", unsafe_allow_html=True)
 
 def loading_seq(level):
-    with st.status("🕵️ Forensic Core v48.7 가동...", expanded=True) as s:
+    with st.status("🕵️ Forensic Core v48.8 가동...", expanded=True) as s:
         st.write(f"🧠 Intelligence Level: {level}"); time.sleep(0.3)
-        st.write("🛡️ 정규식 파서 & 관리자 모듈 로드 중..."); time.sleep(0.3)
+        st.write("🛡️ 정규식 파서 & 관리자 콜백 모듈 로드 중..."); time.sleep(0.3)
         st.write("✅ 분석 준비 완료!"); s.update(label="분석 완료!", state="complete", expanded=False)
 
 # --- [Logic] ---
@@ -212,6 +212,16 @@ def fetch_google_news_regex(query):
     except: pass
     return news_res
 
+# 🌟 [신규] 삭제 콜백 함수 (확실한 삭제용)
+def delete_records_callback(ids_to_delete):
+    try:
+        for _id in ids_to_delete:
+            supabase.table("analysis_history").delete().eq("id", _id).execute()
+        # 삭제 완료 후 별도의 처리가 없어도, Streamlit이 자동으로 스크립트를 재실행하며 데이터가 갱신됩니다.
+        st.toast(f"🗑️ {len(ids_to_delete)}건 삭제 완료! 데이터가 갱신됩니다.")
+    except Exception as e:
+        st.error(f"삭제 오류: {e}")
+
 def run_main(url):
     intel = train_ve(); loading_seq(intel)
     vid = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
@@ -285,7 +295,7 @@ def run_main(url):
         except Exception as e: st.error(f"분석 중 오류: {e}")
 
 # --- [App] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.7")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v48.8")
 url = st.text_input("🔗 유튜브 URL")
 if st.button("🚀 분석 시작") and url: run_main(url)
 
@@ -295,9 +305,8 @@ try:
     df = pd.DataFrame(supabase.table("analysis_history").select("*").order("id", desc=True).execute().data)
     if not df.empty:
         if st.session_state["is_admin"]:
-            # Delete 컬럼 강제 추가 (초기값 False)
+            # Delete 컬럼 추가
             df['Delete'] = False
-            # 컬럼 순서 재배치 (Delete를 맨 앞으로)
             cols = ['Delete'] + [c for c in df.columns if c != 'Delete']
             df = df[cols]
             
@@ -311,14 +320,13 @@ try:
             
             to_delete = edited_df[edited_df.Delete]
             if not to_delete.empty:
-                if st.button(f"🗑️ 선택한 {len(to_delete)}건 영구 삭제", type="primary"):
-                    with st.spinner("삭제 중..."):
-                        for index, row in to_delete.iterrows():
-                            supabase.table("analysis_history").delete().eq("id", row['id']).execute()
-                    
-                    st.success("✅ 삭제 완료! (화면 새로고침 중...)")
-                    time.sleep(0.5) # 잠시 대기
-                    st.rerun()      # 🌟 즉시 화면 새로고침
+                # 🌟 [수정] 콜백 패턴 적용: on_click에 삭제 함수 연결
+                st.button(
+                    f"🗑️ 선택한 {len(to_delete)}건 영구 삭제", 
+                    type="primary",
+                    on_click=delete_records_callback,
+                    args=(to_delete['id'].tolist(),)
+                )
         else:
             st.dataframe(df, hide_index=True, use_container_width=True)
             st.info("🔒 데이터 삭제는 관리자만 가능합니다.")
