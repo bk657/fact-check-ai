@@ -9,10 +9,10 @@ from datetime import datetime
 from collections import Counter
 import yt_dlp
 import pandas as pd
-# ⚠️ [중요] bs4, xml 등 파싱 라이브러리 import 자체를 제거함
+# bs4 제거됨 (정규식 사용)
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.9 (Ghostbuster)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v50.0 (Iron Fortress)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -30,28 +30,25 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- [관리자 인증 & 캐시 클리어] ---
+# --- [관리자 인증] ---
 if "is_admin" not in st.session_state: st.session_state["is_admin"] = False
 with st.sidebar:
     st.header("🛡️ 관리자 메뉴")
     
-    # 🌟 캐시 강제 초기화 버튼 (유령 코드 제거용)
-    if st.button("⚠️ 시스템 캐시 초기화", type="primary"):
-        st.cache_resource.clear()
+    # 캐시 초기화 버튼
+    if st.button("⚠️ 시스템 캐시 초기화"):
         st.cache_data.clear()
-        st.toast("✅ 모든 캐시가 삭제되었습니다. 시스템이 재시동됩니다.")
+        st.cache_resource.clear()
+        st.toast("✅ 캐시 삭제 완료")
         time.sleep(1)
         st.rerun()
 
-    st.divider()
-    
     with st.form("login_form"):
         password_input = st.text_input("관리자 비밀번호", type="password")
         if st.form_submit_button("로그인"):
             if password_input == ADMIN_PASSWORD:
                 st.session_state["is_admin"] = True; st.rerun()
             else: st.session_state["is_admin"] = False; st.error("불일치")
-            
     if st.session_state["is_admin"]:
         st.success("✅ 관리자 인증됨")
         if st.button("로그아웃"): st.session_state["is_admin"] = False; st.rerun()
@@ -81,9 +78,18 @@ class VectorEngine:
 
 ve = VectorEngine()
 
-def save_analysis(ch, ti, pr, url, kw):
-    try: supabase.table("analysis_history").insert({"channel_name":ch, "video_title":ti, "fake_prob":pr, "analysis_date":datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "video_url":url, "keywords":kw}).execute()
-    except: pass
+# 🌟 [안전장치] DB 저장 함수 격벽 처리
+def save_analysis_safe(ch, ti, pr, url, kw):
+    try: 
+        supabase.table("analysis_history").insert({
+            "channel_name":ch, "video_title":ti, "fake_prob":pr, 
+            "analysis_date":datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 
+            "video_url":url, "keywords":kw
+        }).execute()
+        return True
+    except Exception as e: 
+        print(f"DB Save Error: {e}") # 콘솔 로그만 남김
+        return False
 
 def train_ve():
     try:
@@ -98,9 +104,9 @@ def colored_bar(label, val, color):
     st.markdown(f"<div style='margin-bottom:5px'><div style='display:flex;justify-content:space-between'><span>{label}</span><span style='color:{color};font-weight:bold'>{int(val*100)}%</span></div><div style='background:#eee;height:8px;border-radius:4px'><div style='background:{color};width:{val*100}%;height:100%;border-radius:4px'></div></div></div>", unsafe_allow_html=True)
 
 def loading_seq(level):
-    with st.status("🕵️ Forensic Core v48.9 가동...", expanded=True) as s:
-        st.write(f"🧠 Intelligence Level: {level}"); time.sleep(0.3)
-        st.write("🛡️ 유령 코드(XML Parser) 완전 제거됨..."); time.sleep(0.3)
+    with st.status("🕵️ Forensic Core v50.0 가동...", expanded=True) as s:
+        st.write(f"🧠 Intelligence Level: {level}")
+        st.write("🛡️ 격벽 시스템(Compartmentalization) 활성화...")
         st.write("✅ 분석 준비 완료!"); s.update(label="분석 완료!", state="complete", expanded=False)
 
 # --- [Logic] ---
@@ -172,7 +178,7 @@ def fetch_transcript(info):
     except: pass
     return None, "실패"
 
-def fetch_comments(vid):
+def fetch_comments_safe(vid):
     try:
         url = "https://www.googleapis.com/youtube/v3/commentThreads"
         res = requests.get(url, params={'part':'snippet', 'videoId':vid, 'key':YOUTUBE_API_KEY, 'maxResults':50, 'order':'relevance'})
@@ -185,16 +191,13 @@ def calc_match(news_item, query_nouns, text):
     title_n = set(extract_nouns(news_item['title']))
     desc_n = set(extract_nouns(news_item['desc']))
     query_n = set(query_nouns)
-    
     t_score = 1.0 if len(query_n & title_n) >= 2 else 0.5 if len(query_n & title_n) >= 1 else 0
-    
     c_cnt = 0
     if desc_n:
         for n in desc_n: 
             if n in text: c_cnt += 1
         c_score = 1.0 if c_cnt/len(desc_n) > 0.3 else 0.5 if c_cnt/len(desc_n) > 0.15 else 0
     else: c_score = 0
-    
     return int((t_score*0.3 + c_score*0.7)*100)
 
 def analyze_comments(comments, text):
@@ -207,26 +210,19 @@ def analyze_comments(comments, text):
     msg = "✅ 일치" if score>=60 else "⚠️ 혼재" if score>=20 else "❌ 불일치"
     return [f"{w}({c})" for w,c in top], score, msg
 
-# 🌟 [Regex Only] XML Parser 완전 배제
 def fetch_google_news_regex(query):
     news_res = []
     try:
         rss = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
         raw_html = requests.get(rss, timeout=5).text
-        
-        # XML 구조 파싱 대신 단순 문자열 패턴 매칭
         items = re.findall(r'<item>(.*?)</item>', raw_html, re.DOTALL)
-        
         for item in items[:3]:
             t_match = re.search(r'<title>(.*?)</title>', item)
             d_match = re.search(r'<description>(.*?)</description>', item)
-            
             nt = t_match.group(1) if t_match else ""
             nd = clean_html_tags(d_match.group(1)) if d_match else ""
-            
             nt = nt.replace("<![CDATA[", "").replace("]]>", "")
             nd = nd.replace("<![CDATA[", "").replace("]]>", "")
-
             news_res.append({'title': nt, 'desc': nd})
     except: pass
     return news_res
@@ -239,83 +235,90 @@ def delete_records_callback(ids_to_delete):
     except Exception as e:
         st.error(f"삭제 오류: {e}")
 
-# 🌟 함수 이름 변경하여 캐시 회피
-def run_forensic_engine_v49(url):
+# 🌟 [격벽 시스템 적용] Main Engine
+def run_forensic_engine_v50(url):
     intel = train_ve(); loading_seq(intel)
     vid = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
     if vid: vid = vid.group(1)
     
+    # [1] 기본 정보 추출 (안전)
     with yt_dlp.YoutubeDL({'quiet':True, 'skip_download':True}) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
             title = info.get('title',''); uploader = info.get('uploader','')
             tags = info.get('tags',[]); desc = info.get('description','')
-            
             trans, t_status = fetch_transcript(info)
             full_text = trans if trans else desc
             query = generate_hybrid_query(title, tags, full_text)
+        except Exception as e: 
+            st.error(f"영상 정보 추출 실패: {e}"); return
+
+    # [2] 분석 로직 (안전)
+    try:
+        ts, fs = ve.analyze(query + " " + title)
+        v_score = int(fs*35) - int(ts*35)
+        
+        news_items = fetch_google_news_regex(query)
+        news_res = []; max_match = 0; news_cnt = len(news_items)
+        for item in news_items:
+            m = calc_match(item, extract_nouns(query), full_text)
+            if m > max_match: max_match = m
+            news_res.append({"뉴스 제목": item['title'], "일치도": f"{m}%"})
+        
+        cmts, c_st = fetch_comments_safe(vid) # Safe 함수 사용
+        top_kw, rel_scr, rel_msg = analyze_comments(cmts, title + " " + full_text)
+        red_cnt = sum(1 for c in cmts for k in ['가짜','주작','선동'] if k in c)
+        
+        n_score = 0; silent = 0; mismatch = 0
+        is_silent = (news_cnt == 0) or (news_cnt > 0 and max_match < 20)
+        agitation = sum(full_text.count(w) for w in ['충격','경악','속보'])
+        
+        if is_silent:
+            if agitation >= 3: silent = 40; v_score *= 2 
+            else: mismatch = 10
+        elif red_cnt > 0: 
+            if max_match < 60: n_score = 25
+            else: n_score = int((max_match/100)**2 * 65) * -1
+        else:
+            n_score = int((max_match/100)**2 * 45) * -1
             
-            ts, fs = ve.analyze(query + " " + title)
-            v_score = int(fs*35) - int(ts*35)
-            
-            news_items = fetch_google_news_regex(query)
-            news_res = []; max_match = 0; news_cnt = len(news_items)
-            for item in news_items:
-                m = calc_match(item, extract_nouns(query), full_text)
-                if m > max_match: max_match = m
-                news_res.append({"뉴스 제목": item['title'], "일치도": f"{m}%"})
-            
-            cmts, c_st = fetch_comments(vid)
-            top_kw, rel_scr, rel_msg = analyze_comments(cmts, title + " " + full_text)
-            red_cnt = sum(1 for c in cmts for k in ['가짜','주작','선동'] if k in c)
-            
-            n_score = 0; silent = 0; mismatch = 0
-            is_silent = (news_cnt == 0) or (news_cnt > 0 and max_match < 20)
-            agitation = sum(full_text.count(w) for w in ['충격','경악','속보'])
-            
-            if is_silent:
-                if agitation >= 3: silent = 40; v_score *= 2 
-                else: mismatch = 10
-            elif red_cnt > 0: 
-                if max_match < 60: n_score = 25
-                else: n_score = int((max_match/100)**2 * 65) * -1
-            else:
-                n_score = int((max_match/100)**2 * 45) * -1
-                
-            if check_official(uploader): n_score = -50; silent = 0; mismatch = 0
-            
-            tag_abuse_score = check_tags(title, tags, uploader)
-            total = 50 + v_score + n_score + silent + mismatch + tag_abuse_score
-            prob = max(5, min(99, total))
-            
-            save_analysis(uploader, title, prob, url, query)
-            
-            st.subheader("🕵️ 핵심 분석 지표")
-            c1,c2,c3 = st.columns(3)
-            c1.metric("가짜뉴스 확률", f"{prob}%", f"{total-50}")
-            c2.metric("AI 판정", "🚨 위험" if prob>60 else "🟢 안전" if prob<30 else "🟠 주의")
-            c3.metric("지능 레벨", intel)
-            
-            if silent: st.error("🔇 침묵의 메아리: 자극적 내용이나 근거 없음")
-            if check_official(uploader): st.success(f"🛡️ 공식 언론사({uploader})")
-            
-            st.divider()
-            c1,c2 = st.columns([1,1])
-            with c1:
-                st.info(f"🎯 쿼리: {query}")
-                st.write("**영상 요약**"); st.caption(summarize(full_text))
-                st.table(pd.DataFrame([["기본",50],["벡터",v_score],["뉴스",n_score],["페널티",silent+mismatch],["태그오용",tag_abuse_score]], columns=["항목","점수"]))
-            with c2:
-                colored_bar("진실", ts, "green"); colored_bar("거짓", fs, "red")
-                st.write(f"**뉴스 ({news_cnt}건)**"); st.table(news_res) if news_res else st.warning("뉴스 없음")
-                st.write("**여론**"); st.caption(f"{rel_msg} (논란어 {red_cnt}회)")
-                
-        except Exception as e: st.error(f"분석 중 오류: {e}")
+        if check_official(uploader): n_score = -50; silent = 0; mismatch = 0
+        
+        tag_abuse_score = check_tags(title, tags, uploader)
+        total = 50 + v_score + n_score + silent + mismatch + tag_abuse_score
+        prob = max(5, min(99, total))
+    except Exception as e:
+        st.error(f"분석 로직 오류: {e}"); return
+
+    # [3] DB 저장 (격벽 처리 - 실패해도 무시)
+    db_success = save_analysis_safe(uploader, title, prob, url, query)
+    
+    # [4] 결과 출력 (무조건 실행됨)
+    st.subheader("🕵️ 핵심 분석 지표")
+    c1,c2,c3 = st.columns(3)
+    c1.metric("가짜뉴스 확률", f"{prob}%", f"{total-50}")
+    c2.metric("AI 판정", "🚨 위험" if prob>60 else "🟢 안전" if prob<30 else "🟠 주의")
+    c3.metric("지능 레벨", intel)
+    
+    if not db_success: st.toast("⚠️ DB 저장 실패 (분석 결과는 정상 출력됨)", icon="💾")
+    if silent: st.error("🔇 침묵의 메아리: 자극적 내용이나 근거 없음")
+    if check_official(uploader): st.success(f"🛡️ 공식 언론사({uploader})")
+    
+    st.divider()
+    c1,c2 = st.columns([1,1])
+    with c1:
+        st.info(f"🎯 쿼리: {query}")
+        st.write("**영상 요약**"); st.caption(summarize(full_text))
+        st.table(pd.DataFrame([["기본",50],["벡터",v_score],["뉴스",n_score],["페널티",silent+mismatch],["태그오용",tag_abuse_score]], columns=["항목","점수"]))
+    with c2:
+        colored_bar("진실", ts, "green"); colored_bar("거짓", fs, "red")
+        st.write(f"**뉴스 ({news_cnt}건)**"); st.table(news_res) if news_res else st.warning("뉴스 없음")
+        st.write("**여론**"); st.caption(f"{rel_msg} (논란어 {red_cnt}회)")
 
 # --- [App] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.9")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v50.0")
 url = st.text_input("🔗 유튜브 URL")
-if st.button("🚀 분석 시작") and url: run_forensic_engine_v49(url) # 함수명 변경됨
+if st.button("🚀 분석 시작") and url: run_forensic_engine_v50(url)
 
 st.divider()
 st.subheader("🗂️ 학습 데이터 (Cloud)")
