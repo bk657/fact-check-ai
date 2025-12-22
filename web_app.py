@@ -11,9 +11,10 @@ import yt_dlp
 import pandas as pd
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
+import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v49.0 (Strict Verification)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v50.0 (Intelligence Viz)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -113,6 +114,43 @@ def train_dynamic_vector_engine():
         vector_engine.train(STATIC_TRUTH_CORPUS, STATIC_FAKE_CORPUS)
         return 0, 0, 0
 
+# 🌟 [v50.0 New] 내부 데이터 분포 시각화 함수
+def render_intelligence_distribution(current_prob):
+    try:
+        # DB에서 전체 확률 데이터 가져오기
+        res = supabase.table("analysis_history").select("fake_prob").execute()
+        if not res.data: return
+        
+        df = pd.DataFrame(res.data)
+        
+        # 차트 데이터 준비
+        base = alt.Chart(df).transform_density(
+            'fake_prob',
+            as_=['fake_prob', 'density'],
+            extent=[0, 100],
+            bandwidth=5
+        ).mark_area(opacity=0.3, color='#888').encode(
+            x=alt.X('fake_prob:Q', title='가짜뉴스 확률 분포 (0:안전 ~ 100:위험)'),
+            y=alt.Y('density:Q', title='데이터 밀도'),
+        )
+        
+        # 현재 위치 표시선
+        rule = alt.Chart(pd.DataFrame({'x': [current_prob]})).mark_rule(color='blue', size=3).encode(x='x')
+        text = alt.Chart(pd.DataFrame({'x': [current_prob], 'label': ['현재 위치']})).mark_text(align='left', dx=5, dy=-100, color='blue').encode(x='x', text='label')
+        
+        st.altair_chart(base + rule + text, use_container_width=True)
+        st.caption("📈 **회색 영역**: 내부 DB에 축적된 진실/거짓 데이터의 분포 | **파란 선**: 현재 영상의 위치")
+        
+        # 분포 해석 메시지
+        if current_prob > 60:
+            st.error("⚠️ 현재 영상은 우리 DB의 **'고위험군(High Risk)'** 분포에 속해 있습니다.")
+        elif current_prob < 40:
+            st.success("✅ 현재 영상은 우리 DB의 **'안전군(Safe Zone)'** 분포에 속해 있습니다.")
+        else:
+            st.warning("🔸 현재 영상은 판단이 엇갈리는 **'중립 구간(Gray Zone)'**에 위치합니다.")
+            
+    except: pass
+
 # --- [UI Utils] ---
 def colored_progress_bar(label, percent, color):
     st.markdown(f"""<div style="margin-bottom: 10px;"><div style="display: flex; justify-content: space-between; margin-bottom: 3px;"><span style="font-size: 13px; font-weight: 600; color: #555;">{label}</span><span style="font-size: 13px; font-weight: 700; color: {color};">{round(percent * 100, 1)}%</span></div><div style="background-color: #eee; border-radius: 5px; height: 8px; width: 100%;"><div style="background-color: {color}; height: 8px; width: {percent * 100}%; border-radius: 5px;"></div></div></div>""", unsafe_allow_html=True)
@@ -132,11 +170,10 @@ def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [
         f"🧠 [Intelligence Level: {total}] 집단 지성 로드 중...",
         f"📚 학습된 진실 데이터: {t_cnt}건 | 거짓 데이터: {f_cnt}건",
-        "📝 자막 전체(Full Text) 정밀 수집 중...", 
-        "🎯 [엄격 모드] 뉴스 일치도 임계값 상향 조정 중...",
+        "📊 내부 DB 정규 분포(Normal Distribution) 매핑 중...", 
         "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
     ]
-    with st.status("🕵️ Context Merger v49.0 가동 중...", expanded=True) as status:
+    with st.status("🕵️ Context Merger v50.0 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
@@ -298,7 +335,6 @@ def calculate_dual_match(news_item, query_nouns, transcript, query_str_full):
     c_score = 1.0 if (len(dn) > 0 and c_cnt/len(dn) >= 0.3) else 0.5 if (len(dn) > 0 and c_cnt/len(dn) >= 0.15) else 0
     match_score = int((t_score * 0.3 + c_score * 0.7) * 100)
     
-    # Critical Check
     for critical in CRITICAL_STATE_KEYWORDS:
         if critical in query_str_full and critical not in news_item.get('title', ''):
             return 0 
@@ -368,6 +404,7 @@ def run_forensic_main(url):
             abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
             
             summary = summarize_transcript(full_text, title)
+            
             agitation = count_sensational_words(full_text + title)
             
             ts, fs = vector_engine.analyze_position(query + " " + title)
@@ -395,7 +432,6 @@ def run_forensic_main(url):
             
             if is_silent:
                 if has_critical_claim:
-                    # 🌟 [v49.0] 60% 미만이면 사실상 불일치로 간주 (Strict)
                     silent_penalty = 5
                     t_impact = 0; f_impact = 0
                     is_gray_zone = True
@@ -405,18 +441,9 @@ def run_forensic_main(url):
                 else:
                     mismatch_penalty = 10
             elif is_controversial:
-                # 🌟 [v49.0] 60% 이상이어야 인정
                 news_score = PENALTY_NO_FACT if max_match < 60 else int((max_match/100)**2 * w_news) * -1
             else:
-                if max_match >= 60:
-                    news_score = int((max_match/100)**2 * w_news) * -1
-                    news_note = "Verified (High Match)"
-                elif max_match >= 30:
-                    news_score = 0
-                    news_note = "Ambiguous (30~59%)"
-                else:
-                    news_score = 15 # 낮은 일치도는 오히려 의심 (페널티)
-                    news_note = "Low Match Penalty"
+                news_score = int((max_match/100)**2 * w_news) * -1
                 
             if is_official: news_score = -50; mismatch_penalty = 0; silent_penalty = 0
             
@@ -449,6 +476,11 @@ def run_forensic_main(url):
             elif silent_penalty > 0: 
                 st.error("🔇 **침묵의 메아리(Silent Echo)**: 자극적인 주장이지만 근거가 부족합니다.")
 
+            # 🌟 [v50.0 Viz] Intelligence Map
+            st.divider()
+            st.subheader("🧠 Intelligence Map: 내부 지식 분포도")
+            render_intelligence_distribution(prob)
+
             st.divider()
             col1, col2 = st.columns([1, 1.4])
             with col1:
@@ -462,14 +494,12 @@ def run_forensic_main(url):
                 st.write("**[Score Breakdown]**")
                 
                 silence_label = "미검증 주장 (판단 보류)" if is_gray_zone else "침묵의 메아리 (No News)"
-                # 🌟 [v49.0 Fix] news_note 변수 사용
-                news_note_display = locals().get('news_note', '')
                 
                 render_score_breakdown([
                     ["기본 위험도", 50, "Base Score"],
                     ["진실 맥락 보너스 (벡터)", t_impact, "Unknown" if is_gray_zone else ""], 
                     ["가짜 패턴 가점 (벡터)", f_impact, "Unknown" if is_gray_zone else ""],
-                    ["뉴스 교차 대조 (Dual)", news_score, news_note_display],
+                    ["뉴스 교차 대조 (Dual)", news_score, ""],
                     [silence_label, silent_penalty, "Gray Zone (+5)" if is_gray_zone else ""],
                     ["여론/제목/자막 가감", sent_score + clickbait, ""],
                     ["내용 불일치 기만", mismatch_penalty, ""], ["해시태그 어뷰징", abuse_score, ""]
@@ -507,7 +537,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v49.0")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v50.0")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
