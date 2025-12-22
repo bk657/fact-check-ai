@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.0 (Hybrid)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v48.1", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets에서 키 가져오기
 try:
@@ -55,14 +55,12 @@ PENALTY_MISMATCH = 30
 PENALTY_NO_FACT = 25
 PENALTY_SILENT_ECHO = 40  
 
-# 핵심 상태어 (정치/사회적 파급력이 큰 단어)
 VITAL_KEYWORDS = [
     '위독', '사망', '별세', '구속', '체포', '기소', '실형', '응급실', '쓰러져', 
     '이혼', '불화', '파경', '충격', '경악', '속보', '긴급', '폭로', '양성', 
     '확진', '심정지', '뇌사', '중태', '압수수색', '소환', '퇴진', '탄핵', '내란'
 ]
 
-# VIP 인물 사전
 VIP_ENTITIES = [
     '윤석열', '대통령', '이재명', '한동훈', '김건희', '문재인', '박근혜', '이명박',
     '트럼프', '바이든', '푸틴', '젤렌스키', '시진핑', '정은', 
@@ -70,7 +68,6 @@ VIP_ENTITIES = [
     '손흥민', '이강인', '김민재', '류현진', '재용', '정의선', '최태원'
 ]
 
-# 공식 언론사 리스트 (뉴스감별사 등 유사 언론 제외)
 OFFICIAL_CHANNELS = [
     'MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS',
     '채널A', 'TV조선', '연합뉴스', 'YONHAP',
@@ -124,9 +121,35 @@ def train_dynamic_vector_engine():
     vector_engine.train(STATIC_TRUTH_CORPUS + dt, STATIC_FAKE_CORPUS + df)
     return len(STATIC_TRUTH_CORPUS + dt) + len(STATIC_FAKE_CORPUS + df)
 
-# --- [Advanced Logic Functions] ---
+# --- [누락되었던 Helper Functions 복구] ---
+def colored_progress_bar(label, percent, color):
+    st.markdown(f"""
+        <div style="margin-bottom: 10px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
+                <span style="font-size: 13px; font-weight: 600; color: #555;">{label}</span>
+                <span style="font-size: 13px; font-weight: 700; color: {color};">{round(percent * 100, 1)}%</span>
+            </div>
+            <div style="background-color: #eee; border-radius: 5px; height: 8px; width: 100%;">
+                <div style="background-color: {color}; height: 8px; width: {percent * 100}%; border-radius: 5px;"></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-# 🌟 [개선] 노이즈 리스트 대폭 강화 (일반적인 단어 제외)
+def witty_loading_sequence(count):
+    messages = [
+        f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...",
+        "🔍 제목과 자막을 융합하여 '하이브리드 쿼리' 생성 중...",
+        "🎯 뉴스 데이터베이스 정밀 타격 중...",
+        "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
+    ]
+    with st.status("🕵️ Hybrid Core v48.1 가동 중...", expanded=True) as status:
+        for msg in messages:
+            st.write(msg)
+            time.sleep(0.4)
+        st.write("✅ 분석 준비 완료!")
+        status.update(label="분석 완료!", state="complete", expanded=False)
+
+# --- [Advanced Logic Functions] ---
 def get_noise_words():
     return ['충격', '경악', '실체', '난리', '공개', '반응', '명단', '동영상', '사진', '집안', '속보', 
             '단독', '결국', 'MBC', '뉴스', '이미지', '너무', '다른', '알고보니', 'ㄷㄷ', '진짜', 
@@ -138,46 +161,33 @@ def extract_nouns(text):
     nouns = re.findall(r'[가-힣A-Za-z0-9]{2,}', text)
     return [n for n in nouns if n not in noise]
 
-# 🌟 [v48.0 신규] 하이브리드 키워드 추출 (제목 + 자막 융합)
 def generate_hybrid_query(title, hashtags, transcript):
-    # 1. 소스 준비
     title_text = title + " " + " ".join([h.replace("#", "") for h in hashtags])
     transcript_text = transcript if transcript else ""
     
-    # 2. 제목에서 키워드 추출 (가중치 높음)
     title_nouns = extract_nouns(title_text)
-    
-    # 3. 자막에서 빈출 키워드 추출 (가중치 낮음, 보완용)
     transcript_nouns = extract_nouns(transcript_text)
     transcript_counter = Counter(transcript_nouns)
-    # 상위 3개만 추출 (너무 많으면 검색 꼬임)
     top_transcript_nouns = [word for word, count in transcript_counter.most_common(3)]
     
-    # 4. VIP/Vital 체크 (최우선 순위)
     vip_found = [vip for vip in VIP_ENTITIES if vip in title_text]
     vital_found = [vital for vital in VITAL_KEYWORDS if vital in title_text]
     
-    # 5. 쿼리 조합 로직
     final_query = []
     
     if vip_found:
-        # VIP가 있으면: VIP + Vital + (제목 명사 중 VIP 아닌 것)
         final_query.extend(vip_found)
         if vital_found: final_query.extend(vital_found)
-        # VIP 관련 문맥 추가 (조사 기반 Chunking 로직 간소화 적용)
         for t_noun in title_nouns:
             if t_noun not in final_query and t_noun not in VIP_ENTITIES:
                 final_query.append(t_noun)
-                break # 하나만 추가
+                break 
     else:
-        # VIP가 없으면: 제목 명사 + 자막 빈출 명사 결합
-        final_query.extend(title_nouns[:2]) # 제목 앞 2개
-        
-        # 자막에서 보완 (제목에 없는 내용이면 추가)
+        final_query.extend(title_nouns[:2]) 
         for tr_noun in top_transcript_nouns:
             if tr_noun not in final_query:
                 final_query.append(tr_noun)
-                if len(final_query) >= 3: break # 최대 3단어 조합
+                if len(final_query) >= 3: break 
                 
     return " ".join(final_query)
 
@@ -315,7 +325,6 @@ def run_forensic_main(url):
             transcript_text, transcript_status = fetch_real_transcript(info)
             analysis_text = transcript_text if transcript_text else desc
             
-            # 🌟 [v48.0] 하이브리드 쿼리 생성
             refined_query = generate_hybrid_query(title, tags, transcript_text)
             
             is_official = check_is_official(uploader)
@@ -392,7 +401,7 @@ def run_forensic_main(url):
 
         except Exception as e: st.error(f"분석 중 오류: {e}")
 
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.0")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v48.1")
 url = st.text_input("🔗 유튜브 URL 입력")
 if st.button("🚀 분석 시작") and url: run_forensic_main(url)
 
@@ -401,9 +410,27 @@ st.subheader("🗂️ 학습 데이터 관리 (Cloud)")
 try:
     df = pd.DataFrame(supabase.table("analysis_history").select("*").order("id", desc=True).execute().data)
     if not df.empty and st.session_state["is_admin"]:
-        ed = st.data_editor(df, num_rows="dynamic", key="editor")
-        if st.button("삭제 적용"):
-            st.warning("기능 구현 중 (직접 DB 관리 권장)") 
-    elif not df.empty: st.dataframe(df)
+        # 관리자용 삭제 UI
+        edited_df = st.data_editor(
+            df,
+            column_config={
+                "Delete": st.column_config.CheckboxColumn("선택 삭제", default=False)
+            },
+            disabled=["id", "analysis_date", "video_title", "keywords"],
+            hide_index=True, use_container_width=True
+        )
+        # 삭제 버튼 (데이터프레임에 'Delete' 컬럼을 추가해서 처리해야 함)
+        if "Delete" not in edited_df.columns:
+            edited_df["Delete"] = False # 초기화
+            
+        to_delete = edited_df[edited_df.Delete]
+        if not to_delete.empty:
+            if st.button(f"🗑️ 선택한 {len(to_delete)}건 삭제"):
+                for index, row in to_delete.iterrows():
+                    supabase.table("analysis_history").delete().eq("id", row['id']).execute()
+                st.success("삭제 완료"); time.sleep(1); st.rerun()
+                
+    elif not df.empty:
+        st.dataframe(df) # 일반 유저는 보기만 가능
     else: st.info("데이터 없음")
 except: pass
