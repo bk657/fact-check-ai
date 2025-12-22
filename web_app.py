@@ -230,7 +230,7 @@ def check_red_flags(comments):
     detected = [k for c in comments for k in ['가짜뉴스', '주작', '사기', '거짓말', '허위', '선동'] if k in c]
     return len(detected), list(set(detected))
 
-# --- [Main Execution] (함수를 먼저 정의해야 함!) ---
+# --- [Main Execution] ---
 def run_forensic_main(url):
     total_intelligence = train_dynamic_vector_engine()
     witty_loading_sequence(total_intelligence)
@@ -248,10 +248,12 @@ def run_forensic_main(url):
             full_text = trans if trans else desc
             
             is_official = check_is_official(uploader)
-            is_ai, ai_msg = detect_ai_content(info)
             
-            w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
-            w_vec = 10 if is_ai else WEIGHT_VECTOR
+            # 🌟 [Fix] 변수명 통일 (is_ai_content -> is_ai_content)
+            is_ai_content, ai_msg = detect_ai_content(info) 
+            
+            w_news = 70 if is_ai_content else WEIGHT_NEWS_DEFAULT
+            w_vec = 10 if is_ai_content else WEIGHT_VECTOR
             
             query = generate_pinpoint_query(title, tags)
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
@@ -262,7 +264,6 @@ def run_forensic_main(url):
             ts, fs = vector_engine.analyze_position(query + " " + title)
             t_impact = int(ts * w_vec) * -1; f_impact = int(fs * w_vec)
 
-            # XML Parsing (순정 복구)
             news_ev = []; max_match = 0
             try:
                 rss_url = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
@@ -369,13 +370,12 @@ def run_forensic_main(url):
 
         except Exception as e: st.error(f"오류: {e}")
 
-# --- [UI Layout] (함수 정의 후에 실행됨!) ---
 st.title("⚖️ Triple-Evidence Intelligence Forensic v47.1")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
-url_input = st.text_input("🔗 분석할 유튜브 URL")
+url = st.text_input("🔗 분석할 유튜브 URL")
 if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not agree):
     if url_input: run_forensic_main(url_input)
     else: st.warning("URL을 입력해주세요.")
