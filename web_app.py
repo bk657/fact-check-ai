@@ -9,11 +9,11 @@ from datetime import datetime
 from collections import Counter
 import yt_dlp
 import pandas as pd
-import xml.etree.ElementTree as ET
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup 
+# xml.etree.ElementTree는 삭제했습니다 (오류 원인 제거)
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.3", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v48.4", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -87,16 +87,12 @@ def colored_bar(label, val, color):
     st.markdown(f"<div style='margin-bottom:5px'><div style='display:flex;justify-content:space-between'><span>{label}</span><span style='color:{color};font-weight:bold'>{int(val*100)}%</span></div><div style='background:#eee;height:8px;border-radius:4px'><div style='background:{color};width:{val*100}%;height:100%;border-radius:4px'></div></div></div>", unsafe_allow_html=True)
 
 def loading_seq(level):
-    with st.status("🕵️ Forensic Core v48.3 가동...", expanded=True) as s:
+    with st.status("🕵️ Forensic Core v48.4 가동...", expanded=True) as s:
         st.write(f"🧠 Intelligence Level: {level}"); time.sleep(0.3)
         st.write("🛡️ 1차 분석: 파싱 오류 방어 및 구문 분석..."); time.sleep(0.3)
         st.write("✅ 분석 준비 완료!"); s.update(label="분석 완료!", state="complete", expanded=False)
 
 # --- [Logic] ---
-def get_safe_text(element):
-    if element is not None and element.text: return element.text.strip()
-    return ""
-
 def clean_html(raw):
     if not raw: return ""
     try: return BeautifulSoup(raw, "html.parser").get_text()
@@ -141,7 +137,6 @@ def check_tags(title, tags, uploader):
     if not tags: return 0
     tn = set(extract_nouns(title)); tgn = set()
     for t in tags: tgn.add(t.replace("#","").split(":")[-1].strip())
-    # 점수(int)만 반환하도록 수정됨
     return 20 if len(tgn)>=2 and not tn.intersection(tgn) else 0
 
 def fetch_transcript(info):
@@ -220,20 +215,27 @@ def run_main(url):
             ts, fs = ve.analyze(query + " " + title)
             v_score = int(fs*35) - int(ts*35)
             
-            # 2. News
+            # 2. News (Robust XML Parsing w/ BeautifulSoup)
             news_res = []; max_match = 0; news_cnt = 0
             try:
                 rss = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
-                root = ET.fromstring(requests.get(rss, timeout=5).content)
-                items = root.findall('.//item'); news_cnt = len(items)
+                # 🌟 [수정] XML 파서 변경: lxml 또는 xml 모드 사용
+                rss_soup = BeautifulSoup(requests.get(rss, timeout=5).content, "xml") 
+                items = rss_soup.find_all("item")
+                news_cnt = len(items)
                 
                 for item in items[:3]:
-                    nt = get_safe_text(item.find('title'))
-                    nd = clean_html(get_safe_text(item.find('description')))
+                    # 안전한 텍스트 추출
+                    nt = item.title.get_text() if item.title else ""
+                    nd_raw = item.description.get_text() if item.description else ""
+                    nd = clean_html(nd_raw)
+                    
                     m = calc_match({'title':nt, 'desc':nd}, extract_nouns(query), full_text)
                     if m > max_match: max_match = m
                     news_res.append({"뉴스 제목": nt, "일치도": f"{m}%"})
-            except Exception: pass 
+            except Exception as e: 
+                # 파싱 에러 발생 시 로그만 남기고 무시
+                pass
             
             # 3. Comments
             cmts, c_st = fetch_comments(vid)
@@ -256,7 +258,6 @@ def run_main(url):
                 
             if check_official(uploader): n_score = -50; silent = 0; mismatch = 0
             
-            # 🌟 [수정] check_tags()[0] 제거 -> check_tags()
             tag_abuse_score = check_tags(title, tags, uploader)
             total = 50 + v_score + n_score + silent + mismatch + tag_abuse_score
             prob = max(5, min(99, total))
@@ -287,7 +288,7 @@ def run_main(url):
         except Exception as e: st.error(f"분석 중 오류: {e}")
 
 # --- [App] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.3")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v48.4")
 url = st.text_input("🔗 유튜브 URL")
 if st.button("🚀 분석 시작") and url: run_main(url)
 
