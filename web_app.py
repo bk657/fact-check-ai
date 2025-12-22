@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.7 (Neutrality)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v48.8 (Adaptive Learning)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -103,13 +103,22 @@ def save_analysis(channel, title, prob, url, keywords):
     try: supabase.table("analysis_history").insert({"channel_name": channel, "video_title": title, "fake_prob": prob, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "video_url": url, "keywords": keywords}).execute()
     except: pass
 
+# 🌟 [v48.8 Update] 학습 기준 완화 (30/70 -> 40/60)
 def train_dynamic_vector_engine():
     try:
-        dt = [row['video_title'] for row in supabase.table("analysis_history").select("video_title").lt("fake_prob", 30).execute().data]
-        df = [row['video_title'] for row in supabase.table("analysis_history").select("video_title").gt("fake_prob", 70).execute().data]
-    except: dt, df = [], []
-    vector_engine.train(STATIC_TRUTH_CORPUS + dt, STATIC_FAKE_CORPUS + df)
-    return len(STATIC_TRUTH_CORPUS + dt) + len(STATIC_FAKE_CORPUS + df)
+        # 안전(Truth): 40% 미만이면 학습 (기존 30%)
+        truth_data = supabase.table("analysis_history").select("video_title").lt("fake_prob", 40).execute().data
+        dt = [row['video_title'] for row in truth_data]
+        
+        # 위험(Fake): 60% 초과면 학습 (기존 70%)
+        fake_data = supabase.table("analysis_history").select("video_title").gt("fake_prob", 60).execute().data
+        df = [row['video_title'] for row in fake_data]
+        
+        vector_engine.train(STATIC_TRUTH_CORPUS + dt, STATIC_FAKE_CORPUS + df)
+        return len(STATIC_TRUTH_CORPUS + dt) + len(STATIC_FAKE_CORPUS + df), len(dt), len(df)
+    except: 
+        vector_engine.train(STATIC_TRUTH_CORPUS, STATIC_FAKE_CORPUS)
+        return 0, 0, 0
 
 # --- [UI Utils] ---
 def colored_progress_bar(label, percent, color):
@@ -126,9 +135,14 @@ def render_score_breakdown(data_list):
         rows += f"<tr><td>{item}<br><span style='color:#888; font-size:11px;'>{note}</span></td><td style='text-align: right;'>{badge}</td></tr>"
     st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Silent Echo Protocol)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
 
-def witty_loading_sequence(count):
-    messages = [f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...", "📝 자막 전체(Full Text) 정밀 수집 중...", "🎯 [팩트 검증] 인물과 사건의 일치 여부 확인 중...", "🚀 위성이 유튜브 본사 상공을 지나가는 중..."]
-    with st.status("🕵️ Context Merger v48.7 가동 중...", expanded=True) as status:
+def witty_loading_sequence(total, t_cnt, f_cnt):
+    messages = [
+        f"🧠 [Intelligence Level: {total}] 집단 지성 로드 중...",
+        f"📚 학습된 진실 데이터: {t_cnt}건 | 거짓 데이터: {f_cnt}건",
+        "📝 자막 전체(Full Text) 정밀 수집 중...", 
+        "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
+    ]
+    with st.status("🕵️ Context Merger v48.8 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
@@ -281,7 +295,6 @@ def fetch_comments_via_api(video_id):
     except: pass
     return [], "❌ API 통신 실패"
 
-# 🌟 [v48.6 Fix] 사건/상태 불일치 시 점수 0점 처리
 def calculate_dual_match(news_item, query_nouns, transcript, query_str_full):
     tn = set(extract_nouns(news_item.get('title', ''))); dn = set(extract_nouns(news_item.get('desc', '')))
     qn = set(query_nouns)
@@ -328,8 +341,9 @@ def fetch_news_regex(query):
 
 # --- [Main Execution] ---
 def run_forensic_main(url):
-    total_intelligence = train_dynamic_vector_engine()
-    witty_loading_sequence(total_intelligence)
+    # 🌟 [v48.8] Load Count for UI
+    total_nodes, t_cnt, f_cnt = train_dynamic_vector_engine()
+    witty_loading_sequence(total_nodes, t_cnt, f_cnt)
     
     vid = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
     if vid: vid = vid.group(1)
@@ -381,8 +395,6 @@ def run_forensic_main(url):
             w_news = 65 if is_controversial else w_news
             
             silent_penalty = 0; news_score = 0; mismatch_penalty = 0
-            
-            # 🌟 [v48.7] Gray Zone Logic (Neutrality)
             is_silent = (len(news_ev) == 0) or (max_match < 20)
             has_critical_claim = any(k in title for k in CRITICAL_STATE_KEYWORDS)
             
@@ -390,10 +402,9 @@ def run_forensic_main(url):
             
             if is_silent:
                 if has_critical_claim:
-                    # ⚠️ Critical Claim but No Proof -> Neutral Caution (Not 90% Fake)
-                    silent_penalty = 5  # Small nudge (+5)
-                    t_impact = 0        # Reset Vector (Unknown)
-                    f_impact = 0        # Reset Vector (Unknown)
+                    silent_penalty = 5  # Neutral Penalty
+                    t_impact = 0        
+                    f_impact = 0        
                     is_gray_zone = True
                 elif agitation >= 3:
                     silent_penalty = PENALTY_SILENT_ECHO
@@ -431,7 +442,6 @@ def run_forensic_main(url):
             if is_ai: st.warning(f"🤖 **AI 생성 콘텐츠 감지됨**: {ai_msg}")
             if is_official: st.success(f"🛡️ **공식 언론사 채널({uploader})입니다.**")
             
-            # 🌟 [v48.7 UI] Gray Zone Warning
             if is_gray_zone:
                 st.warning("⚠️ **판단 보류 (Gray Zone)**: '이혼/별거' 등의 중대한 주장이 포함되어 있으나, 이를 뒷받침할 언론 보도가 확인되지 않았습니다. **단독 보도일 수도, 허위일 수도 있습니다.** 신중한 검증이 필요합니다.")
             elif silent_penalty > 0: 
@@ -493,7 +503,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.7")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v48.8")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
