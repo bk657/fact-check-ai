@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.0 (Summary Fix)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v48.1 (Quote Sniper)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -58,7 +58,7 @@ WEIGHT_NEWS_DEFAULT = 45; WEIGHT_VECTOR = 35; WEIGHT_CONTENT = 15; WEIGHT_SENTIM
 PENALTY_ABUSE = 20; PENALTY_MISMATCH = 30; PENALTY_NO_FACT = 25; PENALTY_SILENT_ECHO = 40
 
 VITAL_KEYWORDS = ['위독', '사망', '별세', '구속', '체포', '기소', '실형', '응급실', '이혼', '불화', '파경', '충격', '경악', '속보', '긴급', '폭로', '양성', '확진', '심정지', '뇌사', '중태', '압수수색', '소환', '퇴진', '탄핵', '내란']
-VIP_ENTITIES = ['윤석열', '대통령', '이재명', '한동훈', '김건희', '문재인', '박근혜', '이명박', '트럼프', '바이든', '푸틴', '젤렌스키', '시진핑', '정은', '이준석', '조국', '추미애', '홍준표', '유승민', '안철수', '손흥민', '이강인', '김민재', '류현진', '재용', '정의선', '최태원', '조세호', '유재석', '장동민']
+VIP_ENTITIES = ['윤석열', '대통령', '이재명', '한동훈', '김건희', '문재인', '박근혜', '이명박', '트럼프', '바이든', '푸틴', '젤렌스키', '시진핑', '정은', '이준석', '조국', '추미애', '홍준표', '유승민', '안철수', '손흥민', '이강인', '김민재', '류현진', '재용', '정의선', '최태원', '류중일', '감독', '조세호', '유재석', '장동민']
 OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
 
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
@@ -125,8 +125,8 @@ def render_score_breakdown(data_list):
     st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Silent Echo Protocol)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
 
 def witty_loading_sequence(count):
-    messages = [f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...", "📝 자막 전체(Full Text) 정밀 수집 중...", "🔍 맥락 기반 핵심 요약(Context Summary) 생성 중...", "🚀 위성이 유튜브 본사 상공을 지나가는 중..."]
-    with st.status("🕵️ Context Merger v48.0 가동 중...", expanded=True) as status:
+    messages = [f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...", "📝 자막 전체 정밀 수집 중...", "🎯 [인용구] 감지 및 핵심 타겟팅 중...", "🚀 위성이 유튜브 본사 상공을 지나가는 중..."]
+    with st.status("🕵️ Context Merger v48.1 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
@@ -141,7 +141,30 @@ def extract_top_keywords_from_transcript(text, top_n=5):
     counts = Counter(nouns)
     return counts.most_common(top_n)
 
+# 🌟 [v48.1 Update] 인용구(Quote) 우선 검색 로직
 def generate_pinpoint_query(title, hashtags):
+    # 1. 인용구 탐지 (큰따옴표, 작은따옴표)
+    quotes = re.findall(r'[\"“\'](.*?)[\"”\']', title)
+    
+    if quotes:
+        # 가장 긴 인용구를 선택 (보통 핵심 문장임)
+        longest_quote = max(quotes, key=len)
+        # 인용구 내에서 명사만 추출하여 검색어 구성 (조사 등 제거)
+        quote_nouns = extract_nouns(longest_quote)
+        
+        # 인용구 키워드 + 제목의 핵심 인물(VIP) 결합
+        vip_in_title = [w for w in extract_nouns(title) if w in VIP_ENTITIES]
+        
+        # 쿼리 조합: VIP 이름 + 인용구 핵심 단어 3개
+        final_query = f"{' '.join(vip_in_title)} {' '.join(quote_nouns[:3])}".strip()
+        
+        # 만약 VIP가 없으면 그냥 인용구 명사들로만 구성
+        if not final_query.strip():
+            final_query = " ".join(quote_nouns[:4])
+            
+        return final_query
+
+    # 2. 인용구가 없으면 기존 로직 (Subject + Object)
     clean_text = title + " " + " ".join([h.replace("#", "") for h in hashtags])
     words = clean_text.split()
     subject_chunk, object_word, vital_word = "", "", ""
@@ -165,48 +188,30 @@ def generate_pinpoint_query(title, hashtags):
     if not subject_chunk: return " ".join(extract_nouns(title)[:3])
     return " ".join(query_parts)
 
-# 🌟 [v48.0 Update] 제목 연관성 + 위치 가중치 기반 스마트 요약기
 def summarize_transcript(text, title, max_sentences=3):
     if not text or len(text) < 50: return "⚠️ 요약할 자막 내용이 충분하지 않습니다."
-    
-    # 1. 노이즈 제거 (대괄호 태그, 특수문자)
-    clean_text = re.sub(r'\[.*?\]', '', text) # [음악], [박수] 제거
-    clean_text = re.sub(r'[>]+', '', clean_text) # >> 제거
-    
+    clean_text = re.sub(r'\[.*?\]', '', text)
+    clean_text = re.sub(r'[>]+', '', clean_text)
     sentences = re.split(r'(?<=[.?!])\s+', clean_text)
     if len(sentences) <= 3: return clean_text.strip()
     
-    # 2. 제목 키워드 추출
     title_nouns = set(extract_nouns(title))
-    
-    # 3. 중요도 점수 계산
     scored_sentences = []
     total_sentences = len(sentences)
     
     for i, sent in enumerate(sentences):
-        if len(sent) < 15: continue # 너무 짧은 문장 패스
-        
+        if len(sent) < 15: continue
         score = 0
         sent_nouns = extract_nouns(sent)
-        
-        # A. 단어 빈도 점수 (기본)
         score += len(sent_nouns)
-        
-        # B. 제목 연관성 점수 (핵심) -> 제목 단어 있으면 +10점
         for n in sent_nouns:
-            if n in title_nouns:
-                score += 10
-        
-        # C. 위치 가중치 (뉴스/정보는 앞뒤가 중요)
-        if i < total_sentences * 0.2: score += 3 # 초반 20%
-        elif i > total_sentences * 0.8: score += 2 # 후반 20%
-        
+            if n in title_nouns: score += 10
+        if i < total_sentences * 0.2: score += 3
+        elif i > total_sentences * 0.8: score += 2
         scored_sentences.append((i, sent, score))
         
-    # 4. 점수 상위 문장 선택 + 원래 순서대로 정렬
     top_sentences = sorted(scored_sentences, key=lambda x:x[2], reverse=True)[:max_sentences]
-    top_sentences.sort(key=lambda x:x[0]) # 문맥 순서 유지
-    
+    top_sentences.sort(key=lambda x:x[0])
     return f"📌 **핵심 요약**: {' '.join([s[1] for s in top_sentences])}"
 
 def clean_html(raw_html): return BeautifulSoup(raw_html, "html.parser").get_text()
@@ -323,12 +328,6 @@ def run_forensic_main(url):
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
             
-            # [v47.9] Smart Query 적용
-            query = generate_pinpoint_query(title, tags) # 2단계 쿼리
-            if " " not in query and len(query) < 5: # 쿼리가 너무 짧으면 자막 키워드 보강
-                top_kws = extract_top_keywords_from_transcript(full_text, 1)
-                if top_kws: query += f" {top_kws[0][0]}"
-
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
             is_official = check_is_official(uploader)
@@ -337,10 +336,16 @@ def run_forensic_main(url):
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
+            # 🌟 [v48.1] 인용구 우선 쿼리 생성
+            query = generate_pinpoint_query(title, tags)
+            if " " not in query and len(query) < 5: 
+                top_kws = extract_top_keywords_from_transcript(full_text, 1)
+                if top_kws: query += f" {top_kws[0][0]}"
+
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
             abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
             
-            # 🌟 [v48.0 Update] 요약기에 title 전달
+            # 🌟 [v48.0] 제목 반영 요약
             summary = summarize_transcript(full_text, title)
             
             agitation = count_sensational_words(full_text + title)
@@ -452,7 +457,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.0")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v48.1")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
