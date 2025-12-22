@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v47.6 (Structure Fix)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v47.7 (Variable Fixed)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -64,19 +64,34 @@ OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
 STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
 
+# 🌟 [Fix] 변수명 충돌 방지를 위해 명시적인 이름 사용
 class VectorEngine:
-    def __init__(self): self.vocab = set(); self.truth_vectors = []; self.fake_vectors = []
-    def tokenize(self, t): return re.findall(r'[가-힣]{2,}', t)
-    def train(self, t, f):
-        for text in t+f: self.vocab.update(self.tokenize(text))
+    def __init__(self):
+        self.vocab = set()
+        self.truth_vectors = []
+        self.fake_vectors = []
+        
+    def tokenize(self, text):
+        return re.findall(r'[가-힣]{2,}', text)
+        
+    def train(self, truth_corpus, fake_corpus):
+        # 변수명 t_corpus, f_corpus 대신 명확하게 truth_corpus, fake_corpus 사용
+        for text in truth_corpus + fake_corpus:
+            self.vocab.update(self.tokenize(text))
         self.vocab = sorted(list(self.vocab))
-        self.truth_vectors = [self.text_to_vector(t) for t in t_corpus]
-        self.fake_vectors = [self.text_to_vector(t) for t in f_corpus]
+        
+        self.truth_vectors = [self.text_to_vector(t) for t in truth_corpus]
+        self.fake_vectors = [self.text_to_vector(t) for t in fake_corpus]
+        
     def text_to_vector(self, text):
-        c = Counter(self.tokenize(text)); return [c[w] for w in self.vocab]
+        c = Counter(self.tokenize(text))
+        return [c[w] for w in self.vocab]
+        
     def cosine_similarity(self, v1, v2):
-        dot = sum(a*b for a,b in zip(v1,v2)); mag = math.sqrt(sum(a*a for a in v1)) * math.sqrt(sum(b*b for b in v2))
+        dot = sum(a*b for a,b in zip(v1,v2))
+        mag = math.sqrt(sum(a*a for a in v1)) * math.sqrt(sum(b*b for b in v2))
         return dot/mag if mag>0 else 0
+        
     def analyze_position(self, query):
         qv = self.text_to_vector(query)
         mt = max([self.cosine_similarity(qv, v) for v in self.truth_vectors] or [0])
@@ -114,7 +129,7 @@ def render_score_breakdown(data_list):
 
 def witty_loading_sequence(count):
     messages = [f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...", "📝 자막 전체(Full Text) 전수 조사 중...", "🔍 최다 반복 핵심 명사(Core Nouns) 추출 중...", "🚀 위성이 유튜브 본사 상공을 지나가는 중..."]
-    with st.status("🕵️ Context Merger v47.6 가동 중...", expanded=True) as status:
+    with st.status("🕵️ Context Merger v47.7 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
@@ -163,6 +178,10 @@ def summarize_transcript(text):
     return f"📌 **핵심 요약**: {' '.join([r[1] for r in sorted(ranked, key=lambda x:x[0])])}"
 
 def clean_html(raw_html): return BeautifulSoup(raw_html, "html.parser").get_text()
+
+def clean_html_regex(text):
+    if not text: return ""
+    return re.sub('<.*?>', '', text).strip()
 
 def detect_ai_content(info):
     is_ai, reasons = False, []
@@ -237,7 +256,22 @@ def check_red_flags(comments):
     detected = [k for c in comments for k in ['가짜뉴스', '주작', '사기', '거짓말', '허위', '선동'] if k in c]
     return len(detected), list(set(detected))
 
-# 🌟 [MAIN FUNCTION] Indentation Fixed
+def fetch_news_regex(query):
+    news_res = []
+    try:
+        rss = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
+        raw = requests.get(rss, timeout=5).text
+        items = re.findall(r'<item>(.*?)</item>', raw, re.DOTALL)
+        for item in items[:3]:
+            t = re.search(r'<title>(.*?)</title>', item)
+            d = re.search(r'<description>(.*?)</description>', item)
+            nt = t.group(1).replace("<![CDATA[", "").replace("]]>", "") if t else ""
+            nd = clean_html_regex(d.group(1).replace("<![CDATA[", "").replace("]]>", "")) if d else ""
+            news_res.append({'title': nt, 'desc': nd})
+    except: pass
+    return news_res
+
+# --- [Main Execution] ---
 def run_forensic_main(url):
     total_intelligence = train_dynamic_vector_engine()
     witty_loading_sequence(total_intelligence)
@@ -254,7 +288,7 @@ def run_forensic_main(url):
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
             
-            # 🌟 [v47.5 Feature] Full Keyword Extraction
+            # [v47.5] Transcript Full Keywords
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
             is_official = check_is_official(uploader)
@@ -272,22 +306,13 @@ def run_forensic_main(url):
             ts, fs = vector_engine.analyze_position(query + " " + title)
             t_impact = int(ts * w_vec) * -1; f_impact = int(fs * w_vec)
 
-            # XML Parsing
+            # Use Regex News Fetch to avoid XML errors
+            news_items = fetch_news_regex(query)
             news_ev = []; max_match = 0
-            try:
-                rss_url = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
-                r = requests.get(rss_url, timeout=5)
-                root = ET.fromstring(r.content)
-                items = root.findall('.//item')
-                
-                for item in items[:3]:
-                    nt = item.find('title').text
-                    d_tag = item.find('description')
-                    nd = clean_html(d_tag.text) if d_tag is not None else ""
-                    m = calculate_dual_match({'title': nt, 'desc': nd}, extract_nouns(query), full_text)
-                    if m > max_match: max_match = m
-                    news_ev.append({"뉴스 제목": nt, "최종 일치도": f"{m}%"})
-            except: pass
+            for item in news_items:
+                m = calculate_dual_match(item, extract_nouns(query), full_text)
+                if m > max_match: max_match = m
+                news_ev.append({"뉴스 제목": item['title'], "최종 일치도": f"{m}%"})
             
             cmts, c_status = fetch_comments_via_api(vid)
             top_kw, rel_score, rel_msg = analyze_comment_relevance(cmts, title + " " + full_text)
@@ -372,7 +397,7 @@ def run_forensic_main(url):
                 else: st.warning("⚠️ 댓글 수집 불가.")
                 st.markdown("**[증거 3] 자막 세만틱 심층 대조**")
                 st.caption(f"📝 **{t_status}** | 📚 전체 단어: **{len(full_text.split())}개**")
-                # 🌟 [v47.5 UI] Display Top Keywords
+                # Top Keywords Display
                 top_kw_str = ", ".join([f"{w}({c})" for w, c in top_transcript_keywords])
                 st.table(pd.DataFrame([
                     ["영상 최다 언급 키워드", top_kw_str],
@@ -386,8 +411,8 @@ def run_forensic_main(url):
 
         except Exception as e: st.error(f"오류: {e}")
 
-# --- [UI Layout] (Defined Last) ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v47.6")
+# --- [UI Layout] ---
+st.title("⚖️ Triple-Evidence Intelligence Forensic v47.7")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
