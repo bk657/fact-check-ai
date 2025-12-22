@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.8 (Adaptive Learning)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v48.9 (Final Stable)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -103,17 +103,10 @@ def save_analysis(channel, title, prob, url, keywords):
     try: supabase.table("analysis_history").insert({"channel_name": channel, "video_title": title, "fake_prob": prob, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "video_url": url, "keywords": keywords}).execute()
     except: pass
 
-# 🌟 [v48.8 Update] 학습 기준 완화 (30/70 -> 40/60)
 def train_dynamic_vector_engine():
     try:
-        # 안전(Truth): 40% 미만이면 학습 (기존 30%)
-        truth_data = supabase.table("analysis_history").select("video_title").lt("fake_prob", 40).execute().data
-        dt = [row['video_title'] for row in truth_data]
-        
-        # 위험(Fake): 60% 초과면 학습 (기존 70%)
-        fake_data = supabase.table("analysis_history").select("video_title").gt("fake_prob", 60).execute().data
-        df = [row['video_title'] for row in fake_data]
-        
+        dt = [row['video_title'] for row in supabase.table("analysis_history").select("video_title").lt("fake_prob", 40).execute().data]
+        df = [row['video_title'] for row in supabase.table("analysis_history").select("video_title").gt("fake_prob", 60).execute().data]
         vector_engine.train(STATIC_TRUTH_CORPUS + dt, STATIC_FAKE_CORPUS + df)
         return len(STATIC_TRUTH_CORPUS + dt) + len(STATIC_FAKE_CORPUS + df), len(dt), len(df)
     except: 
@@ -142,7 +135,7 @@ def witty_loading_sequence(total, t_cnt, f_cnt):
         "📝 자막 전체(Full Text) 정밀 수집 중...", 
         "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
     ]
-    with st.status("🕵️ Context Merger v48.8 가동 중...", expanded=True) as status:
+    with st.status("🕵️ Context Merger v48.9 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
@@ -341,9 +334,9 @@ def fetch_news_regex(query):
 
 # --- [Main Execution] ---
 def run_forensic_main(url):
-    # 🌟 [v48.8] Load Count for UI
-    total_nodes, t_cnt, f_cnt = train_dynamic_vector_engine()
-    witty_loading_sequence(total_nodes, t_cnt, f_cnt)
+    # 🌟 [Fix] Variable Rename: total_intelligence
+    total_intelligence, t_cnt, f_cnt = train_dynamic_vector_engine()
+    witty_loading_sequence(total_intelligence, t_cnt, f_cnt)
     
     vid = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
     if vid: vid = vid.group(1)
@@ -402,7 +395,8 @@ def run_forensic_main(url):
             
             if is_silent:
                 if has_critical_claim:
-                    silent_penalty = 5  # Neutral Penalty
+                    # ⚠️ Critical Vacuum -> Neutral Caution (+5)
+                    silent_penalty = 5  
                     t_impact = 0        
                     f_impact = 0        
                     is_gray_zone = True
@@ -503,7 +497,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.8")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v48.9")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
