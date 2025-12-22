@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.2 (Clean Transcript)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v48.3 (News x10)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -125,8 +125,8 @@ def render_score_breakdown(data_list):
     st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Silent Echo Protocol)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
 
 def witty_loading_sequence(count):
-    messages = [f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...", "📝 자막 전체(Full Text) 정밀 수집 중...", "🎯 [인용구] 감지 및 핵심 타겟팅 중...", "🚀 위성이 유튜브 본사 상공을 지나가는 중..."]
-    with st.status("🕵️ Context Merger v48.2 가동 중...", expanded=True) as status:
+    messages = [f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...", "📝 자막 전체(Full Text) 정밀 수집 중...", "📡 뉴스 데이터 10건 심층 스캐닝 중...", "🚀 위성이 유튜브 본사 상공을 지나가는 중..."]
+    with st.status("🕵️ Context Merger v48.3 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
@@ -176,8 +176,6 @@ def generate_pinpoint_query(title, hashtags):
 
 def summarize_transcript(text, title, max_sentences=3):
     if not text or len(text) < 50: return "⚠️ 요약할 자막 내용이 충분하지 않습니다."
-    
-    # 🌟 [Fix] 노이즈 강력 필터링 (http 링크, 태그)
     if "EXTM3U" in text or "http" in text:
         text = re.sub(r'http\S+', '', text)
         text = text.replace("#EXTM3U", "").replace("#EXT-X-VERSION:3", "")
@@ -233,7 +231,6 @@ def check_tag_abuse(title, hashtags, channel_name):
     if len(tgn) < 2: return 0, "양호"
     return (PENALTY_ABUSE, "🚨 심각 (불일치)") if not tn.intersection(tgn) else (0, "양호")
 
-# 🌟 [v48.2 Fix] 자막 검증 및 쓰레기 데이터(Playlist) 필터링
 def fetch_real_transcript(info_dict):
     try:
         url = None
@@ -247,7 +244,6 @@ def fetch_real_transcript(info_dict):
             res = requests.get(url)
             if res.status_code == 200:
                 content = res.text
-                # 🛡️ Anti-Glitch: Playlist 파일이면 무시
                 if "#EXTM3U" in content:
                     return None, "자막 포맷 오류 (라이브 스트림)"
                 
@@ -295,13 +291,15 @@ def check_red_flags(comments):
     detected = [k for c in comments for k in ['가짜뉴스', '주작', '사기', '거짓말', '허위', '선동'] if k in c]
     return len(detected), list(set(detected))
 
+# 🌟 [v48.3 Update] 뉴스 10개 수집
 def fetch_news_regex(query):
     news_res = []
     try:
         rss = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
         raw = requests.get(rss, timeout=5).text
         items = re.findall(r'<item>(.*?)</item>', raw, re.DOTALL)
-        for item in items[:3]:
+        # 🌟 수집 개수 3 -> 10으로 확대
+        for item in items[:10]:
             t = re.search(r'<title>(.*?)</title>', item)
             d = re.search(r'<description>(.*?)</description>', item)
             nt = t.group(1).replace("<![CDATA[", "").replace("]]>", "") if t else ""
@@ -324,7 +322,6 @@ def run_forensic_main(url):
             title = info.get('title', ''); uploader = info.get('uploader', '')
             tags = info.get('tags', []); desc = info.get('description', '')
             
-            # [v48.2] 자막 안전 수집 (Playlist 필터링)
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
             
@@ -351,6 +348,7 @@ def run_forensic_main(url):
             ts, fs = vector_engine.analyze_position(query + " " + title)
             t_impact = int(ts * w_vec) * -1; f_impact = int(fs * w_vec)
 
+            # 🌟 [v48.3] Fetch 10 News items
             news_items = fetch_news_regex(query)
             news_ev = []; max_match = 0
             for item in news_items:
@@ -455,7 +453,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.2")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v48.3")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
