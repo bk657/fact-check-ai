@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.3 (News x10)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v48.4 (Keyword Fix)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -125,8 +125,8 @@ def render_score_breakdown(data_list):
     st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Silent Echo Protocol)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
 
 def witty_loading_sequence(count):
-    messages = [f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...", "📝 자막 전체(Full Text) 정밀 수집 중...", "📡 뉴스 데이터 10건 심층 스캐닝 중...", "🚀 위성이 유튜브 본사 상공을 지나가는 중..."]
-    with st.status("🕵️ Context Merger v48.3 가동 중...", expanded=True) as status:
+    messages = [f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...", "📝 자막 전체(Full Text) 정밀 수집 중...", "🎯 [형태소 통합] 핵심 키워드 정규화 중...", "🚀 위성이 유튜브 본사 상공을 지나가는 중..."]
+    with st.status("🕵️ Context Merger v48.4 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
@@ -135,10 +135,31 @@ def extract_nouns(text):
     nouns = re.findall(r'[가-힣]{2,}', text)
     return list(dict.fromkeys([n for n in nouns if n not in noise]))
 
+# 🌟 [v48.4 Update] 한국어 조사 제거 함수
+def normalize_korean_word(word):
+    # 빈번하게 쓰이는 조사 목록
+    josa_list = ['은', '는', '이', '가', '을', '를', '의', '에', '에게', '로', '으로', '도', '만', '에서', '하고', '이랑', '까지', '부터']
+    for josa in josa_list:
+        if word.endswith(josa) and len(word) > len(josa) + 1: # 최소 2글자 이상 남도록 (예: '사랑' -> '사' 방지)
+            return word[:-len(josa)]
+    return word
+
+# 🌟 [v48.4 Update] 정규화된 키워드 추출
 def extract_top_keywords_from_transcript(text, top_n=5):
     if not text: return []
-    nouns = extract_nouns(text)
-    counts = Counter(nouns)
+    
+    # 1. 1차 명사 추출
+    raw_words = re.findall(r'[가-힣]{2,}', text)
+    
+    # 2. 정규화 (조사 제거)
+    norm_words = [normalize_korean_word(w) for w in raw_words]
+    
+    # 3. 불용어 필터링
+    noise = ['충격', '경악', '속보', '긴급', '오늘', '내일', '지금', '결국', '뉴스', '영상', '대부분', '이유', '왜', '있는', '없는', '하는', '것', '수', '등', '진짜', '정말', '너무', '그냥', '이제', '사실', '국민', '우리', '대한민국', '여러분', '그리고', '그래서', '그러나', '하지만', '때문에', '해서', '근데', '진짜', '정말', '솔직히']
+    clean_words = [w for w in norm_words if w not in noise and len(w) >= 2]
+    
+    # 4. 카운팅
+    counts = Counter(clean_words)
     return counts.most_common(top_n)
 
 def generate_pinpoint_query(title, hashtags):
@@ -291,14 +312,12 @@ def check_red_flags(comments):
     detected = [k for c in comments for k in ['가짜뉴스', '주작', '사기', '거짓말', '허위', '선동'] if k in c]
     return len(detected), list(set(detected))
 
-# 🌟 [v48.3 Update] 뉴스 10개 수집
 def fetch_news_regex(query):
     news_res = []
     try:
         rss = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
         raw = requests.get(rss, timeout=5).text
         items = re.findall(r'<item>(.*?)</item>', raw, re.DOTALL)
-        # 🌟 수집 개수 3 -> 10으로 확대
         for item in items[:10]:
             t = re.search(r'<title>(.*?)</title>', item)
             d = re.search(r'<description>(.*?)</description>', item)
@@ -325,6 +344,7 @@ def run_forensic_main(url):
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
             
+            # [v48.4] Normalized Keywords
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
             is_official = check_is_official(uploader)
@@ -348,7 +368,6 @@ def run_forensic_main(url):
             ts, fs = vector_engine.analyze_position(query + " " + title)
             t_impact = int(ts * w_vec) * -1; f_impact = int(fs * w_vec)
 
-            # 🌟 [v48.3] Fetch 10 News items
             news_items = fetch_news_regex(query)
             news_ev = []; max_match = 0
             for item in news_items:
@@ -453,7 +472,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.3")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v48.4")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
