@@ -247,4 +247,132 @@ def fetch_news_safe(query):
     except: pass
     return news_res
 
-# 🌟 [Fix] 삭제 콜백 (삭제 기능 안정
+# 🌟 [Fix] 삭제 콜백 (삭제 기능 안정화)
+def delete_callback(ids):
+    for i in ids: supabase.table("analysis_history").delete().eq("id", i).execute()
+    st.toast("삭제 완료"); time.sleep(0.5)
+
+# --- [Main Execution] ---
+def run_forensic_main(url):
+    total_intelligence = train_dynamic_vector_engine()
+    witty_loading_sequence(total_intelligence)
+    
+    vid = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
+    if vid: vid = vid.group(1)
+
+    with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl:
+        try:
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', ''); uploader = info.get('uploader', '')
+            tags = info.get('tags', []); desc = info.get('description', '')
+            
+            trans, t_status = fetch_real_transcript(info)
+            full_text = trans if trans else desc
+            
+            is_official = check_is_official(uploader)
+            is_ai, ai_msg = detect_ai_content(info)
+            
+            w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
+            w_vec = 10 if is_ai else WEIGHT_VECTOR
+            
+            query = generate_pinpoint_query(title, tags)
+            hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
+            abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
+            summary = summarize_transcript(full_text)
+            agitation = count_sensational_words(full_text + title)
+            
+            ts, fs = vector_engine.analyze_position(query + " " + title)
+            t_impact = int(ts * w_vec) * -1; f_impact = int(fs * w_vec)
+
+            news_items = fetch_news_safe(query)
+            news_ev = []; max_match = 0
+            for item in news_items:
+                m = calculate_dual_match(item, extract_nouns(query), full_text)
+                if m > max_match: max_match = m
+                news_ev.append({"뉴스 제목": item['title'], "최종 일치도": f"{m}%"})
+            
+            cmts, c_status = fetch_comments_via_api(vid)
+            top_kw, rel_score, rel_msg = analyze_comment_relevance(cmts, title + " " + full_text)
+            red_cnt, red_list = check_red_flags(cmts)
+            is_controversial = red_cnt > 0
+            
+            w_news = 65 if is_controversial else w_news
+            
+            silent_penalty = 0; news_score = 0; mismatch_penalty = 0
+            is_silent = (len(news_items) == 0) or (len(news_items) > 0 and max_match < 20)
+            
+            if is_silent:
+                if agitation >= 3: silent_penalty = PENALTY_SILENT_ECHO; t_impact *= 2; f_impact *= 2
+                else: mismatch_penalty = 10
+            elif is_controversial:
+                news_score = PENALTY_NO_FACT if max_match < 60 else int((max_match/100)**2 * w_news) * -1
+            else:
+                news_score = int((max_match/100)**2 * w_news) * -1
+                
+            if is_official: news_score = -50; mismatch_penalty = 0; silent_penalty = 0
+            
+            sent_score = 0
+            if cmts and not is_controversial:
+                neg = sum(1 for c in cmts for k in ['가짜','선동'] if k in c) / len(cmts)
+                sent_score = int(neg * 10)
+                
+            clickbait = 10 if any(w in title for w in ['충격','경악','폭로']) else -5
+            total = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
+            prob = max(5, min(99, total))
+            
+            save_analysis(uploader, title, prob, url, query)
+
+            # --- UI ---
+            st.subheader("🕵️ 핵심 분석 지표")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("최종 가짜뉴스 확률", f"{prob}%", f"{total - 50}")
+            c2.metric("판정", "🚨 위험" if prob > 60 else "🟢 안전" if prob < 30 else "🟠 주의")
+            c3.metric("AI Intelligence Level", total_intelligence)
+
+            if is_official: st.success(f"🛡️ 공식 언론사({uploader})입니다.")
+            if silent_penalty: st.error("🔇 침묵의 메아리: 자극적 주장이나 근거 부족")
+
+            st.divider()
+            col1, col2 = st.columns([1, 1.4])
+            with col1:
+                st.table(pd.DataFrame({"항목": ["채널", "조회수", "해시태그"], "내용": [uploader, f"{info.get('view_count',0):,}", hashtag_display]}))
+                st.info(f"🎯 쿼리: {query}")
+                st.write("**요약**"); st.write(summary)
+                st.write("**점수 상세**")
+                render_score_breakdown([
+                    ["기본", 50, ""], ["벡터", t_impact+f_impact, ""], ["뉴스", news_score, ""], 
+                    ["침묵/불일치", silent_penalty+mismatch_penalty, ""], ["기타", sent_score+clickbait+abuse_score, ""]
+                ])
+
+            with col2:
+                colored_progress_bar("진실", ts, "green"); colored_progress_bar("거짓", fs, "red")
+                st.write(f"**뉴스 ({len(news_items)}건)**"); st.table(news_ev) if news_ev else st.warning("뉴스 없음")
+                st.write("**여론**"); st.table(pd.DataFrame([["키워드", ", ".join(top_kw)], ["논란", f"{red_cnt}회"]]))
+
+        except Exception as e: st.error(f"오류: {e}")
+
+st.title("⚖️ Triple-Evidence Intelligence Forensic v47.1")
+with st.container(border=True):
+    st.markdown("### 🛡️ Disclaimer\n본 서비스는 AI 분석 도구이며, 최종 판단 책임은 사용자에게 있습니다.")
+    agree = st.checkbox("동의합니다.")
+
+url = st.text_input("🔗 유튜브 URL")
+if st.button("🚀 분석 시작", disabled=not agree) and url: run_forensic_main(url)
+
+st.divider()
+st.subheader("🗂️ 학습 데이터 관리")
+try:
+    df = pd.DataFrame(supabase.table("analysis_history").select("*").order("id", desc=True).execute().data)
+    if not df.empty:
+        if st.session_state["is_admin"]:
+            df['Delete'] = False
+            cols = ['Delete'] + [c for c in df.columns if c != 'Delete']
+            df = df[cols]
+            ed = st.data_editor(df, column_config={"Delete": st.column_config.CheckboxColumn("삭제", default=False)}, disabled=["id","video_title","fake_prob"], hide_index=True, use_container_width=True)
+            to_del = ed[ed.Delete]
+            if not to_del.empty:
+                st.button(f"🗑️ {len(to_del)}건 삭제", type="primary", on_click=delete_callback, args=(to_del['id'].tolist(),))
+        else:
+            st.dataframe(df, hide_index=True, use_container_width=True)
+    else: st.info("데이터 없음")
+except: pass
