@@ -12,7 +12,7 @@ import pandas as pd
 from bs4 import BeautifulSoup 
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.6 (Admin Fixed)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v48.7 (Auto-Refresh)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -86,7 +86,7 @@ def colored_bar(label, val, color):
     st.markdown(f"<div style='margin-bottom:5px'><div style='display:flex;justify-content:space-between'><span>{label}</span><span style='color:{color};font-weight:bold'>{int(val*100)}%</span></div><div style='background:#eee;height:8px;border-radius:4px'><div style='background:{color};width:{val*100}%;height:100%;border-radius:4px'></div></div></div>", unsafe_allow_html=True)
 
 def loading_seq(level):
-    with st.status("🕵️ Forensic Core v48.6 가동...", expanded=True) as s:
+    with st.status("🕵️ Forensic Core v48.7 가동...", expanded=True) as s:
         st.write(f"🧠 Intelligence Level: {level}"); time.sleep(0.3)
         st.write("🛡️ 정규식 파서 & 관리자 모듈 로드 중..."); time.sleep(0.3)
         st.write("✅ 분석 준비 완료!"); s.update(label="분석 완료!", state="complete", expanded=False)
@@ -227,11 +227,9 @@ def run_main(url):
             full_text = trans if trans else desc
             query = generate_hybrid_query(title, tags, full_text)
             
-            # 1. Vector
             ts, fs = ve.analyze(query + " " + title)
             v_score = int(fs*35) - int(ts*35)
             
-            # 2. News (Regex)
             news_items = fetch_google_news_regex(query)
             news_res = []; max_match = 0; news_cnt = len(news_items)
             for item in news_items:
@@ -239,20 +237,18 @@ def run_main(url):
                 if m > max_match: max_match = m
                 news_res.append({"뉴스 제목": item['title'], "일치도": f"{m}%"})
             
-            # 3. Comments
             cmts, c_st = fetch_comments(vid)
             top_kw, rel_scr, rel_msg = analyze_comments(cmts, title + " " + full_text)
             red_cnt = sum(1 for c in cmts for k in ['가짜','주작','선동'] if k in c)
             
-            # Scoring
             n_score = 0; silent = 0; mismatch = 0
             is_silent = (news_cnt == 0) or (news_cnt > 0 and max_match < 20)
             agitation = sum(full_text.count(w) for w in ['충격','경악','속보'])
             
             if is_silent:
-                if agitation >= 3: silent = 40; v_score *= 2 # 침묵의 메아리
+                if agitation >= 3: silent = 40; v_score *= 2 
                 else: mismatch = 10
-            elif red_cnt > 0: # 논란
+            elif red_cnt > 0: 
                 if max_match < 60: n_score = 25
                 else: n_score = int((max_match/100)**2 * 65) * -1
             else:
@@ -266,7 +262,6 @@ def run_main(url):
             
             save_analysis(uploader, title, prob, url, query)
             
-            # Output
             st.subheader("🕵️ 핵심 분석 지표")
             c1,c2,c3 = st.columns(3)
             c1.metric("가짜뉴스 확률", f"{prob}%", f"{total-50}")
@@ -290,7 +285,7 @@ def run_main(url):
         except Exception as e: st.error(f"분석 중 오류: {e}")
 
 # --- [App] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.6")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v48.7")
 url = st.text_input("🔗 유튜브 URL")
 if st.button("🚀 분석 시작") and url: run_main(url)
 
@@ -299,7 +294,6 @@ st.subheader("🗂️ 학습 데이터 (Cloud)")
 try:
     df = pd.DataFrame(supabase.table("analysis_history").select("*").order("id", desc=True).execute().data)
     if not df.empty:
-        # 🌟 [수정] 관리자용 삭제 UI 복구
         if st.session_state["is_admin"]:
             # Delete 컬럼 강제 추가 (초기값 False)
             df['Delete'] = False
@@ -317,12 +311,15 @@ try:
             
             to_delete = edited_df[edited_df.Delete]
             if not to_delete.empty:
-                if st.button(f"🗑️ 선택한 {len(to_delete)}건 영구 삭제"):
-                    for index, row in to_delete.iterrows():
-                        supabase.table("analysis_history").delete().eq("id", row['id']).execute()
-                    st.success("✅ 삭제 완료!"); time.sleep(1); st.rerun()
+                if st.button(f"🗑️ 선택한 {len(to_delete)}건 영구 삭제", type="primary"):
+                    with st.spinner("삭제 중..."):
+                        for index, row in to_delete.iterrows():
+                            supabase.table("analysis_history").delete().eq("id", row['id']).execute()
+                    
+                    st.success("✅ 삭제 완료! (화면 새로고침 중...)")
+                    time.sleep(0.5) # 잠시 대기
+                    st.rerun()      # 🌟 즉시 화면 새로고침
         else:
-            # 일반 유저는 조회만 가능
             st.dataframe(df, hide_index=True, use_container_width=True)
             st.info("🔒 데이터 삭제는 관리자만 가능합니다.")
     else:
