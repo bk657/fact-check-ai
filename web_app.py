@@ -9,10 +9,10 @@ from datetime import datetime
 from collections import Counter
 import yt_dlp
 import pandas as pd
-from bs4 import BeautifulSoup 
+# ⚠️ [중요] bs4, xml 등 파싱 라이브러리 import 자체를 제거함
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.8 (Callback)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v48.9 (Ghostbuster)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -30,16 +30,28 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- [관리자 인증] ---
+# --- [관리자 인증 & 캐시 클리어] ---
 if "is_admin" not in st.session_state: st.session_state["is_admin"] = False
 with st.sidebar:
     st.header("🛡️ 관리자 메뉴")
+    
+    # 🌟 캐시 강제 초기화 버튼 (유령 코드 제거용)
+    if st.button("⚠️ 시스템 캐시 초기화", type="primary"):
+        st.cache_resource.clear()
+        st.cache_data.clear()
+        st.toast("✅ 모든 캐시가 삭제되었습니다. 시스템이 재시동됩니다.")
+        time.sleep(1)
+        st.rerun()
+
+    st.divider()
+    
     with st.form("login_form"):
         password_input = st.text_input("관리자 비밀번호", type="password")
         if st.form_submit_button("로그인"):
             if password_input == ADMIN_PASSWORD:
                 st.session_state["is_admin"] = True; st.rerun()
             else: st.session_state["is_admin"] = False; st.error("불일치")
+            
     if st.session_state["is_admin"]:
         st.success("✅ 관리자 인증됨")
         if st.button("로그아웃"): st.session_state["is_admin"] = False; st.rerun()
@@ -86,9 +98,9 @@ def colored_bar(label, val, color):
     st.markdown(f"<div style='margin-bottom:5px'><div style='display:flex;justify-content:space-between'><span>{label}</span><span style='color:{color};font-weight:bold'>{int(val*100)}%</span></div><div style='background:#eee;height:8px;border-radius:4px'><div style='background:{color};width:{val*100}%;height:100%;border-radius:4px'></div></div></div>", unsafe_allow_html=True)
 
 def loading_seq(level):
-    with st.status("🕵️ Forensic Core v48.8 가동...", expanded=True) as s:
+    with st.status("🕵️ Forensic Core v48.9 가동...", expanded=True) as s:
         st.write(f"🧠 Intelligence Level: {level}"); time.sleep(0.3)
-        st.write("🛡️ 정규식 파서 & 관리자 콜백 모듈 로드 중..."); time.sleep(0.3)
+        st.write("🛡️ 유령 코드(XML Parser) 완전 제거됨..."); time.sleep(0.3)
         st.write("✅ 분석 준비 완료!"); s.update(label="분석 완료!", state="complete", expanded=False)
 
 # --- [Logic] ---
@@ -195,34 +207,40 @@ def analyze_comments(comments, text):
     msg = "✅ 일치" if score>=60 else "⚠️ 혼재" if score>=20 else "❌ 불일치"
     return [f"{w}({c})" for w,c in top], score, msg
 
+# 🌟 [Regex Only] XML Parser 완전 배제
 def fetch_google_news_regex(query):
     news_res = []
     try:
         rss = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
         raw_html = requests.get(rss, timeout=5).text
+        
+        # XML 구조 파싱 대신 단순 문자열 패턴 매칭
         items = re.findall(r'<item>(.*?)</item>', raw_html, re.DOTALL)
+        
         for item in items[:3]:
             t_match = re.search(r'<title>(.*?)</title>', item)
             d_match = re.search(r'<description>(.*?)</description>', item)
+            
             nt = t_match.group(1) if t_match else ""
             nd = clean_html_tags(d_match.group(1)) if d_match else ""
+            
             nt = nt.replace("<![CDATA[", "").replace("]]>", "")
             nd = nd.replace("<![CDATA[", "").replace("]]>", "")
+
             news_res.append({'title': nt, 'desc': nd})
     except: pass
     return news_res
 
-# 🌟 [신규] 삭제 콜백 함수 (확실한 삭제용)
 def delete_records_callback(ids_to_delete):
     try:
         for _id in ids_to_delete:
             supabase.table("analysis_history").delete().eq("id", _id).execute()
-        # 삭제 완료 후 별도의 처리가 없어도, Streamlit이 자동으로 스크립트를 재실행하며 데이터가 갱신됩니다.
         st.toast(f"🗑️ {len(ids_to_delete)}건 삭제 완료! 데이터가 갱신됩니다.")
     except Exception as e:
         st.error(f"삭제 오류: {e}")
 
-def run_main(url):
+# 🌟 함수 이름 변경하여 캐시 회피
+def run_forensic_engine_v49(url):
     intel = train_ve(); loading_seq(intel)
     vid = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
     if vid: vid = vid.group(1)
@@ -295,9 +313,9 @@ def run_main(url):
         except Exception as e: st.error(f"분석 중 오류: {e}")
 
 # --- [App] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.8")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v48.9")
 url = st.text_input("🔗 유튜브 URL")
-if st.button("🚀 분석 시작") and url: run_main(url)
+if st.button("🚀 분석 시작") and url: run_forensic_engine_v49(url) # 함수명 변경됨
 
 st.divider()
 st.subheader("🗂️ 학습 데이터 (Cloud)")
@@ -305,7 +323,6 @@ try:
     df = pd.DataFrame(supabase.table("analysis_history").select("*").order("id", desc=True).execute().data)
     if not df.empty:
         if st.session_state["is_admin"]:
-            # Delete 컬럼 추가
             df['Delete'] = False
             cols = ['Delete'] + [c for c in df.columns if c != 'Delete']
             df = df[cols]
@@ -320,7 +337,6 @@ try:
             
             to_delete = edited_df[edited_df.Delete]
             if not to_delete.empty:
-                # 🌟 [수정] 콜백 패턴 적용: on_click에 삭제 함수 연결
                 st.button(
                     f"🗑️ 선택한 {len(to_delete)}건 영구 삭제", 
                     type="primary",
