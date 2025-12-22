@@ -9,10 +9,9 @@ from datetime import datetime
 from collections import Counter
 import yt_dlp
 import pandas as pd
-# bs4 제거됨 (정규식 사용)
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v50.0 (Iron Fortress)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v50.1 (Stable)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -35,7 +34,6 @@ if "is_admin" not in st.session_state: st.session_state["is_admin"] = False
 with st.sidebar:
     st.header("🛡️ 관리자 메뉴")
     
-    # 캐시 초기화 버튼
     if st.button("⚠️ 시스템 캐시 초기화"):
         st.cache_data.clear()
         st.cache_resource.clear()
@@ -78,7 +76,6 @@ class VectorEngine:
 
 ve = VectorEngine()
 
-# 🌟 [안전장치] DB 저장 함수 격벽 처리
 def save_analysis_safe(ch, ti, pr, url, kw):
     try: 
         supabase.table("analysis_history").insert({
@@ -88,7 +85,7 @@ def save_analysis_safe(ch, ti, pr, url, kw):
         }).execute()
         return True
     except Exception as e: 
-        print(f"DB Save Error: {e}") # 콘솔 로그만 남김
+        print(f"DB Save Error: {e}")
         return False
 
 def train_ve():
@@ -104,9 +101,9 @@ def colored_bar(label, val, color):
     st.markdown(f"<div style='margin-bottom:5px'><div style='display:flex;justify-content:space-between'><span>{label}</span><span style='color:{color};font-weight:bold'>{int(val*100)}%</span></div><div style='background:#eee;height:8px;border-radius:4px'><div style='background:{color};width:{val*100}%;height:100%;border-radius:4px'></div></div></div>", unsafe_allow_html=True)
 
 def loading_seq(level):
-    with st.status("🕵️ Forensic Core v50.0 가동...", expanded=True) as s:
+    with st.status("🕵️ Forensic Core v50.1 가동...", expanded=True) as s:
         st.write(f"🧠 Intelligence Level: {level}")
-        st.write("🛡️ 격벽 시스템(Compartmentalization) 활성화...")
+        st.write("🛡️ UI 문법 안정화(Syntax Stabilization)...")
         st.write("✅ 분석 준비 완료!"); s.update(label="분석 완료!", state="complete", expanded=False)
 
 # --- [Logic] ---
@@ -235,13 +232,12 @@ def delete_records_callback(ids_to_delete):
     except Exception as e:
         st.error(f"삭제 오류: {e}")
 
-# 🌟 [격벽 시스템 적용] Main Engine
-def run_forensic_engine_v50(url):
+# 🌟 [Fix] 함수명 충돌 방지 및 UI 코드 분리 (안정화)
+def run_forensic_engine_v51(url):
     intel = train_ve(); loading_seq(intel)
     vid = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
     if vid: vid = vid.group(1)
     
-    # [1] 기본 정보 추출 (안전)
     with yt_dlp.YoutubeDL({'quiet':True, 'skip_download':True}) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
@@ -253,7 +249,6 @@ def run_forensic_engine_v50(url):
         except Exception as e: 
             st.error(f"영상 정보 추출 실패: {e}"); return
 
-    # [2] 분석 로직 (안전)
     try:
         ts, fs = ve.analyze(query + " " + title)
         v_score = int(fs*35) - int(ts*35)
@@ -265,7 +260,7 @@ def run_forensic_engine_v50(url):
             if m > max_match: max_match = m
             news_res.append({"뉴스 제목": item['title'], "일치도": f"{m}%"})
         
-        cmts, c_st = fetch_comments_safe(vid) # Safe 함수 사용
+        cmts, c_st = fetch_comments_safe(vid)
         top_kw, rel_scr, rel_msg = analyze_comments(cmts, title + " " + full_text)
         red_cnt = sum(1 for c in cmts for k in ['가짜','주작','선동'] if k in c)
         
@@ -290,10 +285,8 @@ def run_forensic_engine_v50(url):
     except Exception as e:
         st.error(f"분석 로직 오류: {e}"); return
 
-    # [3] DB 저장 (격벽 처리 - 실패해도 무시)
     db_success = save_analysis_safe(uploader, title, prob, url, query)
     
-    # [4] 결과 출력 (무조건 실행됨)
     st.subheader("🕵️ 핵심 분석 지표")
     c1,c2,c3 = st.columns(3)
     c1.metric("가짜뉴스 확률", f"{prob}%", f"{total-50}")
@@ -308,17 +301,26 @@ def run_forensic_engine_v50(url):
     c1,c2 = st.columns([1,1])
     with c1:
         st.info(f"🎯 쿼리: {query}")
-        st.write("**영상 요약**"); st.caption(summarize(full_text))
+        st.write("**영상 요약**")
+        st.caption(summarize(full_text))
         st.table(pd.DataFrame([["기본",50],["벡터",v_score],["뉴스",n_score],["페널티",silent+mismatch],["태그오용",tag_abuse_score]], columns=["항목","점수"]))
     with c2:
         colored_bar("진실", ts, "green"); colored_bar("거짓", fs, "red")
-        st.write(f"**뉴스 ({news_cnt}건)**"); st.table(news_res) if news_res else st.warning("뉴스 없음")
-        st.write("**여론**"); st.caption(f"{rel_msg} (논란어 {red_cnt}회)")
+        
+        # 🌟 [Fix] 한 줄 코드를 분리하여 AST 에러 원천 차단
+        st.write(f"**뉴스 ({news_cnt}건)**")
+        if news_res:
+            st.table(news_res)
+        else:
+            st.warning("뉴스 없음")
+            
+        st.write("**여론**")
+        st.caption(f"{rel_msg} (논란어 {red_cnt}회)")
 
 # --- [App] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v50.0")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v50.1")
 url = st.text_input("🔗 유튜브 URL")
-if st.button("🚀 분석 시작") and url: run_forensic_engine_v50(url)
+if st.button("🚀 분석 시작") and url: run_forensic_engine_v51(url)
 
 st.divider()
 st.subheader("🗂️ 학습 데이터 (Cloud)")
