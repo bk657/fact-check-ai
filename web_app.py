@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v47.7 (Variable Fixed)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v47.8 (Transcript Confirmed)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -64,7 +64,6 @@ OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
 STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
 
-# 🌟 [Fix] 변수명 충돌 방지를 위해 명시적인 이름 사용
 class VectorEngine:
     def __init__(self):
         self.vocab = set()
@@ -75,11 +74,9 @@ class VectorEngine:
         return re.findall(r'[가-힣]{2,}', text)
         
     def train(self, truth_corpus, fake_corpus):
-        # 변수명 t_corpus, f_corpus 대신 명확하게 truth_corpus, fake_corpus 사용
         for text in truth_corpus + fake_corpus:
             self.vocab.update(self.tokenize(text))
         self.vocab = sorted(list(self.vocab))
-        
         self.truth_vectors = [self.text_to_vector(t) for t in truth_corpus]
         self.fake_vectors = [self.text_to_vector(t) for t in fake_corpus]
         
@@ -128,8 +125,8 @@ def render_score_breakdown(data_list):
     st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Silent Echo Protocol)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
 
 def witty_loading_sequence(count):
-    messages = [f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...", "📝 자막 전체(Full Text) 전수 조사 중...", "🔍 최다 반복 핵심 명사(Core Nouns) 추출 중...", "🚀 위성이 유튜브 본사 상공을 지나가는 중..."]
-    with st.status("🕵️ Context Merger v47.7 가동 중...", expanded=True) as status:
+    messages = [f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...", "📝 자막 전체(Full Text) 정밀 수집 중...", "🔍 최다 반복 핵심 명사(Core Nouns) 추출 중...", "🚀 위성이 유튜브 본사 상공을 지나가는 중..."]
+    with st.status("🕵️ Context Merger v47.8 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
@@ -204,6 +201,7 @@ def check_tag_abuse(title, hashtags, channel_name):
     if len(tgn) < 2: return 0, "양호"
     return (PENALTY_ABUSE, "🚨 심각 (불일치)") if not tn.intersection(tgn) else (0, "양호")
 
+# 🌟 [v47.8] 자막 전체 수집 및 명확한 상태 메시지 리턴
 def fetch_real_transcript(info_dict):
     try:
         url = None
@@ -220,7 +218,11 @@ def fetch_real_transcript(info_dict):
                     if '-->' not in line and 'WEBVTT' not in line and line.strip():
                         t = re.sub(r'<[^>]+>', '', line).strip()
                         if t and t not in clean: clean.append(t)
-                return " ".join(clean), "✅ 실제 자막 수집 성공"
+                
+                full_text = " ".join(clean)
+                char_count = len(full_text)
+                # 🌟 [Fix] 명확한 전체 수집 성공 메시지
+                return full_text, f"✅ 전체 자막 수집 완료 (총 {char_count:,}자)"
     except: pass
     return None, "자막 다운로드 실패"
 
@@ -288,7 +290,6 @@ def run_forensic_main(url):
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
             
-            # [v47.5] Transcript Full Keywords
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
             is_official = check_is_official(uploader)
@@ -306,7 +307,6 @@ def run_forensic_main(url):
             ts, fs = vector_engine.analyze_position(query + " " + title)
             t_impact = int(ts * w_vec) * -1; f_impact = int(fs * w_vec)
 
-            # Use Regex News Fetch to avoid XML errors
             news_items = fetch_news_regex(query)
             news_ev = []; max_match = 0
             for item in news_items:
@@ -396,8 +396,8 @@ def run_forensic_main(url):
                     st.table(pd.DataFrame([["최다 빈출 키워드", ", ".join(top_kw)], ["논란 감지 여부", f"{red_cnt}회"], ["주제 일치도", f"{rel_score}% ({rel_msg})"]], columns=["항목", "내용"]))
                 else: st.warning("⚠️ 댓글 수집 불가.")
                 st.markdown("**[증거 3] 자막 세만틱 심층 대조**")
-                st.caption(f"📝 **{t_status}** | 📚 전체 단어: **{len(full_text.split())}개**")
-                # Top Keywords Display
+                # 🌟 [v47.8 Update] t_status: 전체 수집 성공 메시지와 글자수
+                st.caption(f"📝 **{t_status}**") 
                 top_kw_str = ", ".join([f"{w}({c})" for w, c in top_transcript_keywords])
                 st.table(pd.DataFrame([
                     ["영상 최다 언급 키워드", top_kw_str],
@@ -412,7 +412,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v47.7")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v47.8")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
