@@ -737,7 +737,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [9. 실행부] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v47.1")
+st.title("⚖️ YOUTUBE 가짜뉴스 판독기 v47.1")
 
 with st.container(border=True):
     st.markdown("""
@@ -799,3 +799,4 @@ if not df.empty:
         st.info("🔒 데이터 삭제 권한이 없습니다. (관리자 로그인 필요)")
 else:
     st.info("☁️ 클라우드 DB에 저장된 분석 기록이 없습니다.")
+
