@@ -10,10 +10,9 @@ from collections import Counter
 import yt_dlp
 import pandas as pd
 from bs4 import BeautifulSoup 
-# xml.etree.ElementTree는 삭제했습니다 (오류 원인 제거)
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.4", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v48.5 (Regex)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -87,16 +86,17 @@ def colored_bar(label, val, color):
     st.markdown(f"<div style='margin-bottom:5px'><div style='display:flex;justify-content:space-between'><span>{label}</span><span style='color:{color};font-weight:bold'>{int(val*100)}%</span></div><div style='background:#eee;height:8px;border-radius:4px'><div style='background:{color};width:{val*100}%;height:100%;border-radius:4px'></div></div></div>", unsafe_allow_html=True)
 
 def loading_seq(level):
-    with st.status("🕵️ Forensic Core v48.4 가동...", expanded=True) as s:
+    with st.status("🕵️ Forensic Core v48.5 가동...", expanded=True) as s:
         st.write(f"🧠 Intelligence Level: {level}"); time.sleep(0.3)
-        st.write("🛡️ 1차 분석: 파싱 오류 방어 및 구문 분석..."); time.sleep(0.3)
+        st.write("🛡️ 파싱 엔진 교체: 정규식(Regex) 모드 활성화..."); time.sleep(0.3)
         st.write("✅ 분석 준비 완료!"); s.update(label="분석 완료!", state="complete", expanded=False)
 
 # --- [Logic] ---
-def clean_html(raw):
-    if not raw: return ""
-    try: return BeautifulSoup(raw, "html.parser").get_text()
-    except: return raw
+def clean_html_tags(text):
+    """HTML 태그 제거 (정규식 사용)"""
+    if not text: return ""
+    clean = re.sub('<.*?>', '', text)
+    return clean.strip()
 
 def extract_nouns(text):
     noise = ['충격','경악','속보','긴급','오늘','내일','지금','결국','뉴스','영상','대부분','이유','왜','있는','없는','하는','것','수','등']
@@ -196,6 +196,32 @@ def analyze_comments(comments, text):
     msg = "✅ 일치" if score>=60 else "⚠️ 혼재" if score>=20 else "❌ 불일치"
     return [f"{w}({c})" for w,c in top], score, msg
 
+# 🌟 [신규] 정규식 기반 뉴스 파싱 (XML 파서 의존성 제거)
+def fetch_google_news_regex(query):
+    news_res = []
+    try:
+        rss = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
+        raw_html = requests.get(rss, timeout=5).text
+        
+        # 정규식으로 <item> 블록 추출
+        items = re.findall(r'<item>(.*?)</item>', raw_html, re.DOTALL)
+        
+        for item in items[:3]:
+            # 각 item 내에서 title과 description 추출
+            t_match = re.search(r'<title>(.*?)</title>', item)
+            d_match = re.search(r'<description>(.*?)</description>', item)
+            
+            nt = t_match.group(1) if t_match else ""
+            nd = clean_html_tags(d_match.group(1)) if d_match else ""
+            
+            # CDATA 섹션 제거 (가끔 포함됨)
+            nt = nt.replace("<![CDATA[", "").replace("]]>", "")
+            nd = nd.replace("<![CDATA[", "").replace("]]>", "")
+
+            news_res.append({'title': nt, 'desc': nd})
+    except: pass
+    return news_res
+
 def run_main(url):
     intel = train_ve(); loading_seq(intel)
     vid = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
@@ -215,27 +241,15 @@ def run_main(url):
             ts, fs = ve.analyze(query + " " + title)
             v_score = int(fs*35) - int(ts*35)
             
-            # 2. News (Robust XML Parsing w/ BeautifulSoup)
-            news_res = []; max_match = 0; news_cnt = 0
-            try:
-                rss = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
-                # 🌟 [수정] XML 파서 변경: lxml 또는 xml 모드 사용
-                rss_soup = BeautifulSoup(requests.get(rss, timeout=5).content, "xml") 
-                items = rss_soup.find_all("item")
-                news_cnt = len(items)
-                
-                for item in items[:3]:
-                    # 안전한 텍스트 추출
-                    nt = item.title.get_text() if item.title else ""
-                    nd_raw = item.description.get_text() if item.description else ""
-                    nd = clean_html(nd_raw)
-                    
-                    m = calc_match({'title':nt, 'desc':nd}, extract_nouns(query), full_text)
-                    if m > max_match: max_match = m
-                    news_res.append({"뉴스 제목": nt, "일치도": f"{m}%"})
-            except Exception as e: 
-                # 파싱 에러 발생 시 로그만 남기고 무시
-                pass
+            # 2. News (Regex Parsing 적용)
+            news_items = fetch_google_news_regex(query)
+            news_res = []; max_match = 0
+            news_cnt = len(news_items)
+            
+            for item in news_items:
+                m = calc_match(item, extract_nouns(query), full_text)
+                if m > max_match: max_match = m
+                news_res.append({"뉴스 제목": item['title'], "일치도": f"{m}%"})
             
             # 3. Comments
             cmts, c_st = fetch_comments(vid)
@@ -288,7 +302,7 @@ def run_main(url):
         except Exception as e: st.error(f"분석 중 오류: {e}")
 
 # --- [App] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.4")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v48.5")
 url = st.text_input("🔗 유튜브 URL")
 if st.button("🚀 분석 시작") and url: run_main(url)
 
