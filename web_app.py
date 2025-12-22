@@ -12,7 +12,7 @@ import pandas as pd
 from bs4 import BeautifulSoup 
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.5 (Regex)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v48.6 (Admin Fixed)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -86,14 +86,13 @@ def colored_bar(label, val, color):
     st.markdown(f"<div style='margin-bottom:5px'><div style='display:flex;justify-content:space-between'><span>{label}</span><span style='color:{color};font-weight:bold'>{int(val*100)}%</span></div><div style='background:#eee;height:8px;border-radius:4px'><div style='background:{color};width:{val*100}%;height:100%;border-radius:4px'></div></div></div>", unsafe_allow_html=True)
 
 def loading_seq(level):
-    with st.status("🕵️ Forensic Core v48.5 가동...", expanded=True) as s:
+    with st.status("🕵️ Forensic Core v48.6 가동...", expanded=True) as s:
         st.write(f"🧠 Intelligence Level: {level}"); time.sleep(0.3)
-        st.write("🛡️ 파싱 엔진 교체: 정규식(Regex) 모드 활성화..."); time.sleep(0.3)
+        st.write("🛡️ 정규식 파서 & 관리자 모듈 로드 중..."); time.sleep(0.3)
         st.write("✅ 분석 준비 완료!"); s.update(label="분석 완료!", state="complete", expanded=False)
 
 # --- [Logic] ---
 def clean_html_tags(text):
-    """HTML 태그 제거 (정규식 사용)"""
     if not text: return ""
     clean = re.sub('<.*?>', '', text)
     return clean.strip()
@@ -196,28 +195,19 @@ def analyze_comments(comments, text):
     msg = "✅ 일치" if score>=60 else "⚠️ 혼재" if score>=20 else "❌ 불일치"
     return [f"{w}({c})" for w,c in top], score, msg
 
-# 🌟 [신규] 정규식 기반 뉴스 파싱 (XML 파서 의존성 제거)
 def fetch_google_news_regex(query):
     news_res = []
     try:
         rss = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
         raw_html = requests.get(rss, timeout=5).text
-        
-        # 정규식으로 <item> 블록 추출
         items = re.findall(r'<item>(.*?)</item>', raw_html, re.DOTALL)
-        
         for item in items[:3]:
-            # 각 item 내에서 title과 description 추출
             t_match = re.search(r'<title>(.*?)</title>', item)
             d_match = re.search(r'<description>(.*?)</description>', item)
-            
             nt = t_match.group(1) if t_match else ""
             nd = clean_html_tags(d_match.group(1)) if d_match else ""
-            
-            # CDATA 섹션 제거 (가끔 포함됨)
             nt = nt.replace("<![CDATA[", "").replace("]]>", "")
             nd = nd.replace("<![CDATA[", "").replace("]]>", "")
-
             news_res.append({'title': nt, 'desc': nd})
     except: pass
     return news_res
@@ -241,11 +231,9 @@ def run_main(url):
             ts, fs = ve.analyze(query + " " + title)
             v_score = int(fs*35) - int(ts*35)
             
-            # 2. News (Regex Parsing 적용)
+            # 2. News (Regex)
             news_items = fetch_google_news_regex(query)
-            news_res = []; max_match = 0
-            news_cnt = len(news_items)
-            
+            news_res = []; max_match = 0; news_cnt = len(news_items)
             for item in news_items:
                 m = calc_match(item, extract_nouns(query), full_text)
                 if m > max_match: max_match = m
@@ -302,7 +290,7 @@ def run_main(url):
         except Exception as e: st.error(f"분석 중 오류: {e}")
 
 # --- [App] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.5")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v48.6")
 url = st.text_input("🔗 유튜브 URL")
 if st.button("🚀 분석 시작") and url: run_main(url)
 
@@ -311,10 +299,32 @@ st.subheader("🗂️ 학습 데이터 (Cloud)")
 try:
     df = pd.DataFrame(supabase.table("analysis_history").select("*").order("id", desc=True).execute().data)
     if not df.empty:
+        # 🌟 [수정] 관리자용 삭제 UI 복구
         if st.session_state["is_admin"]:
-            ed = st.data_editor(df, column_config={"Delete":st.column_config.CheckboxColumn(default=False)}, disabled=["id","video_title"], hide_index=True)
-            if "Delete" in ed.columns and st.button("삭제"):
-                for i, r in ed[ed.Delete].iterrows(): supabase.table("analysis_history").delete().eq("id", r['id']).execute()
-                st.success("삭제됨"); st.rerun()
-        else: st.dataframe(df, hide_index=True)
+            # Delete 컬럼 강제 추가 (초기값 False)
+            df['Delete'] = False
+            # 컬럼 순서 재배치 (Delete를 맨 앞으로)
+            cols = ['Delete'] + [c for c in df.columns if c != 'Delete']
+            df = df[cols]
+            
+            edited_df = st.data_editor(
+                df,
+                column_config={"Delete": st.column_config.CheckboxColumn("삭제", default=False)},
+                disabled=["id","video_title","fake_prob","keywords"],
+                hide_index=True,
+                use_container_width=True
+            )
+            
+            to_delete = edited_df[edited_df.Delete]
+            if not to_delete.empty:
+                if st.button(f"🗑️ 선택한 {len(to_delete)}건 영구 삭제"):
+                    for index, row in to_delete.iterrows():
+                        supabase.table("analysis_history").delete().eq("id", row['id']).execute()
+                    st.success("✅ 삭제 완료!"); time.sleep(1); st.rerun()
+        else:
+            # 일반 유저는 조회만 가능
+            st.dataframe(df, hide_index=True, use_container_width=True)
+            st.info("🔒 데이터 삭제는 관리자만 가능합니다.")
+    else:
+        st.info("☁️ 데이터가 없습니다.")
 except: pass
