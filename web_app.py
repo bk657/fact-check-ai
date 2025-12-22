@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v47.5 (Semantic+)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v47.6 (Structure Fix)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -114,7 +114,7 @@ def render_score_breakdown(data_list):
 
 def witty_loading_sequence(count):
     messages = [f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...", "📝 자막 전체(Full Text) 전수 조사 중...", "🔍 최다 반복 핵심 명사(Core Nouns) 추출 중...", "🚀 위성이 유튜브 본사 상공을 지나가는 중..."]
-    with st.status("🕵️ Context Merger v47.5 가동 중...", expanded=True) as status:
+    with st.status("🕵️ Context Merger v47.6 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
@@ -123,17 +123,11 @@ def extract_nouns(text):
     nouns = re.findall(r'[가-힣]{2,}', text)
     return list(dict.fromkeys([n for n in nouns if n not in noise]))
 
-# 🌟 [신규] 전체 자막 빈도 분석 함수
 def extract_top_keywords_from_transcript(text, top_n=5):
     if not text: return []
-    # 1. 노이즈 제거된 명사만 추출
     noise = ['충격', '경악', '속보', '긴급', '오늘', '내일', '지금', '결국', '뉴스', '영상', '대부분', '이유', '왜', '있는', '없는', '하는', '것', '수', '등', '진짜', '정말', '너무', '그냥', '이제', '사실', '국민', '우리', '대한민국', '여러분']
     nouns = [n for n in re.findall(r'[가-힣]{2,}', text) if n not in noise]
-    
-    # 2. 빈도수 계산
     counts = Counter(nouns)
-    
-    # 3. Top N 리턴 (단어, 횟수)
     return counts.most_common(top_n)
 
 def generate_pinpoint_query(title, hashtags):
@@ -207,7 +201,6 @@ def fetch_real_transcript(info_dict):
                     if '-->' not in line and 'WEBVTT' not in line and line.strip():
                         t = re.sub(r'<[^>]+>', '', line).strip()
                         if t and t not in clean: clean.append(t)
-                # 🌟 [중요] 전체 자막을 리턴 (요약 X)
                 return " ".join(clean), "✅ 실제 자막 수집 성공"
     except: pass
     return None, "자막 다운로드 실패"
@@ -244,7 +237,7 @@ def check_red_flags(comments):
     detected = [k for c in comments for k in ['가짜뉴스', '주작', '사기', '거짓말', '허위', '선동'] if k in c]
     return len(detected), list(set(detected))
 
-# --- [Main Execution] ---
+# 🌟 [MAIN FUNCTION] Indentation Fixed
 def run_forensic_main(url):
     total_intelligence = train_dynamic_vector_engine()
     witty_loading_sequence(total_intelligence)
@@ -261,7 +254,7 @@ def run_forensic_main(url):
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
             
-            # 🌟 [v47.5] 자막에서 빈출 키워드 추출 (심층 분석)
+            # 🌟 [v47.5 Feature] Full Keyword Extraction
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
             is_official = check_is_official(uploader)
@@ -279,7 +272,7 @@ def run_forensic_main(url):
             ts, fs = vector_engine.analyze_position(query + " " + title)
             t_impact = int(ts * w_vec) * -1; f_impact = int(fs * w_vec)
 
-            # XML Parsing (순정 복구)
+            # XML Parsing
             news_ev = []; max_match = 0
             try:
                 rss_url = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
@@ -379,7 +372,7 @@ def run_forensic_main(url):
                 else: st.warning("⚠️ 댓글 수집 불가.")
                 st.markdown("**[증거 3] 자막 세만틱 심층 대조**")
                 st.caption(f"📝 **{t_status}** | 📚 전체 단어: **{len(full_text.split())}개**")
-                # 🌟 [v47.5 UI] 최다 언급 키워드 표시
+                # 🌟 [v47.5 UI] Display Top Keywords
                 top_kw_str = ", ".join([f"{w}({c})" for w, c in top_transcript_keywords])
                 st.table(pd.DataFrame([
                     ["영상 최다 언급 키워드", top_kw_str],
@@ -387,20 +380,19 @@ def run_forensic_main(url):
                     ["선동성 지수", f"{agitation}회"], 
                     ["기사-영상 일치도", f"{max_match}%"]
                 ], columns=["분석 항목", "판정 결과"]))
-                
                 st.markdown("**[증거 4] AI 최종 분석 판단**")
                 st.success(f"🔍 현재 분석된 종합 점수는 {prob}점입니다.")
                 if prob < 30 or prob > 70: st.toast(f"🤖 AI가 이 결과를 학습했습니다!", icon="🧠")
 
         except Exception as e: st.error(f"오류: {e}")
 
-# --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v47.5")
+# --- [UI Layout] (Defined Last) ---
+st.title("⚖️ Triple-Evidence Intelligence Forensic v47.6")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
-url = st.text_input("🔗 분석할 유튜브 URL")
+url_input = st.text_input("🔗 분석할 유튜브 URL")
 if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not agree):
     if url_input: run_forensic_main(url_input)
     else: st.warning("URL을 입력해주세요.")
