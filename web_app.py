@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.1 (Quote Sniper)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v48.2 (Clean Transcript)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -125,13 +125,13 @@ def render_score_breakdown(data_list):
     st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Silent Echo Protocol)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
 
 def witty_loading_sequence(count):
-    messages = [f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...", "📝 자막 전체 정밀 수집 중...", "🎯 [인용구] 감지 및 핵심 타겟팅 중...", "🚀 위성이 유튜브 본사 상공을 지나가는 중..."]
-    with st.status("🕵️ Context Merger v48.1 가동 중...", expanded=True) as status:
+    messages = [f"🧠 [Intelligence Level: {count}] 누적 지식 로드 중...", "📝 자막 전체(Full Text) 정밀 수집 중...", "🎯 [인용구] 감지 및 핵심 타겟팅 중...", "🚀 위성이 유튜브 본사 상공을 지나가는 중..."]
+    with st.status("🕵️ Context Merger v48.2 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
 def extract_nouns(text):
-    noise = ['충격', '경악', '실체', '난리', '공개', '반응', '명단', '동영상', '사진', '집안', '속보', '단독', '결국', 'MBC', '뉴스', '이미지', '너무', '다른', '알고보니', 'ㄷㄷ', '진짜', '정말', '영상', '사람', '생각', '오늘밤', '오늘', '내일', '지금', '못넘긴다', '넘긴다', '이유', '왜', '안', '그냥', '이제', '사실', '우리', '여러분', '대한민국', '누구', '자기', '그거', '저거']
+    noise = ['충격', '경악', '실체', '난리', '공개', '반응', '명단', '동영상', '사진', '집안', '속보', '단독', '결국', 'MBC', '뉴스', '이미지', '너무', '다른', '알고보니', 'ㄷㄷ', '진짜', '정말', '영상', '사람', '생각', '오늘밤', '오늘', '내일', '지금', '못넘긴다', '넘긴다', '이유', '왜', '안', '그냥', '이제', '사실', '우리', '여러분', '대한민국', '누구', '자기', '그거', '저거', 'http', 'https', 'EXTM3U']
     nouns = re.findall(r'[가-힣]{2,}', text)
     return list(dict.fromkeys([n for n in nouns if n not in noise]))
 
@@ -141,30 +141,16 @@ def extract_top_keywords_from_transcript(text, top_n=5):
     counts = Counter(nouns)
     return counts.most_common(top_n)
 
-# 🌟 [v48.1 Update] 인용구(Quote) 우선 검색 로직
 def generate_pinpoint_query(title, hashtags):
-    # 1. 인용구 탐지 (큰따옴표, 작은따옴표)
     quotes = re.findall(r'[\"“\'](.*?)[\"”\']', title)
-    
     if quotes:
-        # 가장 긴 인용구를 선택 (보통 핵심 문장임)
         longest_quote = max(quotes, key=len)
-        # 인용구 내에서 명사만 추출하여 검색어 구성 (조사 등 제거)
         quote_nouns = extract_nouns(longest_quote)
-        
-        # 인용구 키워드 + 제목의 핵심 인물(VIP) 결합
         vip_in_title = [w for w in extract_nouns(title) if w in VIP_ENTITIES]
-        
-        # 쿼리 조합: VIP 이름 + 인용구 핵심 단어 3개
         final_query = f"{' '.join(vip_in_title)} {' '.join(quote_nouns[:3])}".strip()
-        
-        # 만약 VIP가 없으면 그냥 인용구 명사들로만 구성
-        if not final_query.strip():
-            final_query = " ".join(quote_nouns[:4])
-            
+        if not final_query.strip(): final_query = " ".join(quote_nouns[:4])
         return final_query
 
-    # 2. 인용구가 없으면 기존 로직 (Subject + Object)
     clean_text = title + " " + " ".join([h.replace("#", "") for h in hashtags])
     words = clean_text.split()
     subject_chunk, object_word, vital_word = "", "", ""
@@ -190,6 +176,12 @@ def generate_pinpoint_query(title, hashtags):
 
 def summarize_transcript(text, title, max_sentences=3):
     if not text or len(text) < 50: return "⚠️ 요약할 자막 내용이 충분하지 않습니다."
+    
+    # 🌟 [Fix] 노이즈 강력 필터링 (http 링크, 태그)
+    if "EXTM3U" in text or "http" in text:
+        text = re.sub(r'http\S+', '', text)
+        text = text.replace("#EXTM3U", "").replace("#EXT-X-VERSION:3", "")
+    
     clean_text = re.sub(r'\[.*?\]', '', text)
     clean_text = re.sub(r'[>]+', '', clean_text)
     sentences = re.split(r'(?<=[.?!])\s+', clean_text)
@@ -241,6 +233,7 @@ def check_tag_abuse(title, hashtags, channel_name):
     if len(tgn) < 2: return 0, "양호"
     return (PENALTY_ABUSE, "🚨 심각 (불일치)") if not tn.intersection(tgn) else (0, "양호")
 
+# 🌟 [v48.2 Fix] 자막 검증 및 쓰레기 데이터(Playlist) 필터링
 def fetch_real_transcript(info_dict):
     try:
         url = None
@@ -249,11 +242,17 @@ def fetch_real_transcript(info_dict):
                 for fmt in info_dict[key]['ko']:
                     if fmt['ext'] == 'vtt': url = fmt['url']; break
             if url: break
+        
         if url:
             res = requests.get(url)
             if res.status_code == 200:
+                content = res.text
+                # 🛡️ Anti-Glitch: Playlist 파일이면 무시
+                if "#EXTM3U" in content:
+                    return None, "자막 포맷 오류 (라이브 스트림)"
+                
                 clean = []
-                for line in res.text.splitlines():
+                for line in content.splitlines():
                     if '-->' not in line and 'WEBVTT' not in line and line.strip():
                         t = re.sub(r'<[^>]+>', '', line).strip()
                         if t and t not in clean: clean.append(t)
@@ -325,6 +324,7 @@ def run_forensic_main(url):
             title = info.get('title', ''); uploader = info.get('uploader', '')
             tags = info.get('tags', []); desc = info.get('description', '')
             
+            # [v48.2] 자막 안전 수집 (Playlist 필터링)
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
             
@@ -336,7 +336,6 @@ def run_forensic_main(url):
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
-            # 🌟 [v48.1] 인용구 우선 쿼리 생성
             query = generate_pinpoint_query(title, tags)
             if " " not in query and len(query) < 5: 
                 top_kws = extract_top_keywords_from_transcript(full_text, 1)
@@ -345,7 +344,6 @@ def run_forensic_main(url):
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
             abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
             
-            # 🌟 [v48.0] 제목 반영 요약
             summary = summarize_transcript(full_text, title)
             
             agitation = count_sensational_words(full_text + title)
@@ -457,7 +455,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.1")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v48.2")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
