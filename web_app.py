@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v48.2 (Robust)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v48.3", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -87,20 +87,17 @@ def colored_bar(label, val, color):
     st.markdown(f"<div style='margin-bottom:5px'><div style='display:flex;justify-content:space-between'><span>{label}</span><span style='color:{color};font-weight:bold'>{int(val*100)}%</span></div><div style='background:#eee;height:8px;border-radius:4px'><div style='background:{color};width:{val*100}%;height:100%;border-radius:4px'></div></div></div>", unsafe_allow_html=True)
 
 def loading_seq(level):
-    with st.status("🕵️ Forensic Core v48.2 가동...", expanded=True) as s:
+    with st.status("🕵️ Forensic Core v48.3 가동...", expanded=True) as s:
         st.write(f"🧠 Intelligence Level: {level}"); time.sleep(0.3)
-        st.write("🛡️ 파싱 오류 방어 시스템(Robust Parsing) 활성화..."); time.sleep(0.3)
+        st.write("🛡️ 1차 분석: 파싱 오류 방어 및 구문 분석..."); time.sleep(0.3)
         st.write("✅ 분석 준비 완료!"); s.update(label="분석 완료!", state="complete", expanded=False)
 
 # --- [Logic] ---
 def get_safe_text(element):
-    """XML 요소에서 텍스트 안전하게 추출"""
-    if element is not None and element.text:
-        return element.text.strip()
+    if element is not None and element.text: return element.text.strip()
     return ""
 
 def clean_html(raw):
-    """HTML 태그 제거 (안전 모드)"""
     if not raw: return ""
     try: return BeautifulSoup(raw, "html.parser").get_text()
     except: return raw
@@ -144,12 +141,12 @@ def check_tags(title, tags, uploader):
     if not tags: return 0
     tn = set(extract_nouns(title)); tgn = set()
     for t in tags: tgn.add(t.replace("#","").split(":")[-1].strip())
+    # 점수(int)만 반환하도록 수정됨
     return 20 if len(tgn)>=2 and not tn.intersection(tgn) else 0
 
 def fetch_transcript(info):
     try:
         url = None
-        # 자막 우선순위: 수동(ko) -> 자동(ko)
         if 'subtitles' in info and 'ko' in info['subtitles']:
             for fmt in info['subtitles']['ko']: 
                 if fmt['ext'] == 'vtt': url = fmt['url']; break
@@ -236,7 +233,7 @@ def run_main(url):
                     m = calc_match({'title':nt, 'desc':nd}, extract_nouns(query), full_text)
                     if m > max_match: max_match = m
                     news_res.append({"뉴스 제목": nt, "일치도": f"{m}%"})
-            except Exception: pass # 파싱 에러 무시
+            except Exception: pass 
             
             # 3. Comments
             cmts, c_st = fetch_comments(vid)
@@ -259,7 +256,9 @@ def run_main(url):
                 
             if check_official(uploader): n_score = -50; silent = 0; mismatch = 0
             
-            total = 50 + v_score + n_score + silent + mismatch + check_tags(title, tags, uploader)[0]
+            # 🌟 [수정] check_tags()[0] 제거 -> check_tags()
+            tag_abuse_score = check_tags(title, tags, uploader)
+            total = 50 + v_score + n_score + silent + mismatch + tag_abuse_score
             prob = max(5, min(99, total))
             
             save_analysis(uploader, title, prob, url, query)
@@ -279,7 +278,7 @@ def run_main(url):
             with c1:
                 st.info(f"🎯 쿼리: {query}")
                 st.write("**영상 요약**"); st.caption(summarize(full_text))
-                st.table(pd.DataFrame([["기본",50],["벡터",v_score],["뉴스",n_score],["페널티",silent+mismatch]], columns=["항목","점수"]))
+                st.table(pd.DataFrame([["기본",50],["벡터",v_score],["뉴스",n_score],["페널티",silent+mismatch],["태그오용",tag_abuse_score]], columns=["항목","점수"]))
             with c2:
                 colored_bar("진실", ts, "green"); colored_bar("거짓", fs, "red")
                 st.write(f"**뉴스 ({news_cnt}건)**"); st.table(news_res) if news_res else st.warning("뉴스 없음")
@@ -288,7 +287,7 @@ def run_main(url):
         except Exception as e: st.error(f"분석 중 오류: {e}")
 
 # --- [App] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v48.2")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v48.3")
 url = st.text_input("🔗 유튜브 URL")
 if st.button("🚀 분석 시작") and url: run_main(url)
 
