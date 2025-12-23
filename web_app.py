@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v51.0 (N-gram Engine)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v51.1 (Hotfix)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -128,7 +128,6 @@ def render_intelligence_distribution(current_prob):
 
 # --- [Advanced NLP Logic] ---
 def normalize_korean_word(word):
-    # 조사 제거 로직 강화
     josa_list = ['은', '는', '이', '가', '을', '를', '의', '에', '에게', '로', '으로', '도', '만', '에서', '하고', '이랑', '까지', '부터', '와', '과']
     for josa in josa_list:
         if word.endswith(josa) and len(word) > len(josa) + 1: 
@@ -136,20 +135,16 @@ def normalize_korean_word(word):
     return word
 
 def extract_meaningful_tokens(text):
-    # 불용어 처리 및 정규화
     raw_tokens = re.findall(r'[가-힣]{2,}', text)
     noise = ['충격', '경악', '속보', '긴급', '오늘', '내일', '지금', '결국', '뉴스', '영상', '대부분', '이유', '왜', '있는', '없는', '하는', '것', '수', '등', '진짜', '정말', '너무', '그냥', '이제', '사실', '국민', '우리', '대한민국', '여러분', '그리고', '그래서', '그러나', '하지만', '때문에', '해서', '근데', '솔직히', '무슨', '어떤', '이런', '저런']
     return [normalize_korean_word(w) for w in raw_tokens if normalize_korean_word(w) not in noise]
 
-# 🌟 [v51.0 Key Feature] N-gram(Bi-gram) Generator
 def generate_ngrams(text, n=2):
     tokens = extract_meaningful_tokens(text)
     if len(tokens) < n: return []
     return [" ".join(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
 
-# 🌟 [v51.0 Key Feature] Revolutionary Query Generator
 def generate_revolutionary_query(title, hashtags, transcript):
-    # 1. 인용구 우선 (Quote Sniper)
     quotes = re.findall(r'[\"“\'](.*?)[\"”\']', title)
     if quotes:
         quote_text = max(quotes, key=len)
@@ -157,19 +152,12 @@ def generate_revolutionary_query(title, hashtags, transcript):
         if len(quote_tokens) >= 2:
             return " ".join(quote_tokens[:4])
 
-    # 2. 제목 기반 N-gram 생성 (ex: "조세호 조폭", "조폭 사진")
     title_bigrams = generate_ngrams(title, 2)
-    
-    # 3. 자막에서 N-gram 검증 (Cross-Validation)
-    # 제목에 있는 연관 단어쌍이 자막에도 그대로 있는가? -> 강력한 핵심 주제
     valid_bigrams = [bg for bg in title_bigrams if bg in transcript]
     
     if valid_bigrams:
-        # 가장 긴(혹은 첫 번째) 유효한 단어쌍 반환
         return valid_bigrams[0]
     
-    # 4. VIP 주어 + 서술어 조합 (Fallback)
-    # N-gram이 없으면, 제목의 VIP(주어)와 자막 최빈출 단어(서술어/목적어)를 결합
     title_tokens = extract_meaningful_tokens(title)
     vip_in_title = [w for w in title_tokens if w in VIP_ENTITIES]
     
@@ -177,8 +165,6 @@ def generate_revolutionary_query(title, hashtags, transcript):
     trans_counter = Counter(transcript_tokens)
     
     subject = vip_in_title[0] if vip_in_title else (title_tokens[0] if title_tokens else "")
-    
-    # 자막에서 주어와 다른 최빈출 단어 찾기 (Action 찾기)
     action = ""
     for word, cnt in trans_counter.most_common(5):
         if word != subject:
@@ -317,8 +303,26 @@ def fetch_news_regex(query):
     except: pass
     return news_res
 
+# 🌟 [Fix] Helper Functions for Loading Screen (Argument Match)
+def witty_loading_sequence(total, t_cnt, f_cnt):
+    messages = [
+        f"🧠 [Intelligence Level: {total}] 집단 지성 로드 중...",
+        f"📚 학습된 진실 데이터: {t_cnt}건 | 거짓 데이터: {f_cnt}건",
+        "📝 자막 전체(Full Text) 정밀 수집 중...", 
+        "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
+    ]
+    with st.status("🕵️ Context Merger v51.1 가동 중...", expanded=True) as status:
+        for msg in messages: st.write(msg); time.sleep(0.4)
+        st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
+
+def extract_top_keywords_from_transcript(text, top_n=5):
+    if not text: return []
+    tokens = extract_meaningful_tokens(text)
+    return Counter(tokens).most_common(top_n)
+
 # --- [Main Execution] ---
 def run_forensic_main(url):
+    # 🌟 [Fix] Correct Call with 3 arguments
     total_intelligence, t_cnt, f_cnt = train_dynamic_vector_engine()
     witty_loading_sequence(total_intelligence, t_cnt, f_cnt)
     
@@ -478,7 +482,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v51.0")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v51.1")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
