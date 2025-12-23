@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v51.1 (Hotfix)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v51.2 (Integrity Fix)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -125,6 +125,33 @@ def render_intelligence_distribution(current_prob):
         elif current_prob < 40: st.success("✅ 현재 영상은 **'안전군'**에 속합니다.")
         else: st.warning("🔸 현재 영상은 **'중립 구간'**에 위치합니다.")
     except: pass
+
+# --- [UI Helper Functions - DEFINED HERE] ---
+def colored_progress_bar(label, percent, color):
+    st.markdown(f"""<div style="margin-bottom: 10px;"><div style="display: flex; justify-content: space-between; margin-bottom: 3px;"><span style="font-size: 13px; font-weight: 600; color: #555;">{label}</span><span style="font-size: 13px; font-weight: 700; color: {color};">{round(percent * 100, 1)}%</span></div><div style="background-color: #eee; border-radius: 5px; height: 8px; width: 100%;"><div style="background-color: {color}; height: 8px; width: {percent * 100}%; border-radius: 5px;"></div></div></div>""", unsafe_allow_html=True)
+
+# 🌟 [Fix] render_score_breakdown 함수 명시적 정의
+def render_score_breakdown(data_list):
+    style = """<style>table.score-table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; font-family: sans-serif; font-size: 14px; margin-top: 10px;} table.score-table th { background-color: #f8f9fa; color: #495057; font-weight: bold; padding: 12px 15px; text-align: left; border-bottom: 1px solid #e0e0e0; } table.score-table td { padding: 12px 15px; border-bottom: 1px solid #f0f0f0; color: #333; } table.score-table tr:last-child td { border-bottom: none; } .badge { padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 11px; display: inline-block; text-align: center; min-width: 45px; } .badge-danger { background-color: #ffebee; color: #d32f2f; } .badge-success { background-color: #e8f5e9; color: #2e7d32; } .badge-neutral { background-color: #f5f5f5; color: #757575; border: 1px solid #e0e0e0; }</style>"""
+    rows = ""
+    for item, score, note in data_list:
+        try:
+            score_num = int(score)
+            badge = f'<span class="badge badge-danger">+{score_num}</span>' if score_num > 0 else f'<span class="badge badge-success">{score_num}</span>' if score_num < 0 else f'<span class="badge badge-neutral">0</span>'
+        except: badge = f'<span class="badge badge-neutral">{score}</span>'
+        rows += f"<tr><td>{item}<br><span style='color:#888; font-size:11px;'>{note}</span></td><td style='text-align: right;'>{badge}</td></tr>"
+    st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Silent Echo Protocol)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
+
+def witty_loading_sequence(total, t_cnt, f_cnt):
+    messages = [
+        f"🧠 [Intelligence Level: {total}] 집단 지성 로드 중...",
+        f"📚 학습된 진실 데이터: {t_cnt}건 | 거짓 데이터: {f_cnt}건",
+        "📝 자막 전체(Full Text) 정밀 수집 중...", 
+        "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
+    ]
+    with st.status("🕵️ Context Merger v51.2 가동 중...", expanded=True) as status:
+        for msg in messages: st.write(msg); time.sleep(0.4)
+        st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
 # --- [Advanced NLP Logic] ---
 def normalize_korean_word(word):
@@ -303,18 +330,6 @@ def fetch_news_regex(query):
     except: pass
     return news_res
 
-# 🌟 [Fix] Helper Functions for Loading Screen (Argument Match)
-def witty_loading_sequence(total, t_cnt, f_cnt):
-    messages = [
-        f"🧠 [Intelligence Level: {total}] 집단 지성 로드 중...",
-        f"📚 학습된 진실 데이터: {t_cnt}건 | 거짓 데이터: {f_cnt}건",
-        "📝 자막 전체(Full Text) 정밀 수집 중...", 
-        "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
-    ]
-    with st.status("🕵️ Context Merger v51.1 가동 중...", expanded=True) as status:
-        for msg in messages: st.write(msg); time.sleep(0.4)
-        st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
-
 def extract_top_keywords_from_transcript(text, top_n=5):
     if not text: return []
     tokens = extract_meaningful_tokens(text)
@@ -322,7 +337,6 @@ def extract_top_keywords_from_transcript(text, top_n=5):
 
 # --- [Main Execution] ---
 def run_forensic_main(url):
-    # 🌟 [Fix] Correct Call with 3 arguments
     total_intelligence, t_cnt, f_cnt = train_dynamic_vector_engine()
     witty_loading_sequence(total_intelligence, t_cnt, f_cnt)
     
@@ -482,7 +496,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v51.1")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v51.2")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
