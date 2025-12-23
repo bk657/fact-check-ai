@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v50.0 (Intelligence Viz)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v51.0 (N-gram Engine)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -60,9 +60,8 @@ PENALTY_ABUSE = 20; PENALTY_MISMATCH = 30; PENALTY_NO_FACT = 25; PENALTY_SILENT_
 
 VITAL_KEYWORDS = ['위독', '사망', '별세', '구속', '체포', '기소', '실형', '응급실', '이혼', '불화', '파경', '충격', '경악', '속보', '긴급', '폭로', '양성', '확진', '심정지', '뇌사', '중태', '압수수색', '소환', '퇴진', '탄핵', '내란', '간첩']
 VIP_ENTITIES = ['윤석열', '대통령', '이재명', '한동훈', '김건희', '문재인', '박근혜', '이명박', '트럼프', '바이든', '푸틴', '젤렌스키', '시진핑', '정은', '이준석', '조국', '추미애', '홍준표', '유승민', '안철수', '손흥민', '이강인', '김민재', '류현진', '재용', '정의선', '최태원', '류중일', '감독', '조세호', '유재석', '장동민', '유호정', '이재룡']
-OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
-
 CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
+OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
 
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
 STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
@@ -114,154 +113,107 @@ def train_dynamic_vector_engine():
         vector_engine.train(STATIC_TRUTH_CORPUS, STATIC_FAKE_CORPUS)
         return 0, 0, 0
 
-# 🌟 [v50.0 New] 내부 데이터 분포 시각화 함수
 def render_intelligence_distribution(current_prob):
     try:
-        # DB에서 전체 확률 데이터 가져오기
         res = supabase.table("analysis_history").select("fake_prob").execute()
         if not res.data: return
-        
         df = pd.DataFrame(res.data)
-        
-        # 차트 데이터 준비
-        base = alt.Chart(df).transform_density(
-            'fake_prob',
-            as_=['fake_prob', 'density'],
-            extent=[0, 100],
-            bandwidth=5
-        ).mark_area(opacity=0.3, color='#888').encode(
-            x=alt.X('fake_prob:Q', title='가짜뉴스 확률 분포 (0:안전 ~ 100:위험)'),
-            y=alt.Y('density:Q', title='데이터 밀도'),
-        )
-        
-        # 현재 위치 표시선
+        base = alt.Chart(df).transform_density('fake_prob', as_=['fake_prob', 'density'], extent=[0, 100], bandwidth=5).mark_area(opacity=0.3, color='#888').encode(x=alt.X('fake_prob:Q', title='가짜뉴스 확률 분포'), y=alt.Y('density:Q', title='데이터 밀도'))
         rule = alt.Chart(pd.DataFrame({'x': [current_prob]})).mark_rule(color='blue', size=3).encode(x='x')
-        text = alt.Chart(pd.DataFrame({'x': [current_prob], 'label': ['현재 위치']})).mark_text(align='left', dx=5, dy=-100, color='blue').encode(x='x', text='label')
-        
-        st.altair_chart(base + rule + text, use_container_width=True)
-        st.caption("📈 **회색 영역**: 내부 DB에 축적된 진실/거짓 데이터의 분포 | **파란 선**: 현재 영상의 위치")
-        
-        # 분포 해석 메시지
-        if current_prob > 60:
-            st.error("⚠️ 현재 영상은 우리 DB의 **'고위험군(High Risk)'** 분포에 속해 있습니다.")
-        elif current_prob < 40:
-            st.success("✅ 현재 영상은 우리 DB의 **'안전군(Safe Zone)'** 분포에 속해 있습니다.")
-        else:
-            st.warning("🔸 현재 영상은 판단이 엇갈리는 **'중립 구간(Gray Zone)'**에 위치합니다.")
-            
+        st.altair_chart(base + rule, use_container_width=True)
+        if current_prob > 60: st.error("⚠️ 현재 영상은 **'고위험군'**에 속합니다.")
+        elif current_prob < 40: st.success("✅ 현재 영상은 **'안전군'**에 속합니다.")
+        else: st.warning("🔸 현재 영상은 **'중립 구간'**에 위치합니다.")
     except: pass
 
-# --- [UI Utils] ---
-def colored_progress_bar(label, percent, color):
-    st.markdown(f"""<div style="margin-bottom: 10px;"><div style="display: flex; justify-content: space-between; margin-bottom: 3px;"><span style="font-size: 13px; font-weight: 600; color: #555;">{label}</span><span style="font-size: 13px; font-weight: 700; color: {color};">{round(percent * 100, 1)}%</span></div><div style="background-color: #eee; border-radius: 5px; height: 8px; width: 100%;"><div style="background-color: {color}; height: 8px; width: {percent * 100}%; border-radius: 5px;"></div></div></div>""", unsafe_allow_html=True)
-
-def render_score_breakdown(data_list):
-    style = """<style>table.score-table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; font-family: sans-serif; font-size: 14px; margin-top: 10px;} table.score-table th { background-color: #f8f9fa; color: #495057; font-weight: bold; padding: 12px 15px; text-align: left; border-bottom: 1px solid #e0e0e0; } table.score-table td { padding: 12px 15px; border-bottom: 1px solid #f0f0f0; color: #333; } table.score-table tr:last-child td { border-bottom: none; } .badge { padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 11px; display: inline-block; text-align: center; min-width: 45px; } .badge-danger { background-color: #ffebee; color: #d32f2f; } .badge-success { background-color: #e8f5e9; color: #2e7d32; } .badge-neutral { background-color: #f5f5f5; color: #757575; border: 1px solid #e0e0e0; }</style>"""
-    rows = ""
-    for item, score, note in data_list:
-        try:
-            score_num = int(score)
-            badge = f'<span class="badge badge-danger">+{score_num}</span>' if score_num > 0 else f'<span class="badge badge-success">{score_num}</span>' if score_num < 0 else f'<span class="badge badge-neutral">0</span>'
-        except: badge = f'<span class="badge badge-neutral">{score}</span>'
-        rows += f"<tr><td>{item}<br><span style='color:#888; font-size:11px;'>{note}</span></td><td style='text-align: right;'>{badge}</td></tr>"
-    st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Silent Echo Protocol)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
-
-def witty_loading_sequence(total, t_cnt, f_cnt):
-    messages = [
-        f"🧠 [Intelligence Level: {total}] 집단 지성 로드 중...",
-        f"📚 학습된 진실 데이터: {t_cnt}건 | 거짓 데이터: {f_cnt}건",
-        "📊 내부 DB 정규 분포(Normal Distribution) 매핑 중...", 
-        "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
-    ]
-    with st.status("🕵️ Context Merger v50.0 가동 중...", expanded=True) as status:
-        for msg in messages: st.write(msg); time.sleep(0.4)
-        st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
-
-def extract_nouns(text):
-    noise = ['충격', '경악', '실체', '난리', '공개', '반응', '명단', '동영상', '사진', '집안', '속보', '단독', '결국', 'MBC', '뉴스', '이미지', '너무', '다른', '알고보니', 'ㄷㄷ', '진짜', '정말', '영상', '사람', '생각', '오늘밤', '오늘', '내일', '지금', '못넘긴다', '넘긴다', '이유', '왜', '안', '그냥', '이제', '사실', '우리', '여러분', '대한민국', '누구', '자기', '그거', '저거', 'http', 'https', 'EXTM3U']
-    nouns = re.findall(r'[가-힣]{2,}', text)
-    return list(dict.fromkeys([n for n in nouns if n not in noise]))
-
+# --- [Advanced NLP Logic] ---
 def normalize_korean_word(word):
-    josa_list = ['은', '는', '이', '가', '을', '를', '의', '에', '에게', '로', '으로', '도', '만', '에서', '하고', '이랑', '까지', '부터']
+    # 조사 제거 로직 강화
+    josa_list = ['은', '는', '이', '가', '을', '를', '의', '에', '에게', '로', '으로', '도', '만', '에서', '하고', '이랑', '까지', '부터', '와', '과']
     for josa in josa_list:
         if word.endswith(josa) and len(word) > len(josa) + 1: 
             return word[:-len(josa)]
     return word
 
-def extract_top_keywords_from_transcript(text, top_n=5):
-    if not text: return []
-    raw_words = re.findall(r'[가-힣]{2,}', text)
-    norm_words = [normalize_korean_word(w) for w in raw_words]
-    noise = ['충격', '경악', '속보', '긴급', '오늘', '내일', '지금', '결국', '뉴스', '영상', '대부분', '이유', '왜', '있는', '없는', '하는', '것', '수', '등', '진짜', '정말', '너무', '그냥', '이제', '사실', '국민', '우리', '대한민국', '여러분', '그리고', '그래서', '그러나', '하지만', '때문에', '해서', '근데', '진짜', '정말', '솔직히']
-    clean_words = [w for w in norm_words if w not in noise and len(w) >= 2]
-    counts = Counter(clean_words)
-    return counts.most_common(top_n)
+def extract_meaningful_tokens(text):
+    # 불용어 처리 및 정규화
+    raw_tokens = re.findall(r'[가-힣]{2,}', text)
+    noise = ['충격', '경악', '속보', '긴급', '오늘', '내일', '지금', '결국', '뉴스', '영상', '대부분', '이유', '왜', '있는', '없는', '하는', '것', '수', '등', '진짜', '정말', '너무', '그냥', '이제', '사실', '국민', '우리', '대한민국', '여러분', '그리고', '그래서', '그러나', '하지만', '때문에', '해서', '근데', '솔직히', '무슨', '어떤', '이런', '저런']
+    return [normalize_korean_word(w) for w in raw_tokens if normalize_korean_word(w) not in noise]
 
-def generate_pinpoint_query(title, hashtags):
+# 🌟 [v51.0 Key Feature] N-gram(Bi-gram) Generator
+def generate_ngrams(text, n=2):
+    tokens = extract_meaningful_tokens(text)
+    if len(tokens) < n: return []
+    return [" ".join(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
+
+# 🌟 [v51.0 Key Feature] Revolutionary Query Generator
+def generate_revolutionary_query(title, hashtags, transcript):
+    # 1. 인용구 우선 (Quote Sniper)
     quotes = re.findall(r'[\"“\'](.*?)[\"”\']', title)
     if quotes:
-        longest_quote = max(quotes, key=len)
-        quote_nouns = extract_nouns(longest_quote)
-        vip_in_title = [w for w in extract_nouns(title) if w in VIP_ENTITIES]
-        final_query = f"{' '.join(vip_in_title)} {' '.join(quote_nouns[:3])}".strip()
-        if not final_query.strip(): final_query = " ".join(quote_nouns[:4])
-        return final_query
+        quote_text = max(quotes, key=len)
+        quote_tokens = extract_meaningful_tokens(quote_text)
+        if len(quote_tokens) >= 2:
+            return " ".join(quote_tokens[:4])
 
-    clean_text = title + " " + " ".join([h.replace("#", "") for h in hashtags])
-    words = clean_text.split()
-    subject_chunk, object_word, vital_word = "", "", ""
-    for vital in VITAL_KEYWORDS:
-        if vital in clean_text: vital_word = vital; break
-    for i, word in enumerate(words):
-        match = re.match(r'([가-힣A-Za-z0-9]+)(은|는|이|가|을|를|에|에게|로서|로)', word)
-        if match:
-            noun, josa = match.group(1), match.group(2)
-            if noun in ['오늘밤', '지금', '이유', '결국']: continue
-            if not subject_chunk and josa in ['은', '는', '이', '가']:
-                prev_noun = ""
-                if i > 0:
-                    prev_word = words[i-1]
-                    if re.fullmatch(r'[가-힣A-Za-z0-9]+', prev_word):
-                        if prev_word not in VITAL_KEYWORDS + ['충격', '속보']: prev_noun = prev_word
-                subject_chunk = f"{prev_noun} {noun}" if prev_noun else noun
-            elif not object_word and josa in ['을', '를', '에', '에게', '로']:
-                if noun not in VITAL_KEYWORDS and noun not in subject_chunk: object_word = noun
-    query_parts = [p for p in [subject_chunk, object_word, vital_word] if p]
-    if not subject_chunk: return " ".join(extract_nouns(title)[:3])
-    return " ".join(query_parts)
+    # 2. 제목 기반 N-gram 생성 (ex: "조세호 조폭", "조폭 사진")
+    title_bigrams = generate_ngrams(title, 2)
+    
+    # 3. 자막에서 N-gram 검증 (Cross-Validation)
+    # 제목에 있는 연관 단어쌍이 자막에도 그대로 있는가? -> 강력한 핵심 주제
+    valid_bigrams = [bg for bg in title_bigrams if bg in transcript]
+    
+    if valid_bigrams:
+        # 가장 긴(혹은 첫 번째) 유효한 단어쌍 반환
+        return valid_bigrams[0]
+    
+    # 4. VIP 주어 + 서술어 조합 (Fallback)
+    # N-gram이 없으면, 제목의 VIP(주어)와 자막 최빈출 단어(서술어/목적어)를 결합
+    title_tokens = extract_meaningful_tokens(title)
+    vip_in_title = [w for w in title_tokens if w in VIP_ENTITIES]
+    
+    transcript_tokens = extract_meaningful_tokens(transcript)
+    trans_counter = Counter(transcript_tokens)
+    
+    subject = vip_in_title[0] if vip_in_title else (title_tokens[0] if title_tokens else "")
+    
+    # 자막에서 주어와 다른 최빈출 단어 찾기 (Action 찾기)
+    action = ""
+    for word, cnt in trans_counter.most_common(5):
+        if word != subject:
+            action = word
+            break
+            
+    if subject and action:
+        return f"{subject} {action}"
+    
+    return " ".join(title_tokens[:3])
 
 def summarize_transcript(text, title, max_sentences=3):
     if not text or len(text) < 50: return "⚠️ 요약할 자막 내용이 충분하지 않습니다."
-    if "EXTM3U" in text or "http" in text:
-        text = re.sub(r'http\S+', '', text)
-        text = text.replace("#EXTM3U", "").replace("#EXT-X-VERSION:3", "")
-    
-    clean_text = re.sub(r'\[.*?\]', '', text)
-    clean_text = re.sub(r'[>]+', '', clean_text)
+    clean_text = re.sub(r'http\S+|#EXTM3U|#EXT-X-VERSION:3', '', text)
+    clean_text = re.sub(r'\[.*?\]|[>]+', '', clean_text)
     sentences = re.split(r'(?<=[.?!])\s+', clean_text)
     if len(sentences) <= 3: return clean_text.strip()
     
-    title_nouns = set(extract_nouns(title))
+    title_nouns = set(extract_meaningful_tokens(title))
     scored_sentences = []
-    total_sentences = len(sentences)
     
     for i, sent in enumerate(sentences):
         if len(sent) < 15: continue
         score = 0
-        sent_nouns = extract_nouns(sent)
-        score += len(sent_nouns)
-        for n in sent_nouns:
+        sent_tokens = extract_meaningful_tokens(sent)
+        score += len(sent_tokens)
+        for n in sent_tokens:
             if n in title_nouns: score += 10
-        if i < total_sentences * 0.2: score += 3
-        elif i > total_sentences * 0.8: score += 2
+        if i < len(sentences) * 0.2: score += 3
+        elif i > len(sentences) * 0.8: score += 2
         scored_sentences.append((i, sent, score))
         
     top_sentences = sorted(scored_sentences, key=lambda x:x[2], reverse=True)[:max_sentences]
     top_sentences.sort(key=lambda x:x[0])
     return f"📌 **핵심 요약**: {' '.join([s[1] for s in top_sentences])}"
-
-def clean_html(raw_html): return BeautifulSoup(raw_html, "html.parser").get_text()
 
 def clean_html_regex(text):
     if not text: return ""
@@ -284,7 +236,7 @@ def count_sensational_words(text):
 def check_tag_abuse(title, hashtags, channel_name):
     if check_is_official(channel_name): return 0, "공식 채널 면제"
     if not hashtags: return 0, "해시태그 없음"
-    tn = set(extract_nouns(title)); tgn = set(h.replace("#", "").split(":")[-1].strip() for h in hashtags)
+    tn = set(extract_meaningful_tokens(title)); tgn = set(h.replace("#", "").split(":")[-1].strip() for h in hashtags)
     if len(tgn) < 2: return 0, "양호"
     return (PENALTY_ABUSE, "🚨 심각 (불일치)") if not tn.intersection(tgn) else (0, "양호")
 
@@ -301,18 +253,14 @@ def fetch_real_transcript(info_dict):
             res = requests.get(url)
             if res.status_code == 200:
                 content = res.text
-                if "#EXTM3U" in content:
-                    return None, "자막 포맷 오류 (라이브 스트림)"
-                
+                if "#EXTM3U" in content: return None, "자막 포맷 오류"
                 clean = []
                 for line in content.splitlines():
                     if '-->' not in line and 'WEBVTT' not in line and line.strip():
                         t = re.sub(r'<[^>]+>', '', line).strip()
                         if t and t not in clean: clean.append(t)
-                
                 full_text = " ".join(clean)
-                char_count = len(full_text)
-                return full_text, f"✅ 전체 자막 수집 완료 (총 {char_count:,}자)"
+                return full_text, f"✅ 전체 자막 수집 완료 (총 {len(full_text):,}자)"
     except: pass
     return None, "자막 다운로드 실패"
 
@@ -327,7 +275,7 @@ def fetch_comments_via_api(video_id):
     return [], "❌ API 통신 실패"
 
 def calculate_dual_match(news_item, query_nouns, transcript, query_str_full):
-    tn = set(extract_nouns(news_item.get('title', ''))); dn = set(extract_nouns(news_item.get('desc', '')))
+    tn = set(extract_meaningful_tokens(news_item.get('title', ''))); dn = set(extract_meaningful_tokens(news_item.get('desc', '')))
     qn = set(query_nouns)
     
     t_score = 1.0 if len(qn & tn) >= 2 else 0.5 if len(qn & tn) >= 1 else 0
@@ -338,14 +286,13 @@ def calculate_dual_match(news_item, query_nouns, transcript, query_str_full):
     for critical in CRITICAL_STATE_KEYWORDS:
         if critical in query_str_full and critical not in news_item.get('title', ''):
             return 0 
-            
     return match_score
 
 def analyze_comment_relevance(comments, context_text):
     if not comments: return [], 0, "분석 불가"
-    cn = extract_nouns(" ".join(comments))
+    cn = extract_meaningful_tokens(" ".join(comments))
     top = Counter(cn).most_common(5)
-    ctx = set(extract_nouns(context_text))
+    ctx = set(extract_meaningful_tokens(context_text))
     match = sum(1 for w,c in top if w in ctx)
     score = int(match/len(top)*100) if top else 0
     msg = "✅ 주제 집중" if score >= 60 else "⚠️ 일부 관련" if score >= 20 else "❌ 무관"
@@ -395,16 +342,13 @@ def run_forensic_main(url):
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
-            query = generate_pinpoint_query(title, tags)
-            if " " not in query and len(query) < 5: 
-                top_kws = extract_top_keywords_from_transcript(full_text, 1)
-                if top_kws: query += f" {top_kws[0][0]}"
+            # 🌟 [v51.0] Revolutionary Query
+            query = generate_revolutionary_query(title, tags, full_text)
 
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
             abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
             
             summary = summarize_transcript(full_text, title)
-            
             agitation = count_sensational_words(full_text + title)
             
             ts, fs = vector_engine.analyze_position(query + " " + title)
@@ -413,7 +357,7 @@ def run_forensic_main(url):
             news_items = fetch_news_regex(query)
             news_ev = []; max_match = 0
             for item in news_items:
-                m = calculate_dual_match(item, extract_nouns(query), full_text, query)
+                m = calculate_dual_match(item, extract_meaningful_tokens(query), full_text, query)
                 if m > max_match: max_match = m
                 news_ev.append({"뉴스 제목": item['title'], "최종 일치도": f"{m}%"})
             
@@ -432,9 +376,7 @@ def run_forensic_main(url):
             
             if is_silent:
                 if has_critical_claim:
-                    silent_penalty = 5
-                    t_impact = 0; f_impact = 0
-                    is_gray_zone = True
+                    silent_penalty = 5; t_impact = 0; f_impact = 0; is_gray_zone = True
                 elif agitation >= 3:
                     silent_penalty = PENALTY_SILENT_ECHO
                     t_impact *= 2; f_impact *= 2
@@ -476,7 +418,6 @@ def run_forensic_main(url):
             elif silent_penalty > 0: 
                 st.error("🔇 **침묵의 메아리(Silent Echo)**: 자극적인 주장이지만 근거가 부족합니다.")
 
-            # 🌟 [v50.0 Viz] Intelligence Map
             st.divider()
             st.subheader("🧠 Intelligence Map: 내부 지식 분포도")
             render_intelligence_distribution(prob)
@@ -486,7 +427,7 @@ def run_forensic_main(url):
             with col1:
                 st.write("**[영상 상세 정보]**")
                 st.table(pd.DataFrame({"항목": ["영상 제목", "채널명", "조회수", "해시태그"], "내용": [title, uploader, f"{info.get('view_count',0):,}회", hashtag_display]}))
-                st.info(f"🎯 **핀포인트 뉴스 검색어**: {query}")
+                st.info(f"🎯 **혁신적 N-gram 검색어**: {query}")
                 with st.container(border=True):
                     st.markdown("📝 **영상 내용 요약 (AI Abstract)**")
                     st.caption("자막 데이터를 분석하여 핵심 문장 3개를 추출한 결과입니다.")
@@ -537,7 +478,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v50.0")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v51.0")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
