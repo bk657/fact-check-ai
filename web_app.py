@@ -1,6 +1,4 @@
 import streamlit as st
-from supabase import create_client
-import google.generativeai as genai
 import re
 import requests
 import time
@@ -9,9 +7,10 @@ import yt_dlp
 import pandas as pd
 import altair as alt
 from datetime import datetime
+import google.generativeai as genai
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v60.2 (Stable)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v60.3 (Fixed)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets 로드
 try:
@@ -28,13 +27,13 @@ except KeyError as e:
 @st.cache_resource
 def init_services():
     try:
+        from supabase import create_client
         sb = create_client(SUPABASE_URL, SUPABASE_KEY)
         genai.configure(api_key=GOOGLE_API_KEY)
-        # 🚨 [수정] 1.5-flash 대신 가장 안정적인 'gemini-pro' 사용
-        model = genai.GenerativeModel('gemini-pro')
+        # 🚨 [최신 모델] 라이브러리 업데이트 후 1.5-flash 사용 (가장 빠름)
+        model = genai.GenerativeModel('gemini-1.5-flash')
         return sb, model
     except Exception as e:
-        st.error(f"초기화 실패: {e}")
         return None, None
 
 supabase, gemini_model = init_services()
@@ -48,50 +47,54 @@ class GeminiAgent:
         """
         1단계: 뉴스 검색용 키워드 추출
         """
+        if not self.model: return title
+        
         prompt = f"""
-        Extract one specific search keyword to fact-check the following YouTube video.
+        Extract the single most important search query to fact-check this video.
         
         [Rules]
-        1. Remove emotional words like 'Shocking', 'Crying'.
-        2. Combine 'Person Name' + 'Specific Event'.
-        3. Example: 'Jay Y. Lee Crying' -> 'Jay Y. Lee Divorce Reason'
-        4. Output ONLY the keyword string. No explanations.
+        1. Combine 'Main Person' + 'Key Event'.
+        2. Remove emotional words like 'Shocking'.
+        3. Output ONLY the keyword string. (e.g., "Jay Lee Divorce")
 
         Title: {title}
-        Transcript Start: {transcript[:1000]}
+        Transcript: {transcript[:1000]}
         """
         try:
             response = self.model.generate_content(prompt)
             return response.text.strip()
         except:
-            return title # 실패 시 제목 그대로
+            return title
 
     def analyze_content(self, title, channel, transcript, news_context, comments):
         """
         2단계: 팩트체크 분석 (JSON 출력)
         """
-        prompt = f"""
-        You are a Fact-Check AI. Analyze the data below and respond in JSON format.
+        if not self.model:
+            return {"fake_prob": 50, "verdict": "오류", "summary": "AI 모델 로드 실패", "clickbait_score": 0}
 
-        [Data]
+        prompt = f"""
+        Analyze this YouTube video for fake news. Respond in JSON format ONLY.
+
+        [Input Data]
         - Title: {title}
-        - News Search Results: {news_context}
-        - Video Transcript: {transcript[:10000]}
+        - Transcript Summary: {transcript[:5000]}
+        - Google News Search Results: {news_context}
         - Comments: {comments}
 
-        [Instructions]
-        1. Compare the video claims with the News Search Results.
-        2. If the news confirms the claim, fake_prob is low (0-30).
-        3. If the news contradicts or there is no news, fake_prob is high (70-100).
-        4. Translate all output values (summary, reasoning, etc) into Korean.
+        [Tasks]
+        1. Compare the video's claims with the News Results.
+        2. If news confirms the claim -> Low fake_prob (0-30).
+        3. If news contradicts or no news found -> High fake_prob (70-100).
+        4. Translate all text values to Korean.
 
-        [JSON Output Format]
+        [JSON Format]
         {{
             "summary": "3 bullet points summary in Korean",
             "fake_prob": Integer (0-100),
             "verdict": "위험/주의/안전",
-            "reasoning": "Reasoning in Korean (citing news results)",
-            "fact_check_status": "Summary of verification status in Korean",
+            "reasoning": "Reasoning based on news comparison (Korean)",
+            "fact_check_status": "Verification status (Korean)",
             "clickbait_score": Integer (0-100)
         }}
         """
@@ -101,7 +104,7 @@ class GeminiAgent:
             return json.loads(text)
         except Exception as e:
             return {
-                "summary": "분석 중 오류 발생",
+                "summary": "분석 중 오류가 발생했습니다.",
                 "fake_prob": 50,
                 "verdict": "오류",
                 "reasoning": f"AI 응답 실패: {str(e)}",
@@ -118,12 +121,13 @@ def fetch_youtube_info(url):
         try:
             info = ydl.extract_info(url, download=False)
             transcript = ""
-            if 'subtitles' in info and 'ko' in info['subtitles']:
-                url = next((x['url'] for x in info['subtitles']['ko'] if x['ext'] == 'vtt'), None)
-                if url: transcript = requests.get(url).text
-            elif 'automatic_captions' in info and 'ko' in info['automatic_captions']:
-                url = next((x['url'] for x in info['automatic_captions']['ko'] if x['ext'] == 'vtt'), None)
-                if url: transcript = requests.get(url).text
+            # 자막 추출 우선순위: 수동 -> 자동
+            for sub_type in ['subtitles', 'automatic_captions']:
+                if sub_type in info and 'ko' in info[sub_type]:
+                    url = next((x['url'] for x in info[sub_type]['ko'] if x['ext'] == 'vtt'), None)
+                    if url: 
+                        transcript = requests.get(url).text
+                        break
             
             clean_text = ""
             if transcript:
@@ -177,54 +181,65 @@ with st.sidebar:
             st.session_state["is_admin"] = True
             st.rerun()
 
-st.title("⚖️ Fact-Check Center v60.2")
-st.caption("Gemini Pro Engine • Stable Version")
+st.title("⚖️ Fact-Check Center v60.3")
+st.caption("Gemini AI Core • Latest Library Patch")
 
 with st.container(border=True):
     url_input = st.text_input("유튜브 URL 입력")
     if st.button("🚀 분석 시작", type="primary", use_container_width=True):
-        if url_input and gemini_model:
-            with st.status("🕵️ AI 분석 프로세스 가동...", expanded=True) as status:
-                
-                st.write("📥 영상 데이터 추출 중...")
-                v_info = fetch_youtube_info(url_input)
-                if not v_info:
-                    st.error("영상 정보를 가져오지 못했습니다.")
-                    st.stop()
-                
-                st.write("🧠 Gemini: 뉴스 검색용 핵심 키워드 추출 중...")
-                search_keyword = gemini_agent.extract_keywords(v_info['title'], v_info['transcript'])
-                st.info(f"👉 추출된 검색어: **{search_keyword}**")
-                
-                st.write(f"📰 '{search_keyword}' 관련 뉴스 검색 중...")
-                news_result = fetch_google_news(search_keyword)
-                
-                st.write("⚖️ 팩트 교차 검증 및 판결 중...")
-                comments = fetch_comments(v_info['id'])
-                result = gemini_agent.analyze_content(
-                    v_info['title'], v_info['channel'], v_info['transcript'], news_result, comments
-                )
-                
-                save_data = {**v_info, **result}
-                save_history(save_data)
-                
-                status.update(label="✅ 분석 완료!", state="complete", expanded=False)
-
-            # --- 결과 표시 ---
-            st.divider()
-            c1, c2, c3 = st.columns(3)
-            c1.metric("가짜뉴스 위험도", f"{result['fake_prob']}%", delta="High" if result['fake_prob']>50 else "-Safe")
-            c2.metric("AI 판정", result['verdict'])
-            c3.metric("낚시성 지수", f"{result['clickbait_score']}점")
-            
-            if result['fake_prob'] > 60:
-                st.error(f"🚨 **주의**: {result['reasoning']}")
+        if url_input:
+            if not gemini_model:
+                st.error("⚠️ AI 모델 초기화 실패. 잠시 후 다시 시도하세요.")
             else:
-                st.success(f"✅ **양호**: {result['reasoning']}")
+                with st.status("🕵️ Gemini AI 분석 중...", expanded=True) as status:
+                    
+                    st.write("📥 영상 데이터 추출 중...")
+                    v_info = fetch_youtube_info(url_input)
+                    if not v_info:
+                        st.error("영상 정보를 가져오지 못했습니다.")
+                        st.stop()
+                    
+                    st.write("🧠 Gemini: 뉴스 검색용 핵심 키워드 추출 중...")
+                    search_keyword = gemini_agent.extract_keywords(v_info['title'], v_info['transcript'])
+                    st.info(f"👉 추출된 검색어: **{search_keyword}**")
+                    
+                    st.write(f"📰 '{search_keyword}' 관련 뉴스 검색 중...")
+                    news_result = fetch_google_news(search_keyword)
+                    
+                    st.write("⚖️ 팩트 교차 검증 및 판결 중...")
+                    comments = fetch_comments(v_info['id'])
+                    result = gemini_agent.analyze_content(
+                        v_info['title'], v_info['channel'], v_info['transcript'], news_result, comments
+                    )
+                    
+                    save_data = {**v_info, **result}
+                    save_history(save_data)
+                    
+                    status.update(label="✅ 분석 완료!", state="complete", expanded=False)
+
+                # --- 결과 표시 ---
+                st.divider()
+                c1, c2, c3 = st.columns(3)
+                c1.metric("가짜뉴스 위험도", f"{result['fake_prob']}%", delta="High" if result['fake_prob']>50 else "-Safe")
+                c2.metric("AI 판정", result['verdict'])
+                c3.metric("낚시성 지수", f"{result['clickbait_score']}점")
                 
-            st.subheader("📝 상세 분석 리포트")
-            st.info(f"**검증 상태**: {result['fact_check_status']}")
-            st.write(f"**요약**: {result['summary']}")
-            
-            with st.expander("🔍 참조된 뉴스 기사 데이터"):
-                st.write(news_result)
+                if result['fake_prob'] > 60:
+                    st.error(f"🚨 **주의**: {result['reasoning']}")
+                else:
+                    st.success(f"✅ **양호**: {result['reasoning']}")
+                    
+                st.subheader("📝 상세 분석 리포트")
+                st.info(f"**검증 상태**: {result['fact_check_status']}")
+                st.write(f"**요약**: {result['summary']}")
+                
+                with st.expander("🔍 참조된 뉴스 기사 데이터"):
+                    st.write(news_result)
+
+st.divider()
+st.subheader("🗂️ 분석 기록")
+try:
+    response = supabase.table("analysis_history").select("*").order("id", desc=True).limit(5).execute()
+    if response.data:
+        st.dataframe(pd.DataFrame(response.data)[['video_title', 'fake_prob', 'keywords', 'analysis_date']])
+except: pass
