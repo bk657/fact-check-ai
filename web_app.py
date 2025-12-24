@@ -1,15 +1,15 @@
 import streamlit as st
 import sys
-import subprocess
+import google.generativeai as genai
+import traceback
 
 # --- [라이브러리 버전 확인] ---
 try:
-    import google.generativeai as genai
     lib_version = genai.__version__
-except ImportError:
+except:
     lib_version = "Not Installed"
 
-st.set_page_config(page_title="Fact-Check v61.1 (Auto-Negotiation)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check v61.2 (Deep Debug)", layout="wide", page_icon="⚖️")
 
 # --- [시스템 설정] ---
 import re
@@ -32,45 +32,51 @@ except KeyError as e:
     st.error(f"❌ 필수 키 설정 누락: {e}")
     st.stop()
 
-# 🌟 서비스 초기화 (자동 모델 협상 로직)
+# 🌟 서비스 초기화 (초정밀 진단 모드)
 @st.cache_resource
 def init_services():
     sb = None
     model = None
-    connected_name = "None"
+    status_log = ""
     
     try:
         from supabase import create_client
         sb = create_client(SUPABASE_URL, SUPABASE_KEY)
         genai.configure(api_key=GOOGLE_API_KEY)
         
-        # 🚨 [핵심] 연결 가능한 모델을 순서대로 테스트
-        # 1.5-flash가 404면 gemini-pro로, 그것도 안되면 1.0으로 자동 넘어감
-        candidates = [
-            'gemini-1.5-flash',
-            'gemini-pro',       # 가장 안정적
-            'gemini-1.5-pro',
-            'gemini-1.0-pro'
-        ]
-        
-        for m_name in candidates:
-            try:
-                temp_model = genai.GenerativeModel(m_name)
-                # 실제 통신 테스트 (Ping)
-                response = temp_model.generate_content("Hi")
-                if response:
-                    model = temp_model
-                    connected_name = m_name
-                    break # 성공하면 루프 종료
-            except Exception:
-                continue # 실패하면 다음 후보 시도
+        # 🚨 [진단 1] API 키로 사용 가능한 모델 목록을 조회해봅니다.
+        # 여기서 에러가 나면 키 자체가 문제인 것입니다.
+        try:
+            available_models = []
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    available_models.append(m.name)
+            
+            if not available_models:
+                status_log = "API Key Valid, but NO models found available."
+            else:
+                status_log = f"Found Models: {', '.join(available_models)}"
+                # 목록에 있는 첫 번째 모델 선택
+                target = available_models[0]
+                if 'gemini-1.5-flash' in str(available_models): target = 'gemini-1.5-flash'
+                elif 'gemini-pro' in str(available_models): target = 'gemini-pro'
+                
+                # 모델명 보정 (models/ 제거)
+                if target.startswith('models/'): target = target.replace('models/', '')
+                
+                model = genai.GenerativeModel(target)
+                status_log = f"Connected: {target}"
+
+        except Exception as e:
+            # 🚨 여기가 핵심입니다. 구글이 보낸 에러 메시지를 잡습니다.
+            status_log = f"List Error: {str(e)}"
 
     except Exception as e:
-        return None, None, str(e)
+        return None, None, f"Init Error: {str(e)}"
 
-    return sb, model, connected_name
+    return sb, model, status_log
 
-supabase, gemini_model, model_name = init_services()
+supabase, gemini_model, debug_msg = init_services()
 
 # --- [Gemini AI 에이전트] ---
 class GeminiAgent:
@@ -79,7 +85,7 @@ class GeminiAgent:
 
     def extract_keywords(self, title, transcript):
         if not self.model: return title
-        prompt = f"Extract ONE search keyword for: {title}. Context: {transcript[:500]}"
+        prompt = f"Extract ONE search keyword for: {title}"
         try:
             response = self.model.generate_content(prompt)
             return response.text.strip()
@@ -87,7 +93,7 @@ class GeminiAgent:
 
     def analyze_content(self, title, channel, transcript, news_context, comments):
         if not self.model:
-            return {"fake_prob": 50, "verdict": "시스템 오류", "summary": "AI 연결 실패", "clickbait_score": 0}
+            return {"fake_prob": 50, "verdict": "오류", "summary": "연결 실패", "clickbait_score": 0}
 
         prompt = f"""
         Analyze logic. Respond JSON.
@@ -95,7 +101,7 @@ class GeminiAgent:
         
         JSON Format:
         {{
-            "summary": "Korean summary text",
+            "summary": "Korean text",
             "fake_prob": 0-100,
             "verdict": "Text",
             "reasoning": "Korean text",
@@ -173,30 +179,34 @@ def save_history(data):
 # --- [UI 구성] ---
 with st.sidebar:
     st.header("🛡️ 관리자")
-    st.success(f"Lib: v{lib_version}")
+    st.info(f"Lib: v{lib_version}")
     
-    # 🌟 연결된 모델 확인 (성공 시 모델명이 뜸)
-    if model_name and model_name != "None":
-        st.success(f"✅ Active: {model_name}")
+    # 🌟 [진단 결과 출력]
+    if "Connected" in debug_msg:
+        st.success(debug_msg)
+    elif "Error" in debug_msg:
+        st.error("🚨 구글 서버 응답:")
+        st.code(debug_msg, language="text")
+        st.warning("위 메시지를 확인하세요.")
     else:
-        st.error("❌ No Model Available")
-        
+        st.warning(f"Status: {debug_msg}")
+    
     if not st.session_state.get("is_admin"):
         if st.button("Login"):
             st.session_state["is_admin"] = True
             st.rerun()
 
-st.title("⚖️ Fact-Check Center v61.1")
-st.caption("Gemini Auto-Negotiation Engine")
+st.title("⚖️ Fact-Check Center v61.2")
+st.caption("Deep Diagnostics Mode")
 
 with st.container(border=True):
     url_input = st.text_input("유튜브 URL 입력")
     if st.button("🚀 분석 시작", type="primary", use_container_width=True):
         if url_input:
             if not gemini_model:
-                st.error("⚠️ 사용 가능한 AI 모델을 찾을 수 없습니다. (API Key 문제 가능성)")
+                st.error("⚠️ AI 모델 연결 불가 (사이드바 에러 확인)")
             else:
-                with st.status(f"🕵️ Gemini ({model_name}) 분석 중...", expanded=True) as status:
+                with st.status(f"🕵️ Gemini ({debug_msg}) 가동 중...", expanded=True) as status:
                     
                     st.write("📥 영상 데이터 추출 중...")
                     v_info = fetch_youtube_info(url_input)
