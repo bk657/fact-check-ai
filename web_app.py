@@ -13,16 +13,16 @@ import altair as alt
 import traceback
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v54.0 (Masterpiece)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v54.0", layout="wide", page_icon="⚖️")
 
-# 🌟 Secrets 로드 (실패 시 에러 처리)
+# 🌟 Secrets 로드
 try:
     YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
     ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
 except:
-    st.error("❌ 필수 키(Secrets)가 설정되지 않았습니다. Streamlit 설정을 확인해주세요.")
+    st.error("❌ 필수 키(Secrets)가 설정되지 않았습니다.")
     st.stop()
 
 # DB 연결
@@ -38,16 +38,15 @@ except:
     st.stop()
 
 # --- [2. 핵심 분석 엔진 (Pure Logic NLP)] ---
-# 무거운 AI 대신 정교한 규칙 기반 엔진 사용
+# AI 대신 정교한 '규칙(Rule)'으로 한국어를 분해합니다.
 
 VITAL_KEYWORDS = ['위독', '사망', '별세', '구속', '체포', '기소', '실형', '응급실', '이혼', '불화', '파경', '충격', '경악', '속보', '긴급', '폭로', '양성', '확진', '심정지', '뇌사', '중태', '압수수색', '소환', '퇴진', '탄핵', '내란', '간첩']
 VIP_ENTITIES = ['윤석열', '대통령', '이재명', '한동훈', '김건희', '문재인', '박근혜', '이명박', '트럼프', '바이든', '푸틴', '젤렌스키', '시진핑', '정은', '이준석', '조국', '추미애', '홍준표', '유승민', '안철수', '손흥민', '이강인', '김민재', '류현진', '재용', '정의선', '최태원', '류중일', '감독', '조세호', '유재석', '장동민', '유호정', '이재룡', '임세령']
 CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
-OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아', 'JTBC News', 'SBS 뉴스', 'KBS News', 'MBCNEWS']
+OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
 
 def normalize_korean_word(word):
     """한국어 조사 제거 (Regex)"""
-    # 은/는/이/가/을/를/의/에/에서/로/으로/와/과/도/만...
     josa_pattern = r'(은|는|이|가|을|를|의|에|에서|로|으로|와|과|도|만|한테|에게|이랑|까지|부터|조차|마저|이라고|라는|다는)$'
     if len(word) >= 2:
         return re.sub(josa_pattern, '', word)
@@ -55,24 +54,20 @@ def normalize_korean_word(word):
 
 def extract_meaningful_tokens(text):
     """의미 있는 단어 추출"""
-    # 한글만 추출
     raw_tokens = re.findall(r'[가-힣]{2,}', text)
-    # 불용어(Stopwords)
     noise = ['충격', '경악', '속보', '긴급', '오늘', '내일', '지금', '결국', '뉴스', '영상', '대부분', '이유', '왜', '있는', '없는', '하는', '것', '수', '등', '진짜', '정말', '너무', '그냥', '이제', '사실', '국민', '우리', '대한민국', '여러분', '그리고', '그래서', '그러나', '솔직히', '무슨', '어떤']
     
     tokens = [normalize_korean_word(w) for w in raw_tokens]
     return [t for t in tokens if t not in noise and len(t) > 1]
 
 def detect_subject_logic(title):
-    """제목에서 주어(Subject) 추론"""
-    tokens = extract_meaningful_tokens(title)
-    
+    """제목에서 주어(Subject) 추론 - 호칭/VIP 기반"""
     # 1. VIP 리스트 매칭 (최우선)
     for vip in VIP_ENTITIES:
         if vip in title: return vip
     
     # 2. 호칭 기반 추론 ("OOO 회장", "OOO 씨")
-    honorifics = ['회장', '의원', '대표', '대통령', '장관', '박사', '교수', '감독', '선수', '씨', '배우', '가수', '개그맨', '방송인']
+    honorifics = ['회장', '의원', '대표', '대통령', '장관', '박사', '교수', '감독', '선수', '씨', '배우', '가수', '개그맨', '방송인', '변호사']
     title_split = title.split()
     for i, word in enumerate(title_split):
         for hon in honorifics:
@@ -81,6 +76,7 @@ def detect_subject_logic(title):
                 if len(prev_word) > 1: return prev_word
                 
     # 3. 문장 맨 앞 명사 (확률 높음)
+    tokens = extract_meaningful_tokens(title)
     if tokens: return tokens[0]
     return ""
 
@@ -91,8 +87,7 @@ def generate_smart_query(title, transcript):
     
     # 2. 핵심 행위/사건 찾기 (제목과 자막의 교집합 중 가장 긴 단어)
     t_tokens = set(extract_meaningful_tokens(title))
-    # 자막 앞부분만 사용하여 문맥 파악
-    tr_tokens = set(extract_meaningful_tokens(transcript[:1000]))
+    tr_tokens = set(extract_meaningful_tokens(transcript[:1000])) # 자막 앞부분만 사용
     
     common = t_tokens.intersection(tr_tokens)
     # 주어 제외하고 나머지 중 가장 긴 단어 (구체적 사건일 확률 높음)
@@ -102,7 +97,6 @@ def generate_smart_query(title, transcript):
     
     # 3. Fallback: 교집합이 없으면 제목의 중요 단어 사용
     if not action:
-        # 제목에서 치명적 키워드가 있으면 그걸 사용
         for crit in CRITICAL_STATE_KEYWORDS:
             if crit in title:
                 action = crit
@@ -120,7 +114,6 @@ def generate_smart_query(title, transcript):
 def fetch_real_transcript(info):
     try:
         url = None
-        # 자동 자막 우선 탐색
         for key in ['subtitles', 'automatic_captions']:
             if key in info and 'ko' in info[key]:
                 for fmt in info[key]['ko']:
@@ -149,24 +142,19 @@ def fetch_news_regex(query):
         
         for item in items[:10]: # 상위 10개
             t = re.search(r'<title>(.*?)</title>', item)
-            d = re.search(r'<description>(.*?)</description>', item) # RSS엔 설명이 없을 수 있음
             
             nt = t.group(1).replace("<![CDATA[", "").replace("]]>", "") if t else ""
-            nd = clean_html_regex(d.group(1).replace("<![CDATA[", "").replace("]]>", "")) if d else ""
             
-            # 출처 추출 (제목 뒤 ' - 언론사명')
-            source = ""
+            # 출처 추출
+            source = "Google News"
             if " - " in nt:
                 parts = nt.rsplit(" - ", 1)
                 nt = parts[0]
                 source = parts[1]
                 
-            news_res.append({'title': nt, 'desc': nd, 'source': source})
+            news_res.append({'title': nt, 'source': source})
     except: pass
     return news_res
-
-def clean_html_regex(text):
-    return re.sub('<.*?>', '', text).strip()
 
 def calculate_match_score(news_title, query, transcript, video_title):
     # 1. 쿼리 키워드 매칭
@@ -180,7 +168,6 @@ def calculate_match_score(news_title, query, transcript, video_title):
     elif match_cnt == 1: base_score = 40
     
     # 2. Critical Check (치명적 키워드 불일치 시 0점)
-    # 예: 영상엔 '사망'이 있는데 뉴스엔 없다? -> 0점
     for crit in CRITICAL_STATE_KEYWORDS:
         if crit in video_title and crit not in news_title:
             return 0
@@ -190,7 +177,6 @@ def calculate_match_score(news_title, query, transcript, video_title):
 def summarize_text_simple(text):
     if not text: return "요약할 내용이 없습니다."
     sents = text.split('.')
-    # 3문장만 추출
     return ". ".join([s.strip() for s in sents[:3] if s.strip()]) + "."
 
 def save_analysis_history(channel, title, score, url, query):
@@ -216,7 +202,6 @@ def get_db_stats():
 
 # --- [4. UI 컴포넌트] ---
 def render_score_breakdown(items):
-    # HTML Table로 점수 내역 이쁘게 표시
     rows = ""
     for label, score, note in items:
         color = "#ffcccc" if score > 0 else "#ccffcc" if score < 0 else "#f0f0f0"
@@ -252,12 +237,13 @@ def main():
             if st.button("로그아웃"): st.session_state["is_admin"] = False; st.rerun()
         else:
             with st.form("login"):
+                password_input = st.text_input("관리자 비밀번호", type="password")
                 if st.form_submit_button("로그인"):
-                    if st.text_input("PW", type="password") == ADMIN_PASSWORD:
+                    if password_input == ADMIN_PASSWORD:
                         st.session_state["is_admin"] = True; st.rerun()
                         
         st.divider()
-        db_total, t_cnt, f_cnt, _ = get_db_stats()
+        db_total, t_cnt, f_cnt, df_stats = get_db_stats()
         st.metric("누적 데이터", f"{db_total}건")
         st.caption(f"진실: {t_cnt} | 거짓: {f_cnt}")
 
@@ -289,13 +275,9 @@ def main():
         # 2. 분석 로직 수행
         witty_loading(2)
         
-        # 쿼리 생성
         query = generate_smart_query(title, full_text)
-        
-        # 뉴스 검색
         news_items = fetch_news_regex(query)
         
-        # 일치도 계산
         max_match_score = 0
         verified_news = []
         for item in news_items:
@@ -316,7 +298,7 @@ def main():
         
         if is_silent:
             if has_critical:
-                news_score = 5 # 중립적 경고
+                news_score = 5 
                 news_note = "⚠️ 미검증 위험 주장 (판단 보류)"
             else:
                 news_score = 10
@@ -346,4 +328,52 @@ def main():
         if agitation_score > 0:
             details.append(("자극적 표현", agitation_score, f"선동 키워드 {agitation}회"))
             
-        # 최종
+        # 최종 점수
+        final_score = base_score + news_score + official_score + agitation_score
+        final_score = max(5, min(99, final_score))
+        
+        save_analysis_history(uploader, title, final_score, url_input, query)
+        
+        witty_loading(3)
+        
+        # --- [결과 화면 출력] ---
+        st.divider()
+        c1, c2 = st.columns([1, 1.5])
+        
+        with c1:
+            st.subheader("🕵️ 최종 분석 결과")
+            if final_score >= 70:
+                st.error(f"🚨 가짜뉴스 확률: {final_score}% (위험)")
+            elif final_score <= 30:
+                st.success(f"🟢 가짜뉴스 확률: {final_score}% (안전)")
+            else:
+                st.warning(f"🟠 가짜뉴스 확률: {final_score}% (주의)")
+            
+            st.caption("AI 판단 근거:")
+            render_score_breakdown(details)
+            
+            st.info(f"🎯 **생성된 검색어**: {query}")
+            with st.expander("📝 영상 요약 보기"):
+                st.write(summarize_text_simple(full_text))
+
+        with c2:
+            st.subheader("📰 관련 뉴스 (Fact-Check)")
+            if verified_news:
+                st.table(pd.DataFrame(verified_news))
+            else:
+                st.warning("관련된 뉴스 기사가 검색되지 않았습니다.")
+                
+            if not df_stats.empty:
+                st.markdown("---")
+                st.subheader("📊 누적 데이터 분포")
+                base = alt.Chart(df_stats).transform_density('fake_prob', as_=['fake_prob', 'density'], extent=[0, 100]).mark_area(opacity=0.3, color='#888').encode(x=alt.X('fake_prob:Q', title='확률 분포'), y='density:Q')
+                rule = alt.Chart(pd.DataFrame({'x': [final_score]})).mark_rule(color='blue', size=3).encode(x='x')
+                st.altair_chart(base + rule, use_container_width=True)
+                st.caption("파란선: 현재 영상의 위치")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        st.error("오류가 발생했습니다.")
+        st.code(traceback.format_exc())
