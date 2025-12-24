@@ -14,7 +14,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v68.0 (Stable)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v68.2 (Legacy Support)", layout="wide", page_icon="⚖️")
 
 # 세션 상태 초기화
 if "is_admin" not in st.session_state:
@@ -83,14 +83,12 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (Stable & Transparent)] ---
+# --- [4. Gemini Logic (Legacy Fallback)] ---
 def get_gemini_response_stable(prompt_template, input_text):
-    """
-    🚨 안정성 강화: 대기 시간 증가 + 상세 에러 리포팅
-    """
     genai.configure(api_key=GOOGLE_API_KEY)
     
-    # 안정적인 모델만 선정
+    # 🚨 모델 순서 변경: 최신(Flash) -> 구형(Pro) -> 더 구형(gemini-pro)
+    # 404 에러가 나면 즉시 다음 모델로 넘어감 (사용자에게 에러 안 보여줌)
     candidates = [
         ('gemini-1.5-flash', 30000), 
         ('gemini-1.5-pro', 20000), 
@@ -104,7 +102,7 @@ def get_gemini_response_stable(prompt_template, input_text):
         {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
     ]
 
-    error_logs = [] # 에러 기록용
+    last_error_msg = ""
     
     for i, (model_name, char_limit) in enumerate(candidates):
         try:
@@ -115,23 +113,22 @@ def get_gemini_response_stable(prompt_template, input_text):
             response = model.generate_content(formatted_prompt, safety_settings=safety_settings)
             
             if response.text:
-                return response.text.strip(), model_name, error_logs
+                # 성공하면 바로 리턴
+                return response.text.strip(), model_name, None
                 
         except Exception as e:
-            err_msg = str(e)
-            error_logs.append(f"{model_name}: {err_msg[:50]}...")
-            
-            # 🚨 429 에러(속도제한)면 길게 대기 (5초, 10초)
-            sleep_time = 5 * (i + 1)
-            time.sleep(sleep_time)
+            # 실패하면 조용히 다음 모델 시도
+            last_error_msg = str(e)
+            time.sleep(1) # 1초 숨 고르기
             continue
             
-    return None, "Fail", error_logs
+    # 모든 모델 실패 시
+    return None, "All Failed", last_error_msg
 
 def get_gemini_search_keywords(title, transcript):
     prompt_template = f"Extract ONE core search query (Nouns only). Input: {title} Transcript: {{INPUT}} Output: Query string only (Korean)."
     
-    result, model_name, errors = get_gemini_response_stable(prompt_template, transcript)
+    result, model_name, error = get_gemini_response_stable(prompt_template, transcript)
     
     if result:
         return result, f"✨ Gemini ({model_name.replace('models/','')})"
@@ -143,9 +140,9 @@ def get_gemini_search_keywords(title, transcript):
         t = re.sub(r'(은|는|이|가|을|를|의)$', '', t)
         if len(t) > 1: cleaned.append(t)
     
-    # 에러 원인 요약
-    err_summary = " / ".join(errors) if errors else "Unknown"
-    return " ".join(cleaned[:3]) if cleaned else title, f"🤖 Backup (Err: {err_summary[:30]}...)"
+    # 에러 메시지 정제
+    err_display = "Server Busy" if "429" in str(error) else "Model Update Req"
+    return " ".join(cleaned[:3]) if cleaned else title, f"🤖 Backup ({err_display})"
 
 def get_gemini_verdict(title, summary, news_items, fallback_score):
     news_context = "\n".join([f"- {item['title']}" for item in news_items])
@@ -160,7 +157,7 @@ def get_gemini_verdict(title, summary, news_items, fallback_score):
     Output JSON: {{ "risk_score": (0-100), "reason": "(Korean) explain." }}
     """
     
-    result, model_name, errors = get_gemini_response_stable(prompt_template, summary)
+    result, model_name, error = get_gemini_response_stable(prompt_template, summary)
     
     if result:
         try:
@@ -171,8 +168,8 @@ def get_gemini_verdict(title, summary, news_items, fallback_score):
             pass
     
     # Fail-Safe Mode
-    err_summary = " / ".join(errors) if errors else "Timeout"
-    reason = f"AI 서버 응답 실패({err_summary[:30]}...)로 인해 뉴스 데이터 기반 판정."
+    err_display = "Server Busy" if "429" in str(error) else "Model Update Req"
+    reason = f"AI 응답 지연({err_display})으로 뉴스 데이터 기반 자동 판정."
     safe_score = 50 + fallback_score 
     safe_score = max(10, min(90, safe_score))
     
@@ -368,7 +365,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v68.0...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v68.1...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -571,7 +568,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v68.0")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v68.1")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
