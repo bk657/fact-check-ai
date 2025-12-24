@@ -13,7 +13,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v64.0 (Final)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v64.1 (Admin Fix)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets 로드
 try:
@@ -32,7 +32,32 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- [2. 상수 및 전역 변수 (순서 중요)] ---
+# --- [2. 사이드바 (관리자 로그인 복구)] ---
+with st.sidebar:
+    st.header("🛡️ 관리자 메뉴")
+    
+    # 세션 상태 초기화
+    if "is_admin" not in st.session_state:
+        st.session_state["is_admin"] = False
+
+    if st.session_state["is_admin"]:
+        st.success("✅ 관리자 권한 활성화됨")
+        if st.button("로그아웃", use_container_width=True):
+            st.session_state["is_admin"] = False
+            st.rerun()
+    else:
+        st.info("관리자만 데이터 삭제가 가능합니다.")
+        input_pwd = st.text_input("관리자 암호", type="password")
+        if st.button("로그인", use_container_width=True):
+            if input_pwd == ADMIN_PASSWORD:
+                st.session_state["is_admin"] = True
+                st.success("로그인 성공!")
+                time.sleep(0.5)
+                st.rerun()
+            else:
+                st.error("암호가 올바르지 않습니다.")
+
+# --- [3. 상수 및 전역 변수] ---
 WEIGHT_NEWS_DEFAULT = 45; WEIGHT_VECTOR = 35; WEIGHT_CONTENT = 15; WEIGHT_SENTIMENT_DEFAULT = 10
 PENALTY_ABUSE = 20; PENALTY_MISMATCH = 30; PENALTY_NO_FACT = 25; PENALTY_SILENT_ECHO = 40
 
@@ -43,7 +68,7 @@ OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
 STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
 
-# --- [3. VectorEngine 클래스] ---
+# --- [4. VectorEngine 클래스] ---
 class VectorEngine:
     def __init__(self):
         self.vocab = set()
@@ -70,11 +95,11 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (Auto-Discovery Engine)] ---
+# --- [5. Gemini Logic (Auto-Discovery)] ---
 def get_gemini_search_keywords(title, transcript):
     genai.configure(api_key=GOOGLE_API_KEY)
     
-    # 1. 사용 가능한 모델 자동 탐색
+    # 1. 모델 자동 탐색
     available_models = []
     try:
         for m in genai.list_models():
@@ -82,7 +107,7 @@ def get_gemini_search_keywords(title, transcript):
                 available_models.append(m.name)
     except: pass
     
-    # 모델 우선순위: Flash -> Pro -> Default
+    # 우선순위: Flash -> Pro -> Default
     target_model = None
     for m in available_models:
         if 'flash' in m: target_model = m; break
@@ -91,7 +116,7 @@ def get_gemini_search_keywords(title, transcript):
             if 'pro' in m: target_model = m; break
     if not target_model and available_models: target_model = available_models[0]
     
-    # 2. Gemini 호출 시도
+    # 2. Gemini 호출
     if target_model:
         try:
             model = genai.GenerativeModel(target_model)
@@ -114,7 +139,7 @@ def get_gemini_search_keywords(title, transcript):
                 return response.text.strip(), f"✨ Gemini ({target_model.replace('models/','')})"
         except: pass
 
-    # 3. 백업 로직 (Gemini 실패 시)
+    # 3. 백업 로직
     tokens = re.findall(r'[가-힣]{2,}', title)
     cleaned = []
     for t in tokens:
@@ -123,7 +148,7 @@ def get_gemini_search_keywords(title, transcript):
     backup_query = " ".join(cleaned[:3]) if cleaned else title
     return backup_query, "🤖 Backup Logic"
 
-# --- [5. 유틸리티 함수] ---
+# --- [6. 유틸리티 함수] ---
 def normalize_korean_word(word):
     word = re.sub(r'[^가-힣0-9]', '', word)
     for j in ['은','는','이','가','을','를','의','에','에게','로','으로']:
@@ -253,34 +278,6 @@ def fetch_comments_via_api(video_id):
     except: pass
     return [], "❌ API 통신 실패"
 
-def calculate_dual_match(news_item, query_nouns, transcript, query_str_full):
-    tn = set(extract_meaningful_tokens(news_item.get('title', ''))); dn = set(extract_meaningful_tokens(news_item.get('desc', '')))
-    qn = set(query_nouns)
-    
-    t_score = 1.0 if len(qn & tn) >= 2 else 0.5 if len(qn & tn) >= 1 else 0
-    c_cnt = sum(1 for n in dn if n in transcript)
-    c_score = 1.0 if (len(dn) > 0 and c_cnt/len(dn) >= 0.3) else 0.5 if (len(dn) > 0 and c_cnt/len(dn) >= 0.15) else 0
-    match_score = int((t_score * 0.3 + c_score * 0.7) * 100)
-    
-    for critical in CRITICAL_STATE_KEYWORDS:
-        if critical in query_str_full and critical not in news_item.get('title', ''):
-            return 0 
-    return match_score
-
-def analyze_comment_relevance(comments, context_text):
-    if not comments: return [], 0, "분석 불가"
-    cn = extract_meaningful_tokens(" ".join(comments))
-    top = Counter(cn).most_common(5)
-    ctx = set(extract_meaningful_tokens(context_text))
-    match = sum(1 for w,c in top if w in ctx)
-    score = int(match/len(top)*100) if top else 0
-    msg = "✅ 주제 집중" if score >= 60 else "⚠️ 일부 관련" if score >= 20 else "❌ 무관"
-    return [f"{w}({c})" for w, c in top], score, msg
-
-def check_red_flags(comments):
-    detected = [k for c in comments for k in ['가짜뉴스', '주작', '사기', '거짓말', '허위', '선동'] if k in c]
-    return len(detected), list(set(detected))
-
 def fetch_news_regex(query):
     news_res = []
     try:
@@ -301,9 +298,34 @@ def extract_top_keywords_from_transcript(text, top_n=5):
     tokens = extract_meaningful_tokens(text)
     return Counter(tokens).most_common(top_n)
 
+def calculate_dual_match(news_item, query_nouns, transcript, query_str_full):
+    tn = set(extract_meaningful_tokens(news_item.get('title', ''))); dn = set(extract_meaningful_tokens(news_item.get('desc', '')))
+    qn = set(query_nouns)
+    t_score = 1.0 if len(qn & tn) >= 2 else 0.5 if len(qn & tn) >= 1 else 0
+    c_cnt = sum(1 for n in dn if n in transcript)
+    c_score = 1.0 if (len(dn) > 0 and c_cnt/len(dn) >= 0.3) else 0.5 if (len(dn) > 0 and c_cnt/len(dn) >= 0.15) else 0
+    match_score = int((t_score * 0.3 + c_score * 0.7) * 100)
+    for critical in CRITICAL_STATE_KEYWORDS:
+        if critical in query_str_full and critical not in news_item.get('title', ''): return 0 
+    return match_score
+
+def analyze_comment_relevance(comments, context_text):
+    if not comments: return [], 0, "분석 불가"
+    cn = extract_meaningful_tokens(" ".join(comments))
+    top = Counter(cn).most_common(5)
+    ctx = set(extract_meaningful_tokens(context_text))
+    match = sum(1 for w,c in top if w in ctx)
+    score = int(match/len(top)*100) if top else 0
+    msg = "✅ 주제 집중" if score >= 60 else "⚠️ 일부 관련" if score >= 20 else "❌ 무관"
+    return [f"{w}({c})" for w, c in top], score, msg
+
+def check_red_flags(comments):
+    detected = [k for c in comments for k in ['가짜뉴스', '주작', '사기', '거짓말', '허위', '선동'] if k in c]
+    return len(detected), list(set(detected))
+
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v64.0...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v64.1...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -332,7 +354,6 @@ def run_forensic_main(url):
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
-            # 🚨 Gemini Auto-Discovery 적용
             query, source = get_gemini_search_keywords(title, full_text)
 
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
@@ -418,7 +439,6 @@ def run_forensic_main(url):
                 st.write("**[영상 상세 정보]**")
                 st.table(pd.DataFrame({"항목": ["영상 제목", "채널명", "조회수", "해시태그"], "내용": [title, uploader, f"{info.get('view_count',0):,}회", hashtag_display]}))
                 
-                # 🎯 검색어 & 출처 (깔끔하게 표시)
                 st.info(f"🎯 **Gemini 추출 검색어 ({source})**: {query}")
                 
                 with st.container(border=True):
@@ -470,7 +490,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v64.0")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v64.1")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
