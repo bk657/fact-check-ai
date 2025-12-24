@@ -1,7 +1,1 @@
-streamlit
-supabase
-yt-dlp
-pandas
-beautifulsoup4
-altair
-google-generativeai>=0.7.2
+
