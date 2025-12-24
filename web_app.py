@@ -2,23 +2,16 @@ import streamlit as st
 import sys
 import subprocess
 
-# --- [0. 라이브러리 버전 강제 확인 및 긴급 패치] ---
+# --- [라이브러리 버전 확인] ---
 try:
     import google.generativeai as genai
     lib_version = genai.__version__
 except ImportError:
     lib_version = "Not Installed"
 
-st.set_page_config(page_title="Fact-Check v61.0 (Version Check)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check v61.1 (Auto-Negotiation)", layout="wide", page_icon="⚖️")
 
-# 🚨 [버전 검문소] 라이브러리가 구버전이면 아예 실행 차단
-if lib_version == "Not Installed" or lib_version < "0.7.0":
-    st.error(f"🚨 심각한 문제 발생: 구글 AI 라이브러리가 너무 오래되었습니다.")
-    st.error(f"현재 설치된 버전: **{lib_version}** (필요 버전: 0.7.2 이상)")
-    st.warning("👉 해결책: GitHub의 requirements.txt 내용을 지웠다가 다시 저장하여 '서버 재설치'를 유도하세요.")
-    st.stop() # 여기서 앱 정지
-
-# --- [정상 진입 시 코드 실행] ---
+# --- [시스템 설정] ---
 import re
 import requests
 import time
@@ -39,20 +32,45 @@ except KeyError as e:
     st.error(f"❌ 필수 키 설정 누락: {e}")
     st.stop()
 
-# 🌟 서비스 초기화
+# 🌟 서비스 초기화 (자동 모델 협상 로직)
 @st.cache_resource
 def init_services():
+    sb = None
+    model = None
+    connected_name = "None"
+    
     try:
         from supabase import create_client
         sb = create_client(SUPABASE_URL, SUPABASE_KEY)
         genai.configure(api_key=GOOGLE_API_KEY)
-        # 버전이 확인되었으므로 1.5-flash 사용 (가장 빠름)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        return sb, model
-    except Exception as e:
-        return None, None
+        
+        # 🚨 [핵심] 연결 가능한 모델을 순서대로 테스트
+        # 1.5-flash가 404면 gemini-pro로, 그것도 안되면 1.0으로 자동 넘어감
+        candidates = [
+            'gemini-1.5-flash',
+            'gemini-pro',       # 가장 안정적
+            'gemini-1.5-pro',
+            'gemini-1.0-pro'
+        ]
+        
+        for m_name in candidates:
+            try:
+                temp_model = genai.GenerativeModel(m_name)
+                # 실제 통신 테스트 (Ping)
+                response = temp_model.generate_content("Hi")
+                if response:
+                    model = temp_model
+                    connected_name = m_name
+                    break # 성공하면 루프 종료
+            except Exception:
+                continue # 실패하면 다음 후보 시도
 
-supabase, gemini_model = init_services()
+    except Exception as e:
+        return None, None, str(e)
+
+    return sb, model, connected_name
+
+supabase, gemini_model, model_name = init_services()
 
 # --- [Gemini AI 에이전트] ---
 class GeminiAgent:
@@ -61,7 +79,7 @@ class GeminiAgent:
 
     def extract_keywords(self, title, transcript):
         if not self.model: return title
-        prompt = f"Extract ONE search keyword for: {title}"
+        prompt = f"Extract ONE search keyword for: {title}. Context: {transcript[:500]}"
         try:
             response = self.model.generate_content(prompt)
             return response.text.strip()
@@ -69,7 +87,7 @@ class GeminiAgent:
 
     def analyze_content(self, title, channel, transcript, news_context, comments):
         if not self.model:
-            return {"fake_prob": 50, "verdict": "오류", "summary": "모델 로드 실패", "clickbait_score": 0}
+            return {"fake_prob": 50, "verdict": "시스템 오류", "summary": "AI 연결 실패", "clickbait_score": 0}
 
         prompt = f"""
         Analyze logic. Respond JSON.
@@ -77,7 +95,7 @@ class GeminiAgent:
         
         JSON Format:
         {{
-            "summary": "Korean text",
+            "summary": "Korean summary text",
             "fake_prob": 0-100,
             "verdict": "Text",
             "reasoning": "Korean text",
@@ -155,25 +173,30 @@ def save_history(data):
 # --- [UI 구성] ---
 with st.sidebar:
     st.header("🛡️ 관리자")
-    # 🌟 버전 확인용 배지
-    st.success(f"Lib Version: {lib_version}")
+    st.success(f"Lib: v{lib_version}")
     
+    # 🌟 연결된 모델 확인 (성공 시 모델명이 뜸)
+    if model_name and model_name != "None":
+        st.success(f"✅ Active: {model_name}")
+    else:
+        st.error("❌ No Model Available")
+        
     if not st.session_state.get("is_admin"):
         if st.button("Login"):
             st.session_state["is_admin"] = True
             st.rerun()
 
-st.title("⚖️ Fact-Check Center v61.0")
-st.caption("Gemini Version Enforcer")
+st.title("⚖️ Fact-Check Center v61.1")
+st.caption("Gemini Auto-Negotiation Engine")
 
 with st.container(border=True):
     url_input = st.text_input("유튜브 URL 입력")
     if st.button("🚀 분석 시작", type="primary", use_container_width=True):
         if url_input:
             if not gemini_model:
-                st.error("⚠️ AI 모델 로드 실패. (버전 문제는 해결됨, API 키 확인 필요)")
+                st.error("⚠️ 사용 가능한 AI 모델을 찾을 수 없습니다. (API Key 문제 가능성)")
             else:
-                with st.status(f"🕵️ Gemini (v{lib_version}) 가동 중...", expanded=True) as status:
+                with st.status(f"🕵️ Gemini ({model_name}) 분석 중...", expanded=True) as status:
                     
                     st.write("📥 영상 데이터 추출 중...")
                     v_info = fetch_youtube_info(url_input)
