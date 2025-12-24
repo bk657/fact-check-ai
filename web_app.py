@@ -13,7 +13,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v63.6 (Syntax Fix)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v63.7 (Auto-Discovery)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets 로드
 try:
@@ -70,55 +70,79 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (모델 순환 + 에러 노출)] ---
-def get_gemini_search_keywords(title, transcript):
+# --- [4. Gemini Logic (Auto-Model Discovery)] ---
+def get_valid_model():
+    """사용 가능한 모델을 동적으로 찾아서 반환"""
     genai.configure(api_key=GOOGLE_API_KEY)
+    try:
+        # 사용 가능한 모델 리스트 조회
+        available_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+        
+        # 우선순위: Flash -> Pro -> 아무거나
+        target_model = None
+        for m in available_models:
+            if 'flash' in m: target_model = m; break
+        if not target_model:
+            for m in available_models:
+                if 'pro' in m: target_model = m; break
+        if not target_model and available_models:
+            target_model = available_models[0]
+            
+        return target_model
+    except:
+        return None
+
+def get_gemini_search_keywords(title, transcript):
     
-    # 1. 안전 설정 (최대 개방)
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-    ]
+    # 1. 사용 가능한 모델 찾기
+    model_name = get_valid_model()
     
-    # 2. 모델 후보군 (순서대로 시도)
-    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
+    last_error = "No Model Found"
     
-    prompt = f"""
-    Extract ONE simple Korean search query (Nouns only).
-    Input: {title}
-    Context: {transcript[:500]}
-    Rules: Remove emotional words. Return 'Person + Event'. No explanations.
-    """
-    
-    last_error = ""
-    
-    # 3. 모델 순환 시도
-    for model_name in models_to_try:
+    if model_name:
         try:
             model = genai.GenerativeModel(model_name)
+            
+            # 안전 설정 (최대 개방)
+            safety_settings = [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ]
+            
+            prompt = f"""
+            Extract ONE simple Korean search query (Nouns only).
+            Input: {title}
+            Context: {transcript[:500]}
+            Rules: Remove emotional words. Return 'Person + Event'. No explanations.
+            """
+            
             response = model.generate_content(prompt, safety_settings=safety_settings)
             
-            # 응답 검증
             if response.text:
-                return response.text.strip(), f"✨ Gemini ({model_name})"
+                # 성공하면 모델 이름에서 'models/' 제거하고 반환
+                clean_name = model_name.replace('models/', '')
+                return response.text.strip(), f"✨ Gemini ({clean_name})"
+                
         except Exception as e:
             last_error = str(e)
-            continue # 다음 모델 시도
 
-    # 4. 모든 모델 실패 시 -> 백업 로직 (에러 원인 포함)
+    # 2. 실패 시 백업 로직
     tokens = re.findall(r'[가-힣]{2,}', title)
-    # 조사 제거
     cleaned = []
     for t in tokens:
         t = re.sub(r'(은|는|이|가|을|를|의)$', '', t)
         if len(t) > 1: cleaned.append(t)
-        
+    
     backup_query = " ".join(cleaned[:3]) if cleaned else title
     
-    # 🚨 실패 원인을 라벨에 포함시켜서 보여줌
-    return backup_query, f"🤖 Backup (Error: {last_error[:30]}...)"
+    # 에러 메시지 축약
+    short_error = last_error if len(last_error) < 50 else last_error[:50] + "..."
+    return backup_query, f"🤖 Backup (Err: {short_error})"
 
 # --- [5. 유틸리티 함수] ---
 def normalize_korean_word(word):
@@ -205,7 +229,6 @@ def fetch_news_regex(query):
         rss = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
         raw = requests.get(rss, timeout=3).text
         items = re.findall(r'<title>(.*?)</title>', raw)
-        # HTML 태그 제거
         clean_items = []
         for t in items[1:6]:
             clean = t.replace("<![CDATA[", "").replace("]]>", "")
@@ -213,8 +236,12 @@ def fetch_news_regex(query):
         return clean_items
     except: return []
 
+def calculate_dual_match(news, query_nouns, full_text, query):
+    if not news: return 0
+    return 0 
+
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v63.6")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v63.7")
 with st.container(border=True):
     agree = st.checkbox("동의합니다.")
 
@@ -226,23 +253,19 @@ if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not
             title = info['title']
             transcript = fetch_real_transcript(info)
             
-            # 🚨 Gemini 결과 및 에러 확인
+            # 🚨 Auto-Discovery 적용
             query, source = get_gemini_search_keywords(title, transcript)
             
-            # 뉴스 검색
             news_items = fetch_news_regex(query)
             
             st.success("분석 완료")
             st.divider()
             
-            # 🔍 [여기가 핵심입니다]
             st.info(f"🎯 **추출 검색어**: {query}")
             
-            if "Error" in source:
-                # 에러 발생 시 빨간색으로 원인 표시
+            if "Backup" in source:
                 st.error(f"⚠️ **Gemini 실패 원인**: {source}")
             else:
-                # 성공 시 초록색 표시
                 st.success(f"✅ **성공 출처**: {source}")
                 
             st.write(f"뉴스 검색 결과: {len(news_items)}건")
