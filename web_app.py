@@ -15,7 +15,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v85.0 (Neutral Base)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v86.0 (AI Semantic Match)", layout="wide", page_icon="🔗")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -76,40 +76,7 @@ OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
 STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
 
-# --- [4. VectorEngine] ---
-class VectorEngine:
-    def __init__(self):
-        self.vocab = set()
-        self.truth_vectors = []
-        self.fake_vectors = []
-    def tokenize(self, text): return re.findall(r'[가-힣]{2,}', text)
-    def train(self, truth, fake):
-        for t in truth + fake: self.vocab.update(self.tokenize(t))
-        self.vocab = sorted(list(self.vocab))
-        self.truth_vectors = [self.text_to_vector(t) for t in truth]
-        self.fake_vectors = [self.text_to_vector(t) for t in fake]
-    def text_to_vector(self, text, vocabulary=None):
-        target_vocab = vocabulary if vocabulary else self.vocab
-        c = Counter(self.tokenize(text))
-        return [c[w] for w in target_vocab]
-    def cosine_similarity(self, v1, v2):
-        dot = sum(a*b for a,b in zip(v1,v2))
-        mag = math.sqrt(sum(a*a for a in v1)) * math.sqrt(sum(b*b for b in v2))
-        return dot/mag if mag>0 else 0
-    def analyze_position(self, query):
-        qv = self.text_to_vector(query)
-        mt = max([self.cosine_similarity(qv, v) for v in self.truth_vectors] or [0])
-        mf = max([self.cosine_similarity(qv, v) for v in self.fake_vectors] or [0])
-        return mt, mf
-    def compute_content_similarity(self, text1, text2):
-        tokens1 = self.tokenize(text1); tokens2 = self.tokenize(text2)
-        local_vocab = sorted(list(set(tokens1 + tokens2)))
-        if not local_vocab: return 0.0
-        v1 = self.text_to_vector(text1, local_vocab)
-        v2 = self.text_to_vector(text2, local_vocab)
-        return self.cosine_similarity(v1, v2)
-
-vector_engine = VectorEngine()
+# --- [4. VectorEngine 삭제됨 -> AI Semantic Matcher로 대체] ---
 
 # --- [5. Gemini Logic] ---
 safety_settings_none = {
@@ -136,7 +103,7 @@ def call_gemini_fast(api_key, prompt, is_json=False):
             return response.text, fallback
         except: return None, str(e)
 
-# [Engine A] 수사관
+# [Engine A] 수사관: 키워드 추출
 def get_gemini_search_keywords(title, transcript):
     context_data = transcript[:10000]
     prompt = f"""
@@ -148,6 +115,40 @@ def get_gemini_search_keywords(title, transcript):
     """
     result_text, model_used = call_gemini_fast(GOOGLE_API_KEY_A, prompt)
     return (result_text.strip(), f"✨ {model_used}") if result_text else (title, "❌ Error")
+
+# [NEW] AI Semantic Matcher (뉴스 일괄 비교)
+def batch_check_similarity(video_summary, news_list):
+    if not news_list: return []
+    
+    # 뉴스 리스트를 텍스트로 변환
+    news_prompt_text = ""
+    for i, news in enumerate(news_list):
+        news_prompt_text += f"News {i}: Title='{news.get('title')}', Snippet='{news.get('desc')}'\n"
+        
+    prompt = f"""
+    Compare the VIDEO CONTEXT with the NEWS LIST.
+    Calculate a 'relevance_score' (0-100) for each news item based on SEMANTIC MEANING.
+    
+    [VIDEO CONTEXT]
+    {video_summary[:2000]}
+    
+    [NEWS LIST]
+    {news_prompt_text}
+    
+    [Output JSON Format]
+    [
+        {{"index": 0, "score": 95}},
+        {{"index": 1, "score": 10}},
+        ...
+    ]
+    """
+    
+    result_text, model_used = call_gemini_fast(GOOGLE_API_KEY_A, prompt, is_json=True) # Key A(Lite) 사용
+    
+    try:
+        return json.loads(result_text)
+    except:
+        return []
 
 # [Engine B] 판사: 한국어 강제
 def get_gemini_verdict(title, transcript, news_items):
@@ -209,16 +210,30 @@ def extract_meaningful_tokens(text):
     return [normalize_korean_word(w) for w in raw if w not in noise]
 
 def train_dynamic_vector_engine():
+    # 이제 벡터 엔진은 내부 DB 매칭용으로만 사용 (뉴스 매칭 X)
     try:
         res_t = supabase.table("analysis_history").select("video_title").lt("fake_prob", 40).execute()
         res_f = supabase.table("analysis_history").select("video_title").gt("fake_prob", 60).execute()
         dt = [row['video_title'] for row in res_t.data] if res_t.data else []
         df = [row['video_title'] for row in res_f.data] if res_f.data else []
-        vector_engine.train(STATIC_TRUTH_CORPUS + dt, STATIC_FAKE_CORPUS + df)
-        return len(STATIC_TRUTH_CORPUS + dt) + len(STATIC_FAKE_CORPUS + df), len(dt), len(df)
-    except: 
-        vector_engine.train(STATIC_TRUTH_CORPUS, STATIC_FAKE_CORPUS)
-        return 0, 0, 0
+        # 간단한 리스트 반환으로 변경 (유사도 계산 X)
+        return len(dt) + len(df), dt, df 
+    except: return 0, [], []
+
+def check_db_similarity(query, truth_list, fake_list):
+    # 내부 DB와의 단순 텍스트 유사도 검사 (Jaccard 유사도 등 가볍게)
+    q_tokens = set(extract_meaningful_tokens(query))
+    
+    def get_max_sim(target_list):
+        max_s = 0
+        for t in target_list:
+            t_tokens = set(extract_meaningful_tokens(t))
+            if not q_tokens or not t_tokens: continue
+            s = len(q_tokens & t_tokens) / len(q_tokens | t_tokens)
+            if s > max_s: max_s = s
+        return max_s
+
+    return get_max_sim(truth_list), get_max_sim(fake_list)
 
 def save_analysis(channel, title, prob, url, keywords):
     try: supabase.table("analysis_history").insert({"channel_name": channel, "video_title": title, "fake_prob": prob, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "video_url": url, "keywords": keywords}).execute()
@@ -338,11 +353,9 @@ def fetch_news_regex(query):
             t = re.search(r'<title>(.*?)</title>', item)
             d = re.search(r'<description>(.*?)</description>', item)
             l = re.search(r'<link>(.*?)</link>', item)
-            
             nt = t.group(1).replace("<![CDATA[", "").replace("]]>", "") if t else "제목 없음"
             nd = clean_html_regex(d.group(1).replace("<![CDATA[", "").replace("]]>", "")) if d else "내용 없음"
             nl = l.group(1).strip() if l else ""
-            
             news_res.append({'title': nt, 'desc': nd, 'link': nl})
     except: pass
     return news_res
@@ -351,26 +364,6 @@ def extract_top_keywords_from_transcript(text, top_n=5):
     if not text: return []
     tokens = extract_meaningful_tokens(text)
     return Counter(tokens).most_common(top_n)
-
-def calculate_dual_match(news_item, query_nouns, video_summary):
-    news_title_tokens = set(extract_meaningful_tokens(news_item.get('title', '')))
-    qn = set(query_nouns)
-    title_match_score = 0
-    if len(qn & news_title_tokens) >= 2: title_match_score = 100
-    elif len(qn & news_title_tokens) >= 1: title_match_score = 50
-    
-    news_desc = news_item.get('desc', '')
-    content_sim_score = 0
-    if news_desc and video_summary:
-        sim = vector_engine.compute_content_similarity(video_summary, news_desc)
-        content_sim_score = int(sim * 100)
-    
-    final_score = int((title_match_score * 0.4) + (content_sim_score * 0.6))
-    for critical in CRITICAL_STATE_KEYWORDS:
-        if critical in query_nouns and critical not in news_title_tokens:
-            final_score = 0
-            
-    return title_match_score, content_sim_score, final_score
 
 def analyze_comment_relevance(comments, context_text):
     if not comments: return [], 0, "분석 불가"
@@ -388,13 +381,13 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v85.0...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v86.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
 def run_forensic_main(url):
-    total_intelligence, t_cnt, f_cnt = train_dynamic_vector_engine()
-    witty_loading_sequence(total_intelligence, t_cnt, f_cnt)
+    db_count, db_truth, db_fake = train_dynamic_vector_engine()
+    witty_loading_sequence(db_count, 0, 0)
     
     vid = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
     if vid: vid = vid.group(1)
@@ -417,51 +410,51 @@ def run_forensic_main(url):
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
             abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
             agitation = count_sensational_words(full_text + title)
-            ts, fs = vector_engine.analyze_position(query + " " + title)
             
-            w_news = 70 if is_ai else 45
-            w_vec = 10 if is_ai else 35
-            t_impact = int(ts * w_vec) * -1; f_impact = int(fs * w_vec)
+            # [수정] DB 매칭 로직 간소화
+            ts, fs = check_db_similarity(query + " " + title, STATIC_TRUTH_CORPUS + db_truth, STATIC_FAKE_CORPUS + db_fake)
+            t_impact = int(ts * 30) * -1; f_impact = int(fs * 30)
 
             news_items = fetch_news_regex(query)
-            news_ev = []; max_match = 0
-            mismatch_count = 0
             
-            for item in news_items:
-                safe_title = item.get('title', '')
-                t_score, c_score, final = calculate_dual_match(item, extract_meaningful_tokens(query), summary)
-                if final > max_match: max_match = final
-                if final < 20: mismatch_count += 1
+            # [NEW] 뉴스 AI 일괄 검증
+            news_scores = batch_check_similarity(summary, news_items)
+            
+            news_ev = []; max_match = 0; mismatch_count = 0
+            
+            # AI 점수 매핑
+            for idx, item in enumerate(news_items):
+                # AI 점수 찾기
+                ai_s = 0
+                for s in news_scores:
+                    if s.get('index') == idx: ai_s = s.get('score', 0); break
+                
+                if ai_s > max_match: max_match = ai_s
+                if ai_s < 30: mismatch_count += 1
+                
                 news_ev.append({
-                    "뉴스 제목": safe_title,
-                    "제목 일치": f"{t_score}%",
-                    "내용 유사": f"{c_score}%",
-                    "최종 점수": f"{final}%",
-                    "원문": item.get('link', '')
+                    "뉴스 제목": item['title'],
+                    "AI 일치도": f"{ai_s}%", # [수정] AI 점수로 표시
+                    "최종 점수": f"{ai_s}%",
+                    "원문": item['link']
                 })
             
-            if not news_ev:
-                news_score = 0
+            if not news_ev: news_score = 0
             else:
-                if max_match >= 60: news_score = int((max_match / 100) * w_news) * -1
-                else:
-                    if mismatch_count >= len(news_ev) * 0.5: news_score = 20
-                    else: news_score = 0
+                if max_match >= 70: news_score = -30 # 강력한 증거 발견 시 점수 대폭 깎음
+                elif max_match >= 50: news_score = -10
+                else: news_score = 10 # 증거가 불충분하거나 없으면 의심
 
             cmts, c_status = fetch_comments_via_api(vid)
             top_kw, rel_score, rel_msg = analyze_comment_relevance(cmts, title + " " + full_text)
             red_cnt, red_list = check_red_flags(cmts)
             
-            silent_penalty = 0; mismatch_penalty = 0
-            is_silent = (len(news_ev) == 0)
-            
+            silent_penalty = 0; is_silent = (len(news_ev) == 0)
             if is_silent:
-                if any(k in title for k in CRITICAL_STATE_KEYWORDS): silent_penalty = 5; t_impact = 0; f_impact = 0
-                elif agitation >= 3: silent_penalty = 40; t_impact *= 2; f_impact *= 2
-                else: mismatch_penalty = 10
+                if any(k in title for k in CRITICAL_STATE_KEYWORDS): silent_penalty = 10
+                elif agitation >= 3: silent_penalty = 20
             
-            if not is_silent and mismatch_count > 0 and max_match < 30: mismatch_penalty = 30
-            if is_official: news_score = -50; mismatch_penalty = 0; silent_penalty = 0
+            if is_official: news_score = -50; silent_penalty = 0
             
             sent_score = 0
             if cmts and red_cnt == 0:
@@ -470,12 +463,10 @@ def run_forensic_main(url):
             
             clickbait = 10 if any(w in title for w in ['충격','경악','폭로']) else -5
             
-            algo_base_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
+            algo_base_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + silent_penalty
             
-            # [중립성 강화] AI 판사 점수 보정 로직
             ai_judge_score, ai_judge_reason = get_gemini_verdict(title, full_text, news_ev)
             
-            # 1. DB도 없고, 뉴스도 없으면 -> AI 점수를 50점 쪽으로 끌어당김 (Damping)
             if t_impact == 0 and f_impact == 0 and is_silent:
                 ai_judge_score = int((ai_judge_score + 50) / 2)
             
@@ -493,7 +484,7 @@ def run_forensic_main(url):
                 verdict = "안전 (Verified)" if final_prob < 30 else "위험 (Fake/Bias)" if final_prob > 60 else "주의 (Caution)"
                 st.metric("종합 AI 판정", f"{icon} {verdict}")
             with col_c: 
-                st.metric("AI Intelligence Level", f"{total_intelligence} Nodes", delta="Twin-Engine Active")
+                st.metric("AI Intelligence Level", f"{db_count} Nodes", delta="Twin-Engine Active")
             
             st.divider()
             st.subheader("🧠 Intelligence Map")
@@ -517,7 +508,7 @@ def run_forensic_main(url):
                     ["🏁 기본 중립 점수 (Base Score)", 50, "모든 분석은 50점(중립)에서 시작"],
                     ["진실 데이터 맥락", t_impact, "내부 DB 진실 데이터와 유사성"],
                     ["가짜 패턴 맥락", f_impact, "내부 DB 가짜 데이터와 유사성"],
-                    ["뉴스 매칭 상태", f"{max_match}%", "가장 유사한 기사와의 일치율 (부재 시 페널티 반영)"],
+                    ["뉴스 매칭 상태", news_score, "AI 뉴스 교차 검증 결과 반영"],
                     ["여론/제목/태그 가감", sent_score + clickbait + abuse_score, ""],
                     ["-----------------", "", ""],
                     ["⚖️ AI Judge Score (40%)", ai_judge_score, "Gemini 종합 추론 (증거 부재 시 중립 보정)"]
@@ -531,7 +522,7 @@ def run_forensic_main(url):
                 colored_progress_bar("🚨 거짓 영역 근접도", fs, "#e74c3c")
                 st.write("---")
 
-                st.markdown(f"**[증거 1] 뉴스 교차 대조 (Dual-Layer)**")
+                st.markdown(f"**[증거 1] 뉴스 교차 대조 (AI Semantic Match)**")
                 if news_ev:
                     st.dataframe(
                         pd.DataFrame(news_ev),
@@ -570,7 +561,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v85.0 (Neutral Base)")
+st.title("⚖️ Fact-Check Center v86.0 (AI Semantic Match)")
 
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
