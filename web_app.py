@@ -13,7 +13,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v65.3 (Threshold Fix)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="유튜브 가짜뉴스 판독 사이트 (XAI)", layout="wide", page_icon="⚖️")
 
 # 세션 상태 초기화
 if "is_admin" not in st.session_state:
@@ -302,7 +302,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v65.3...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v65.4...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -354,20 +354,13 @@ def run_forensic_main(url):
                     "최종 점수": f"{final}%"
                 })
             
-            # 🚨 [Penalty Logic v65.3] 불일치 기사 다수면 위험!
             if not news_ev:
                 news_score = 0
             else:
-                # 1. 긍정 판정 (감점) 조건: 일치도 60% 이상인 기사가 하나라도 있어야 함
-                if max_match >= 60:
-                    news_score = int((max_match / 100) * w_news) * -1
-                # 2. 애매함 (점수 없음) 조건: 일치도 60% 미만
+                if max_match >= 60: news_score = int((max_match / 100) * w_news) * -1
                 else:
-                    # 3. 부정 판정 (가점) 조건: 불일치가 50% 이상이면 오히려 위험
-                    if mismatch_count >= len(news_ev) * 0.5:
-                        news_score = 20 # 불일치 기사가 많으면 위험도 증가
-                    else:
-                        news_score = 0
+                    if mismatch_count >= len(news_ev) * 0.5: news_score = 20
+                    else: news_score = 0
 
             cmts, c_status = fetch_comments_via_api(vid)
             top_kw, rel_score, rel_msg = analyze_comment_relevance(cmts, title + " " + full_text)
@@ -471,12 +464,32 @@ def run_forensic_main(url):
                 st.table(pd.DataFrame([["영상 최다 언급 키워드", top_kw_str], ["제목 낚시어", "있음" if clickbait > 0 else "없음"], ["선동성 지수", f"{agitation}회"], ["기사-영상 일치도", f"{max_match}%"]], columns=["분석 항목", "판정 결과"]))
                 
                 st.markdown("**[증거 4] AI 최종 분석 판단**")
-                st.success(f"🔍 현재 분석된 종합 점수는 {prob}점입니다.")
+                
+                # 🚨 [신규] XAI (설명 가능한 AI) 리포트 생성 로직
+                reasons = []
+                if news_score <= -20: reasons.append("✅ **언론 교차 검증 성공**: 주요 언론사 보도와 내용이 일치하여 신뢰도가 높습니다.")
+                elif news_score > 0: reasons.append("⚠️ **검증 실패/불일치**: 관련 뉴스는 있으나 내용이 영상의 주장과 다릅니다 (+위험도 증가).")
+                
+                if mismatch_penalty > 0: reasons.append("🚨 **내용 모순 감지**: 검색된 팩트와 영상 내용이 정면으로 배치됩니다.")
+                if silent_penalty > 0: reasons.append("🔇 **침묵의 메아리**: 자극적인 주장이지만 이를 뒷받침할 기사가 없습니다.")
+                
+                if f_impact > 5: reasons.append(f"📉 **가짜뉴스 패턴**: 과거 허위 정보 데이터와 문맥적 유사성이 높습니다 (+{f_impact}점).")
+                if t_impact < -5: reasons.append(f"📈 **진실 데이터 패턴**: 신뢰할 수 있는 정보 구조를 가지고 있습니다 ({t_impact}점).")
+                
+                if clickbait > 0: reasons.append("🎣 **낚시성 제목**: 클릭을 유도하는 자극적인 제목이 감지되었습니다.")
+                if abuse_score > 0: reasons.append("🏷️ **태그 어뷰징**: 영상과 무관한 해시태그가 다수 사용되었습니다.")
+                
+                if not reasons: reasons.append("🔍 특이한 위험 요인이 발견되지 않아 중립적인 점수가 산출되었습니다.")
+                
+                st.success(f"🔍 현재 분석된 종합 점수는 **{prob}점**입니다.")
+                st.markdown("##### 💡 점수 산정 상세 사유")
+                for r in reasons:
+                    st.write(r)
 
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v65.3")
+st.title("⚖️ 유튜브 가짜 뉴스 판독기")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
