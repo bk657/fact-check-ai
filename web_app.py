@@ -15,7 +15,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v81.0 (All-Model Survivor)", layout="wide", page_icon="🧬")
+st.set_page_config(page_title="Fact-Check Center v82.0 (Full Context Survivor)", layout="wide", page_icon="🕵️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -94,7 +94,7 @@ safety_settings_none = {
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
 
-# 🧬 [핵심] 가용 가능한 모든 모델 리스트 가져오기 (캐싱)
+# 🧬 가용 가능한 모든 모델 리스트 가져오기 (캐싱)
 @st.cache_data
 def get_all_gemini_models():
     genai.configure(api_key=GOOGLE_API_KEY_A)
@@ -104,63 +104,63 @@ def get_all_gemini_models():
             if 'generateContent' in m.supported_generation_methods and 'gemini' in m.name:
                 models.append(m.name)
     except:
-        # API 호출 실패 시 백업 리스트
         models = ["models/gemini-2.5-flash-lite", "models/gemini-flash-lite-latest", "models/gemini-1.5-flash", "models/gemini-2.0-flash"]
     
-    # 팁: 'lite'나 'flash'가 들어간 모델을 앞쪽으로 배치하면 더 빠름 (선택 사항)
+    # Lite/Flash 모델을 우선순위로 정렬
     models.sort(key=lambda x: 'lite' not in x) 
     return models
 
-# ⚔️ [핵심] 무적의 호출 함수 (전수 조사)
+# ⚔️ 무적의 호출 함수 (전수 조사)
 def call_gemini_survivor(api_key, prompt, is_json=False):
     genai.configure(api_key=api_key)
     generation_config = {"response_mime_type": "application/json"} if is_json else {}
     
-    # 캐시된 모든 모델 리스트 로드
     all_models = get_all_gemini_models()
-    
     last_error = ""
     
-    # 모델 리스트를 순회하며 살아있는 놈이 나올 때까지 시도
     for model_name in all_models:
         try:
-            # model_name에 'models/' 접두사가 이미 포함되어 있을 수 있음
             clean_name = model_name.replace("models/", "")
-            
             model = genai.GenerativeModel(clean_name, generation_config=generation_config)
             response = model.generate_content(prompt, safety_settings=safety_settings_none)
             
             if response.text:
-                return response.text, clean_name # 성공! 탈출!
+                return response.text, clean_name 
                 
         except Exception as e:
             last_error = str(e)
-            # 실패하면 조용히 다음 모델로 넘어감 (아주 짧은 딜레이)
             time.sleep(0.2)
             continue
             
-    return None, f"All {len(all_models)} Models Failed. Last: {last_error}"
+    return None, f"All Models Failed. Last: {last_error}"
 
-# [Engine A] 수사관: 요약본 + 제목 (모든 모델 시도)
-def get_gemini_search_keywords(title, summary):
+# [Engine A] 수사관: (수정됨) 제목 + 전체 자막 (Full Context)
+def get_gemini_search_keywords(title, transcript):
+    # [데이터] 사용자 요청대로 전체 자막 사용 (Key B와 동일하게 30,000자 제한)
+    full_context = transcript[:30000]
+    
     prompt = f"""
     You are a Fact-Check Investigator.
-    Input Title: {title}
-    Input Summary: {summary}
     
-    Task: Extract ONE core Korean keyword for Google News search.
-    Rules: Ignore clickbait. Focus on proper nouns (Drug, Person, Event).
-    Output: JUST THE KEYWORD.
+    Input Title: {title}
+    Input Transcript: {full_context}
+    
+    Task: Extract ONE core Korean keyword for Google News search to verify the claims.
+    Rules: 
+    1. Read the full transcript carefully.
+    2. Identify specific Drug names, Medical terms, or Crimes.
+    3. Ignore clickbait (Shocking, Vlog).
+    4. Output: JUST THE KEYWORD.
     """
 
     result_text, model_used = call_gemini_survivor(GOOGLE_API_KEY_A, prompt)
     
     if result_text:
-        return result_text.strip(), f"✨ {model_used}"
+        return result_text.strip(), f"✨ {model_used} (Full-Context)"
     else:
         return f"Error", "❌ All Models Died"
 
-# [Engine B] 판사: 전체 자막 (모든 모델 시도)
+# [Engine B] 판사: 전체 자막 (기존 유지)
 def get_gemini_verdict(title, transcript, news_items):
     news_text = ""
     if not news_items:
@@ -382,7 +382,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v81.0...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v82.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -402,13 +402,11 @@ def run_forensic_main(url):
             # [Step 1] 자막 수집
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
-            
-            # [Step 1.5] 요약 생성
             summary = summarize_transcript(full_text, title)
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
-            # [Step 2] Gemini Key A (수사관) - 요약본 + 제목 (전체 모델 전수 조사)
-            query, source = get_gemini_search_keywords(title, summary)
+            # [Step 2] Gemini Key A (수사관) - (수정됨) 제목 + 전체 자막 (Full Context Survivor)
+            query, source = get_gemini_search_keywords(title, full_text)
 
             # [Step 3] 기본 알고리즘 분석
             is_official = check_is_official(uploader)
@@ -473,7 +471,7 @@ def run_forensic_main(url):
             algo_base_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
             algo_final_prob = max(5, min(99, algo_base_score))
             
-            # [Step 6] Gemini Key B (판사) - 전체 자막 (전체 모델 전수 조사)
+            # [Step 6] Gemini Key B (판사)
             ai_judge_score, ai_judge_reason = get_gemini_verdict(title, full_text, news_ev)
             
             # [Step 7] 최종 합산
@@ -561,12 +559,12 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v81.0 (All-Model Survivor)")
+st.title("⚖️ Fact-Check Center v82.0 (Full Context Survivor)")
 
 # [법적 고지 복구]
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (All-Model Failover)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (All-Model Failover)")
+    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (All-Model Failover, Full Context)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (All-Model Failover, Full Context)")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
