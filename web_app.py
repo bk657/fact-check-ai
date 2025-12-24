@@ -14,7 +14,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v71.1 (Keyword Fix)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v71.1 (Key A: 2.5 Fixed)", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -86,14 +86,15 @@ vector_engine = VectorEngine()
 
 # --- [4. Gemini Logic (Twin Engine)] ---
 
-# [Engine A] 수사관: 키워드 추출 전담 (Ver 2.0 - Deep Dive)
+# [Engine A] 수사관: 키워드 추출 전담 (Ver 2.5 - Fixed)
 def get_gemini_search_keywords(title, transcript):
     genai.configure(api_key=GOOGLE_API_KEY_A)
+    # [수정됨] 2.0 -> 2.5로 확실히 변경
     target_model = 'gemini-2.5-flash'
     
     full_context = transcript[:30000]
     
-    # [프롬프트 대폭 강화] 제목의 어그로를 무시하고 본문의 '실체'를 찾도록 지시
+    # [프롬프트] 원본 유지
     prompt = f"""
     You are an expert investigative journalist. 
     Your task is to extract ONE precise search query for Google News to verify the facts in this video.
@@ -121,7 +122,7 @@ def get_gemini_search_keywords(title, transcript):
         model = genai.GenerativeModel(target_model)
         response = model.generate_content(prompt)
         if response.text:
-            return response.text.strip(), f"✨ Gemini Investigator (Key A / 2.0-Flash)"
+            return response.text.strip(), f"✨ Gemini Investigator (Key A / 2.5-Flash)"
     except Exception as e:
         pass
             
@@ -133,12 +134,14 @@ def get_gemini_search_keywords(title, transcript):
         if len(t) > 1: cleaned.append(t)
     return " ".join(cleaned[:3]) if cleaned else title, "🤖 Backup Logic"
 
-# [Engine B] 판사: 진위 여부 최종 추론 전담
+# [Engine B] 판사: 진위 여부 최종 추론 전담 (건드리지 않음)
 def get_gemini_verdict(title, transcript, news_items):
     genai.configure(api_key=GOOGLE_API_KEY_B)
     
     model_candidates = [
+        'gemini-2.0-flash', 
         'gemini-2.5-flash',
+        'gemini-flash-latest'
     ]
     
     news_text = ""
@@ -608,4 +611,3 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
                 st.rerun()
             else:
                 st.error("Access Denied")
-
