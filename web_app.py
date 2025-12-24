@@ -16,7 +16,7 @@ import json
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v93.1 (Final Fixed)", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Fact-Check Center v93.2 (JSON Fixed)", layout="wide", page_icon="🛡️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -42,18 +42,38 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- [2. 유틸리티: JSON 파싱 헬퍼] ---
+# --- [2. 유틸리티: JSON 파싱 헬퍼 (강화됨)] ---
 def parse_gemini_json(text):
+    """Gemini가 리스트로 주든 마크다운을 섞든 무조건 딕셔너리로 변환"""
     try:
-        return json.loads(text)
+        # 1. 순수 파싱 시도
+        parsed = json.loads(text)
     except:
         try:
+            # 2. 마크다운 제거 후 파싱 시도
             text = re.sub(r'```json\s*', '', text)
             text = re.sub(r'```', '', text)
-            match = re.search(r'(\{.*\})', text, re.DOTALL)
-            if match: return json.loads(match.group(1))
+            # 중괄호나 대괄호로 시작하는 부분 추출
+            match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
+            if match:
+                parsed = json.loads(match.group(1))
+            else:
+                return None
+        except:
             return None
-        except: return None
+
+    # [핵심 수정] 리스트면 첫 번째 요소 추출
+    if isinstance(parsed, list):
+        if len(parsed) > 0 and isinstance(parsed[0], dict):
+            return parsed[0]
+        else:
+            return None # 빈 리스트거나 이상한 리스트
+            
+    # 딕셔너리면 그대로 반환
+    if isinstance(parsed, dict):
+        return parsed
+        
+    return None
 
 # --- [3. 모델 자동 탐색기] ---
 @st.cache_data(ttl=3600)
@@ -218,7 +238,6 @@ def extract_meaningful_tokens(text):
     noise = ['충격','속보','긴급','오늘','지금','결국','뉴스','영상']
     return [normalize_korean_word(w) for w in raw if w not in noise]
 
-# [복구됨] 누락되었던 함수 재정의
 def extract_top_keywords_from_transcript(text, top_n=5):
     if not text: return []
     tokens = extract_meaningful_tokens(text)
@@ -531,7 +550,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v93.0 (Restored)")
+st.title("⚖️ Fact-Check Center v93.2 (JSON Fixed)")
 
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
