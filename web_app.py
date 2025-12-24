@@ -13,7 +13,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v64.1 (Admin Fix)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v65.0 (Dual-Layer)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets 로드
 try:
@@ -32,32 +32,7 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- [2. 사이드바 (관리자 로그인 복구)] ---
-with st.sidebar:
-    st.header("🛡️ 관리자 메뉴")
-    
-    # 세션 상태 초기화
-    if "is_admin" not in st.session_state:
-        st.session_state["is_admin"] = False
-
-    if st.session_state["is_admin"]:
-        st.success("✅ 관리자 권한 활성화됨")
-        if st.button("로그아웃", use_container_width=True):
-            st.session_state["is_admin"] = False
-            st.rerun()
-    else:
-        st.info("관리자만 데이터 삭제가 가능합니다.")
-        input_pwd = st.text_input("관리자 암호", type="password")
-        if st.button("로그인", use_container_width=True):
-            if input_pwd == ADMIN_PASSWORD:
-                st.session_state["is_admin"] = True
-                st.success("로그인 성공!")
-                time.sleep(0.5)
-                st.rerun()
-            else:
-                st.error("암호가 올바르지 않습니다.")
-
-# --- [3. 상수 및 전역 변수] ---
+# --- [2. 상수 정의] ---
 WEIGHT_NEWS_DEFAULT = 45; WEIGHT_VECTOR = 35; WEIGHT_CONTENT = 15; WEIGHT_SENTIMENT_DEFAULT = 10
 PENALTY_ABUSE = 20; PENALTY_MISMATCH = 30; PENALTY_NO_FACT = 25; PENALTY_SILENT_ECHO = 40
 
@@ -68,34 +43,57 @@ OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
 STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
 
-# --- [4. VectorEngine 클래스] ---
+# --- [3. Enhanced Vector Engine (유사도 계산 강화)] ---
 class VectorEngine:
     def __init__(self):
         self.vocab = set()
         self.truth_vectors = []
         self.fake_vectors = []
-    def tokenize(self, text): return re.findall(r'[가-힣]{2,}', text)
+        
+    def tokenize(self, text):
+        # 2글자 이상 한글만 추출
+        return re.findall(r'[가-힣]{2,}', text)
+        
     def train(self, truth, fake):
         for t in truth + fake: self.vocab.update(self.tokenize(t))
         self.vocab = sorted(list(self.vocab))
         self.truth_vectors = [self.text_to_vector(t) for t in truth]
         self.fake_vectors = [self.text_to_vector(t) for t in fake]
-    def text_to_vector(self, text):
+        
+    def text_to_vector(self, text, vocabulary=None):
+        # 특정 단어장(vocabulary)이 주어지면 그것을 기준, 없으면 전체 vocab 기준
+        target_vocab = vocabulary if vocabulary else self.vocab
         c = Counter(self.tokenize(text))
-        return [c[w] for w in self.vocab]
+        return [c[w] for w in target_vocab]
+        
     def cosine_similarity(self, v1, v2):
         dot = sum(a*b for a,b in zip(v1,v2))
         mag = math.sqrt(sum(a*a for a in v1)) * math.sqrt(sum(b*b for b in v2))
         return dot/mag if mag>0 else 0
+    
     def analyze_position(self, query):
         qv = self.text_to_vector(query)
         mt = max([self.cosine_similarity(qv, v) for v in self.truth_vectors] or [0])
         mf = max([self.cosine_similarity(qv, v) for v in self.fake_vectors] or [0])
         return mt, mf
+    
+    # 🚨 [신규 기능] 두 텍스트 간의 정밀 내용 유사도 측정 (Ad-hoc Vectorization)
+    def compute_content_similarity(self, text1, text2):
+        # 두 텍스트에서만 사용된 단어들로 임시 단어장 생성 (정밀도 향상)
+        tokens1 = self.tokenize(text1)
+        tokens2 = self.tokenize(text2)
+        local_vocab = sorted(list(set(tokens1 + tokens2)))
+        
+        if not local_vocab: return 0.0
+        
+        v1 = self.text_to_vector(text1, local_vocab)
+        v2 = self.text_to_vector(text2, local_vocab)
+        
+        return self.cosine_similarity(v1, v2)
 
 vector_engine = VectorEngine()
 
-# --- [5. Gemini Logic (Auto-Discovery)] ---
+# --- [4. Gemini Logic (Auto-Discovery)] ---
 def get_gemini_search_keywords(title, transcript):
     genai.configure(api_key=GOOGLE_API_KEY)
     
@@ -107,7 +105,6 @@ def get_gemini_search_keywords(title, transcript):
                 available_models.append(m.name)
     except: pass
     
-    # 우선순위: Flash -> Pro -> Default
     target_model = None
     for m in available_models:
         if 'flash' in m: target_model = m; break
@@ -148,7 +145,7 @@ def get_gemini_search_keywords(title, transcript):
     backup_query = " ".join(cleaned[:3]) if cleaned else title
     return backup_query, "🤖 Backup Logic"
 
-# --- [6. 유틸리티 함수] ---
+# --- [5. 유틸리티 함수] ---
 def normalize_korean_word(word):
     word = re.sub(r'[^가-힣0-9]', '', word)
     for j in ['은','는','이','가','을','를','의','에','에게','로','으로']:
@@ -218,7 +215,8 @@ def summarize_transcript(text, title, max_sentences=3):
         scored_sentences.append((i, sent, score))
     top_sentences = sorted(scored_sentences, key=lambda x:x[2], reverse=True)[:max_sentences]
     top_sentences.sort(key=lambda x:x[0])
-    return f"📌 **핵심 요약**: {' '.join([s[1] for s in top_sentences])}"
+    # 요약된 텍스트 반환
+    return " ".join([s[1] for s in top_sentences])
 
 def clean_html_regex(text):
     if not text: return ""
@@ -298,16 +296,33 @@ def extract_top_keywords_from_transcript(text, top_n=5):
     tokens = extract_meaningful_tokens(text)
     return Counter(tokens).most_common(top_n)
 
-def calculate_dual_match(news_item, query_nouns, transcript, query_str_full):
-    tn = set(extract_meaningful_tokens(news_item.get('title', ''))); dn = set(extract_meaningful_tokens(news_item.get('desc', '')))
+# 🚨 [신규] 듀얼 레이어 유사도 측정 알고리즘
+def calculate_dual_match(news_item, query_nouns, video_summary):
+    # 1. 제목 유사도 (Keyword Overlap)
+    news_title_tokens = set(extract_meaningful_tokens(news_item.get('title', '')))
     qn = set(query_nouns)
-    t_score = 1.0 if len(qn & tn) >= 2 else 0.5 if len(qn & tn) >= 1 else 0
-    c_cnt = sum(1 for n in dn if n in transcript)
-    c_score = 1.0 if (len(dn) > 0 and c_cnt/len(dn) >= 0.3) else 0.5 if (len(dn) > 0 and c_cnt/len(dn) >= 0.15) else 0
-    match_score = int((t_score * 0.3 + c_score * 0.7) * 100)
+    
+    title_match_score = 0
+    if len(qn & news_title_tokens) >= 2: title_match_score = 100
+    elif len(qn & news_title_tokens) >= 1: title_match_score = 50
+    
+    # 2. 내용 유사도 (Semantic Vector Cosine)
+    news_desc = news_item.get('desc', '')
+    content_sim_score = 0
+    if news_desc and video_summary:
+        # VectorEngine의 새 기능 사용
+        sim = vector_engine.compute_content_similarity(video_summary, news_desc)
+        content_sim_score = int(sim * 100)
+    
+    # 3. 가중치 합산 (제목 4 : 내용 6)
+    final_score = int((title_match_score * 0.4) + (content_sim_score * 0.6))
+    
+    # 크리티컬 키워드 검증 (기존 로직 유지)
     for critical in CRITICAL_STATE_KEYWORDS:
-        if critical in query_str_full and critical not in news_item.get('title', ''): return 0 
-    return match_score
+        if critical in query_nouns and critical not in news_title_tokens:
+            final_score = 0
+            
+    return title_match_score, content_sim_score, final_score
 
 def analyze_comment_relevance(comments, context_text):
     if not comments: return [], 0, "분석 불가"
@@ -325,7 +340,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v64.1...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v65.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -346,11 +361,12 @@ def run_forensic_main(url):
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
             
-            top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
+            # 🚨 1. 요약 먼저 수행 (내용 비교를 위해)
+            summary = summarize_transcript(full_text, title)
             
+            top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             is_official = check_is_official(uploader)
             is_ai, ai_msg = detect_ai_content(info)
-            
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
@@ -358,19 +374,25 @@ def run_forensic_main(url):
 
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
             abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
-            
-            summary = summarize_transcript(full_text, title)
             agitation = count_sensational_words(full_text + title)
             
             ts, fs = vector_engine.analyze_position(query + " " + title)
             t_impact = int(ts * w_vec) * -1; f_impact = int(fs * w_vec)
 
+            # 🚨 2. 뉴스 검색 및 Dual-Layer 비교 수행
             news_items = fetch_news_regex(query)
             news_ev = []; max_match = 0
+            
             for item in news_items:
-                m = calculate_dual_match(item, extract_meaningful_tokens(query), full_text, query)
-                if m > max_match: max_match = m
-                news_ev.append({"뉴스 제목": item['title'], "최종 일치도": f"{m}%"})
+                t_score, c_score, final = calculate_dual_match(item, extract_meaningful_tokens(query), summary)
+                if final > max_match: max_match = final
+                # UI에 보여줄 데이터 구성
+                news_ev.append({
+                    "뉴스 제목": item['title'],
+                    "제목 일치": f"{t_score}%",
+                    "내용 유사": f"{c_score}%", # 벡터 유사도
+                    "최종 점수": f"{final}%"
+                })
             
             cmts, c_status = fetch_comments_via_api(vid)
             top_kw, rel_score, rel_msg = analyze_comment_relevance(cmts, title + " " + full_text)
@@ -466,10 +488,15 @@ def run_forensic_main(url):
                 colored_progress_bar("✅ 진실 영역 근접도", ts, "#2ecc71")
                 colored_progress_bar("🚨 거짓 영역 근접도", fs, "#e74c3c")
                 st.write("---")
-                st.markdown(f"**[증거 1] 뉴스 교차 대조 (Query: {query})**")
-                st.caption(f"📡 수집: **{len(news_ev)}건** (검색어와 상태 불일치 시 0점 처리)")
-                if news_ev: st.table(pd.DataFrame(news_ev))
-                else: st.warning("🔍 관련 뉴스를 찾을 수 없습니다. (Silent Echo Risk Increased)")
+                
+                # 🚨 [UI 업데이트] 뉴스 교차 대조 테이블
+                st.markdown(f"**[증거 1] 뉴스 교차 대조 (Dual-Layer Verification)**")
+                st.caption(f"📡 수집: **{len(news_ev)}건** (제목 + 내용 벡터 유사도 종합 산출)")
+                if news_ev: 
+                    st.dataframe(pd.DataFrame(news_ev), use_container_width=True, hide_index=True)
+                else: 
+                    st.warning("🔍 관련 뉴스를 찾을 수 없습니다. (Silent Echo Risk Increased)")
+                    
                 st.markdown("**[증거 2] 시청자 여론 심층 분석**")
                 st.caption(f"💬 상태: **{c_status}**")
                 if cmts:
@@ -490,7 +517,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v64.1")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v65.0")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
