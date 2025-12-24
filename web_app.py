@@ -14,22 +14,21 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v71.1 (Keyword Fix)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v73.0 (Smart Summary)", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
 
-# 🌟 Secrets 로드 (Twin Key 적용)
+# 🌟 Secrets 로드
 try:
     YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
     ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
-    # Twin Gemini Keys
-    GOOGLE_API_KEY_A = st.secrets["GOOGLE_API_KEY_A"] # 수사관 (키워드 추출)
-    GOOGLE_API_KEY_B = st.secrets["GOOGLE_API_KEY_B"] # 판사 (최종 추론)
+    GOOGLE_API_KEY_A = st.secrets["GOOGLE_API_KEY_A"]
+    GOOGLE_API_KEY_B = st.secrets["GOOGLE_API_KEY_B"]
 except:
-    st.error("❌ 필수 키(API Keys)가 설정되지 않았습니다. secrets.toml에 GOOGLE_API_KEY_A와 B를 모두 설정해주세요.")
+    st.error("❌ 필수 키(API Keys)가 설정되지 않았습니다.")
     st.stop()
 
 @st.cache_resource
@@ -84,56 +83,45 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (Twin Engine)] ---
+# --- [4. Gemini Logic] ---
 
-# [Engine A] 수사관: 키워드 추출 전담 (Ver 2.0 - Deep Dive)
-def get_gemini_search_keywords(title, transcript):
+# [Engine A] 수사관: 키워드 추출 전담 (요약본 사용으로 수정됨)
+def get_gemini_search_keywords(title, summary):
     genai.configure(api_key=GOOGLE_API_KEY_A)
     target_model = 'gemini-2.0-flash'
     
-    full_context = transcript[:30000]
-    
-    # [프롬프트 대폭 강화] 제목의 어그로를 무시하고 본문의 '실체'를 찾도록 지시
+    # [수정] 전체 자막이 아닌 '요약본(summary)'을 사용
     prompt = f"""
     You are an expert investigative journalist. 
-    Your task is to extract ONE precise search query for Google News to verify the facts in this video.
+    Your task is to extract ONE precise search query for Google News to verify the facts based on the video summary.
     
     [Input Data]
-    - Video Title: {title} (WARNING: Titles are often clickbait/exaggerated. Do NOT trust the title blindly.)
-    - Transcript: {full_context}
+    - Video Title: {title}
+    - Content Summary: {summary}
     
     [Critical Extraction Rules]
-    1. **IGNORE** generic YouTubers' names (e.g., '입짧은 햇님', '쯔양') unless they are the criminal suspect.
-    2. **IGNORE** vlog-style phrases (e.g., '운동으로 뺐다더니', '먹방', '일상').
-    3. **PRIORITIZE** specific Proper Nouns found in the Transcript:
-       - Medicine/Drug names (e.g., '나비약', '펜터민', '디에타민').
-       - Legal/Crime terms (e.g., '마약류 관리법', '검찰 송치').
+    1. **IGNORE** generic YouTubers' names unless they are the criminal suspect.
+    2. **IGNORE** clickbait phrases like '충격', '경악'.
+    3. **PRIORITIZE** specific Proper Nouns found in the Summary:
+       - Medicine/Drug names (e.g., '나비약', '펜터민').
+       - Legal/Crime terms.
        - Official Event/Policy names.
-    4. **Logic:** If the title says "Diet Secret" but the transcript talks about "Phentermine Side Effects", the query MUST be "펜터민 부작용" (Phentermine Side Effects).
-    5. Output Format: Just the Korean query string. No explanations.
-    
-    [Target Query Example]
-    - Bad: "입짧은 햇님 다이어트 비결" (Too soft)
-    - Good: "나비약 펜터민 부작용 사망 사례" (Specific & Verifiable)
+    4. **Output Format:** Just the Korean query string. No explanations.
     """
 
     try:
         model = genai.GenerativeModel(target_model)
         response = model.generate_content(prompt)
         if response.text:
-            return response.text.strip(), f"✨ Gemini Investigator (Key A / 2.0-Flash)"
+            return response.text.strip(), f"✨ Gemini Investigator (Key A / 2.0-Flash / Summary)"
     except Exception as e:
-        pass
+        return f"Error: {str(e)}", "❌ Key A Error"
             
     # 백업 로직
     tokens = re.findall(r'[가-힣]{2,}', title)
-    cleaned = []
-    for t in tokens:
-        t = re.sub(r'(은|는|이|가|을|를|의)$', '', t)
-        if len(t) > 1: cleaned.append(t)
-    return " ".join(cleaned[:3]) if cleaned else title, "🤖 Backup Logic"
+    return " ".join(tokens[:3]), "🤖 Backup Logic"
 
-# [Engine B] 판사: 진위 여부 최종 추론 전담
+# [Engine B] 판사: 진위 여부 최종 추론 전담 (건드리지 않음 - 기존 코드 유지)
 def get_gemini_verdict(title, transcript, news_items):
     genai.configure(api_key=GOOGLE_API_KEY_B)
     
@@ -224,7 +212,6 @@ def save_analysis(channel, title, prob, url, keywords):
     try: supabase.table("analysis_history").insert({"channel_name": channel, "video_title": title, "fake_prob": prob, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "video_url": url, "keywords": keywords}).execute()
     except: pass
 
-# [차트]
 def render_intelligence_distribution(current_prob):
     try:
         res = supabase.table("analysis_history").select("fake_prob").execute()
@@ -235,11 +222,9 @@ def render_intelligence_distribution(current_prob):
         st.altair_chart(base + rule, use_container_width=True)
     except: pass
 
-# [벡터 바]
 def colored_progress_bar(label, percent, color):
     st.markdown(f"""<div style="margin-bottom: 10px;"><div style="display: flex; justify-content: space-between; margin-bottom: 3px;"><span style="font-size: 13px; font-weight: 600; color: #555;">{label}</span><span style="font-size: 13px; font-weight: 700; color: {color};">{round(percent * 100, 1)}%</span></div><div style="background-color: #eee; border-radius: 5px; height: 8px; width: 100%;"><div style="background-color: {color}; height: 8px; width: {percent * 100}%; border-radius: 5px;"></div></div></div>""", unsafe_allow_html=True)
 
-# [점수표]
 def render_score_breakdown(data_list):
     style = """<style>table.score-table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; font-family: sans-serif; font-size: 14px; margin-top: 10px;} table.score-table th { background-color: #f8f9fa; color: #495057; font-weight: bold; padding: 12px 15px; text-align: left; border-bottom: 1px solid #e0e0e0; } table.score-table td { padding: 12px 15px; border-bottom: 1px solid #f0f0f0; color: #333; } table.score-table tr:last-child td { border-bottom: none; } .badge { padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 11px; display: inline-block; text-align: center; min-width: 45px; } .badge-danger { background-color: #ffebee; color: #d32f2f; } .badge-success { background-color: #e8f5e9; color: #2e7d32; } .badge-neutral { background-color: #f5f5f5; color: #757575; border: 1px solid #e0e0e0; }</style>"""
     rows = ""
@@ -387,7 +372,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v71.1...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v73.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -407,11 +392,13 @@ def run_forensic_main(url):
             # [Step 1] 자막 수집
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
+            
+            # [Step 1.5] 핵심 요약 (Summary) 생성
             summary = summarize_transcript(full_text, title)
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
-            # [Step 2] Gemini Key A (수사관)
-            query, source = get_gemini_search_keywords(title, full_text)
+            # [Step 2] Gemini Key A (수사관) - 요약본 전달 (토큰 절약)
+            query, source = get_gemini_search_keywords(title, summary)
 
             # [Step 3] 기본 알고리즘 분석
             is_official = check_is_official(uploader)
@@ -476,7 +463,7 @@ def run_forensic_main(url):
             algo_base_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
             algo_final_prob = max(5, min(99, algo_base_score))
             
-            # [Step 6] Gemini Key B (판사)
+            # [Step 6] Gemini Key B (판사) - 전체 자막 전달
             ai_judge_score, ai_judge_reason = get_gemini_verdict(title, full_text, news_ev)
             
             # [Step 7] 최종 합산
@@ -548,6 +535,7 @@ def run_forensic_main(url):
                     st.write(f"⚖️ **판결:** {ai_judge_reason}")
                     st.caption(f"* Gemini 독립 추론 점수: {ai_judge_score}점 (Key B)")
 
+                # 결과 해석 리포트
                 reasons = []
                 if final_prob >= 60:
                     reasons.append("🚨 **위험 감지**: AI 판사와 알고리즘 모두 이 영상의 주장을 의심하고 있습니다.")
@@ -563,11 +551,12 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v71.1 (Keyword Fix)")
+st.title("⚖️ Fact-Check Center v73.0 (Smart Summary)")
 
+# [법적 고지 복구]
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (2.0-Flash)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (2.0-Flash)")
+    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
@@ -610,4 +599,3 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
                 st.rerun()
             else:
                 st.error("Access Denied")
-
