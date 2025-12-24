@@ -14,7 +14,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v71.1 (Keyword Fix)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v72.2 (Key A Diet)", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -86,14 +86,14 @@ vector_engine = VectorEngine()
 
 # --- [4. Gemini Logic (Twin Engine)] ---
 
-# [Engine A] 수사관: 키워드 추출 전담 (Ver 2.0 - Deep Dive)
+# [Engine A] 수사관: 키워드 추출 전담 (데이터 다이어트 적용)
 def get_gemini_search_keywords(title, transcript):
     genai.configure(api_key=GOOGLE_API_KEY_A)
     target_model = 'gemini-2.0-flash'
     
-    full_context = transcript[:30000]
+    # [수정됨] 30,000자 -> 5,000자로 대폭 축소 (Key A 부하 감소)
+    full_context = transcript[:5000]
     
-    # [프롬프트 대폭 강화] 제목의 어그로를 무시하고 본문의 '실체'를 찾도록 지시
     prompt = f"""
     You are an expert investigative journalist. 
     Your task is to extract ONE precise search query for Google News to verify the facts in this video.
@@ -133,7 +133,7 @@ def get_gemini_search_keywords(title, transcript):
         if len(t) > 1: cleaned.append(t)
     return " ".join(cleaned[:3]) if cleaned else title, "🤖 Backup Logic"
 
-# [Engine B] 판사: 진위 여부 최종 추론 전담
+# [Engine B] 판사: 진위 여부 최종 추론 전담 (기존 유지)
 def get_gemini_verdict(title, transcript, news_items):
     genai.configure(api_key=GOOGLE_API_KEY_B)
     
@@ -152,6 +152,7 @@ def get_gemini_verdict(title, transcript, news_items):
             safe_desc = item.get('desc', '내용 없음')
             news_text += f"{idx+1}. {safe_title} : {safe_desc}\n"
             
+    # Key B는 30,000자 유지 (정확한 판결을 위해)
     full_context = transcript[:30000]
 
     prompt = f"""
@@ -387,7 +388,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v71.1...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v72.2...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -548,6 +549,7 @@ def run_forensic_main(url):
                     st.write(f"⚖️ **판결:** {ai_judge_reason}")
                     st.caption(f"* Gemini 독립 추론 점수: {ai_judge_score}점 (Key B)")
 
+                # 결과 해석 리포트
                 reasons = []
                 if final_prob >= 60:
                     reasons.append("🚨 **위험 감지**: AI 판사와 알고리즘 모두 이 영상의 주장을 의심하고 있습니다.")
@@ -563,11 +565,12 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v71.1 (Keyword Fix)")
+st.title("⚖️ Fact-Check Center v72.2 (Key A Diet)")
 
+# [법적 고지 복구]
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (2.0-Flash)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (2.0-Flash)")
+    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
@@ -610,4 +613,3 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
                 st.rerun()
             else:
                 st.error("Access Denied")
-
