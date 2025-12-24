@@ -13,8 +13,11 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 import altair as alt
 
+# 🌟 [v52.0 New] AI Keyword Engine
+from keybert import KeyBERT
+
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v51.2 (Integrity Fix)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v52.0 (KeyBERT AI)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -32,12 +35,26 @@ def init_supabase():
 
 supabase = init_supabase()
 
+# 🌟 [v52.0 New] AI 모델 로드 (최초 1회만 실행, 캐싱됨)
+@st.cache_resource
+def load_ai_model():
+    # 다국어(한국어 포함) 지원 경량화 모델 로드
+    return KeyBERT('paraphrase-multilingual-MiniLM-L12-v2')
+
+try:
+    kw_model = load_ai_model()
+    ai_status = "✅ AI Engine Active (KeyBERT)"
+except:
+    kw_model = None
+    ai_status = "⚠️ AI Load Failed (Using Logic)"
+
 # --- [관리자 인증] ---
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
 
 with st.sidebar:
     st.header("🛡️ 관리자 메뉴")
+    st.caption(ai_status) # AI 상태 표시
     with st.form("login_form"):
         password_input = st.text_input("관리자 비밀번호", type="password")
         submit_button = st.form_submit_button("로그인")
@@ -126,11 +143,10 @@ def render_intelligence_distribution(current_prob):
         else: st.warning("🔸 현재 영상은 **'중립 구간'**에 위치합니다.")
     except: pass
 
-# --- [UI Helper Functions - DEFINED HERE] ---
+# --- [UI Helper Functions] ---
 def colored_progress_bar(label, percent, color):
     st.markdown(f"""<div style="margin-bottom: 10px;"><div style="display: flex; justify-content: space-between; margin-bottom: 3px;"><span style="font-size: 13px; font-weight: 600; color: #555;">{label}</span><span style="font-size: 13px; font-weight: 700; color: {color};">{round(percent * 100, 1)}%</span></div><div style="background-color: #eee; border-radius: 5px; height: 8px; width: 100%;"><div style="background-color: {color}; height: 8px; width: {percent * 100}%; border-radius: 5px;"></div></div></div>""", unsafe_allow_html=True)
 
-# 🌟 [Fix] render_score_breakdown 함수 명시적 정의
 def render_score_breakdown(data_list):
     style = """<style>table.score-table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; font-family: sans-serif; font-size: 14px; margin-top: 10px;} table.score-table th { background-color: #f8f9fa; color: #495057; font-weight: bold; padding: 12px 15px; text-align: left; border-bottom: 1px solid #e0e0e0; } table.score-table td { padding: 12px 15px; border-bottom: 1px solid #f0f0f0; color: #333; } table.score-table tr:last-child td { border-bottom: none; } .badge { padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 11px; display: inline-block; text-align: center; min-width: 45px; } .badge-danger { background-color: #ffebee; color: #d32f2f; } .badge-success { background-color: #e8f5e9; color: #2e7d32; } .badge-neutral { background-color: #f5f5f5; color: #757575; border: 1px solid #e0e0e0; }</style>"""
     rows = ""
@@ -146,10 +162,10 @@ def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [
         f"🧠 [Intelligence Level: {total}] 집단 지성 로드 중...",
         f"📚 학습된 진실 데이터: {t_cnt}건 | 거짓 데이터: {f_cnt}건",
-        "📝 자막 전체(Full Text) 정밀 수집 중...", 
+        "🤖 KeyBERT AI 엔진 예열 중 (Meaning Extraction)...", 
         "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
     ]
-    with st.status("🕵️ Context Merger v51.2 가동 중...", expanded=True) as status:
+    with st.status("🕵️ Context Merger v52.0 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
@@ -166,12 +182,19 @@ def extract_meaningful_tokens(text):
     noise = ['충격', '경악', '속보', '긴급', '오늘', '내일', '지금', '결국', '뉴스', '영상', '대부분', '이유', '왜', '있는', '없는', '하는', '것', '수', '등', '진짜', '정말', '너무', '그냥', '이제', '사실', '국민', '우리', '대한민국', '여러분', '그리고', '그래서', '그러나', '하지만', '때문에', '해서', '근데', '솔직히', '무슨', '어떤', '이런', '저런']
     return [normalize_korean_word(w) for w in raw_tokens if normalize_korean_word(w) not in noise]
 
-def generate_ngrams(text, n=2):
-    tokens = extract_meaningful_tokens(text)
-    if len(tokens) < n: return []
-    return [" ".join(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
+# 🌟 [v52.0] AI Semantic Extraction
+def extract_ai_keywords(text, top_n=1):
+    if not text or kw_model is None: return None
+    try:
+        # KeyBERT로 n-gram(1~2단어 조합) 키워드 추출
+        keywords = kw_model.extract_keywords(text, keyphrase_ngram_range=(1, 2), stop_words=None, top_n=top_n)
+        if keywords:
+            return keywords[0][0] # (keyword, score) 튜플에서 키워드만 반환
+    except: pass
+    return None
 
-def generate_revolutionary_query(title, hashtags, transcript):
+def generate_hybrid_query(title, hashtags, transcript):
+    # 1. 인용구 우선
     quotes = re.findall(r'[\"“\'](.*?)[\"”\']', title)
     if quotes:
         quote_text = max(quotes, key=len)
@@ -179,29 +202,19 @@ def generate_revolutionary_query(title, hashtags, transcript):
         if len(quote_tokens) >= 2:
             return " ".join(quote_tokens[:4])
 
-    title_bigrams = generate_ngrams(title, 2)
-    valid_bigrams = [bg for bg in title_bigrams if bg in transcript]
+    # 2. 🌟 AI Semantic Extraction (KeyBERT)
+    # 제목 + 자막 앞부분 500자를 섞어서 AI에게 '가장 중요한 문구'를 물어봄
+    context_text = f"{title}. {transcript[:500]}"
+    ai_keyword = extract_ai_keywords(context_text)
     
-    if valid_bigrams:
-        return valid_bigrams[0]
-    
+    if ai_keyword:
+        return ai_keyword # AI가 찾은 '의미적 핵심' 사용
+
+    # 3. Fallback: 기존 통계적 방식
     title_tokens = extract_meaningful_tokens(title)
     vip_in_title = [w for w in title_tokens if w in VIP_ENTITIES]
-    
-    transcript_tokens = extract_meaningful_tokens(transcript)
-    trans_counter = Counter(transcript_tokens)
-    
     subject = vip_in_title[0] if vip_in_title else (title_tokens[0] if title_tokens else "")
-    action = ""
-    for word, cnt in trans_counter.most_common(5):
-        if word != subject:
-            action = word
-            break
-            
-    if subject and action:
-        return f"{subject} {action}"
-    
-    return " ".join(title_tokens[:3])
+    return f"{subject} {extract_meaningful_tokens(transcript)[0]}" if subject else title
 
 def summarize_transcript(text, title, max_sentences=3):
     if not text or len(text) < 50: return "⚠️ 요약할 자막 내용이 충분하지 않습니다."
@@ -360,8 +373,8 @@ def run_forensic_main(url):
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
-            # 🌟 [v51.0] Revolutionary Query
-            query = generate_revolutionary_query(title, tags, full_text)
+            # 🌟 [v52.0] Hybrid Query (AI + Fallback)
+            query = generate_hybrid_query(title, tags, full_text)
 
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
             abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
@@ -445,7 +458,7 @@ def run_forensic_main(url):
             with col1:
                 st.write("**[영상 상세 정보]**")
                 st.table(pd.DataFrame({"항목": ["영상 제목", "채널명", "조회수", "해시태그"], "내용": [title, uploader, f"{info.get('view_count',0):,}회", hashtag_display]}))
-                st.info(f"🎯 **혁신적 N-gram 검색어**: {query}")
+                st.info(f"🎯 **AI 추출 검색어 (KeyBERT)**: {query}")
                 with st.container(border=True):
                     st.markdown("📝 **영상 내용 요약 (AI Abstract)**")
                     st.caption("자막 데이터를 분석하여 핵심 문장 3개를 추출한 결과입니다.")
@@ -496,7 +509,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v51.2")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v52.0")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
