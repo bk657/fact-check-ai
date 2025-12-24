@@ -12,12 +12,13 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 import altair as alt
-
-# 🌟 [v52.0 New] AI Keyword Engine
 from keybert import KeyBERT
+import spacy # 🌟 [v53.0] 자연어 처리 AI (개체명 인식)
+import subprocess
+import sys
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v52.0 (KeyBERT AI)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v53.0 (NER AI)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -35,18 +36,28 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# 🌟 [v52.0 New] AI 모델 로드 (최초 1회만 실행, 캐싱됨)
+# 🌟 [v53.0] AI 모델 로드 (KeyBERT + SpaCy NER)
 @st.cache_resource
-def load_ai_model():
-    # 다국어(한국어 포함) 지원 경량화 모델 로드
-    return KeyBERT('paraphrase-multilingual-MiniLM-L12-v2')
+def load_ai_models():
+    # 1. KeyBERT 로드
+    kw_model = KeyBERT('paraphrase-multilingual-MiniLM-L12-v2')
+    
+    # 2. SpaCy 한국어 모델 로드 (없으면 다운로드)
+    try:
+        nlp = spacy.load("ko_core_news_sm")
+    except OSError:
+        # Streamlit Cloud 등에서 모델이 없을 경우 강제 다운로드
+        subprocess.run([sys.executable, "-m", "spacy", "download", "ko_core_news_sm"])
+        nlp = spacy.load("ko_core_news_sm")
+        
+    return kw_model, nlp
 
 try:
-    kw_model = load_ai_model()
-    ai_status = "✅ AI Engine Active (KeyBERT)"
-except:
-    kw_model = None
-    ai_status = "⚠️ AI Load Failed (Using Logic)"
+    kw_model, nlp_model = load_ai_models()
+    ai_status = "✅ AI Engines Active (KeyBERT + NER)"
+except Exception as e:
+    kw_model, nlp_model = None, None
+    ai_status = f"⚠️ AI Load Failed: {e}"
 
 # --- [관리자 인증] ---
 if "is_admin" not in st.session_state:
@@ -54,7 +65,7 @@ if "is_admin" not in st.session_state:
 
 with st.sidebar:
     st.header("🛡️ 관리자 메뉴")
-    st.caption(ai_status) # AI 상태 표시
+    st.caption(ai_status)
     with st.form("login_form"):
         password_input = st.text_input("관리자 비밀번호", type="password")
         submit_button = st.form_submit_button("로그인")
@@ -75,13 +86,9 @@ with st.sidebar:
 WEIGHT_NEWS_DEFAULT = 45; WEIGHT_VECTOR = 35; WEIGHT_CONTENT = 15; WEIGHT_SENTIMENT_DEFAULT = 10
 PENALTY_ABUSE = 20; PENALTY_MISMATCH = 30; PENALTY_NO_FACT = 25; PENALTY_SILENT_ECHO = 40
 
-VITAL_KEYWORDS = ['위독', '사망', '별세', '구속', '체포', '기소', '실형', '응급실', '이혼', '불화', '파경', '충격', '경악', '속보', '긴급', '폭로', '양성', '확진', '심정지', '뇌사', '중태', '압수수색', '소환', '퇴진', '탄핵', '내란', '간첩']
-VIP_ENTITIES = ['윤석열', '대통령', '이재명', '한동훈', '김건희', '문재인', '박근혜', '이명박', '트럼프', '바이든', '푸틴', '젤렌스키', '시진핑', '정은', '이준석', '조국', '추미애', '홍준표', '유승민', '안철수', '손흥민', '이강인', '김민재', '류현진', '재용', '정의선', '최태원', '류중일', '감독', '조세호', '유재석', '장동민', '유호정', '이재룡']
+# 🌟 더 이상 VIP 리스트를 하드코딩하지 않습니다. (AI가 찾음)
 CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
 OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
-
-STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
-STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
 
 class VectorEngine:
     def __init__(self):
@@ -124,10 +131,9 @@ def train_dynamic_vector_engine():
     try:
         dt = [row['video_title'] for row in supabase.table("analysis_history").select("video_title").lt("fake_prob", 40).execute().data]
         df = [row['video_title'] for row in supabase.table("analysis_history").select("video_title").gt("fake_prob", 60).execute().data]
-        vector_engine.train(STATIC_TRUTH_CORPUS + dt, STATIC_FAKE_CORPUS + df)
-        return len(STATIC_TRUTH_CORPUS + dt) + len(STATIC_FAKE_CORPUS + df), len(dt), len(df)
+        vector_engine.train(dt, df) # Corpus 업데이트
+        return len(dt) + len(df), len(dt), len(df)
     except: 
-        vector_engine.train(STATIC_TRUTH_CORPUS, STATIC_FAKE_CORPUS)
         return 0, 0, 0
 
 def render_intelligence_distribution(current_prob):
@@ -162,10 +168,10 @@ def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [
         f"🧠 [Intelligence Level: {total}] 집단 지성 로드 중...",
         f"📚 학습된 진실 데이터: {t_cnt}건 | 거짓 데이터: {f_cnt}건",
-        "🤖 KeyBERT AI 엔진 예열 중 (Meaning Extraction)...", 
+        "🤖 NER(개체명 인식) AI가 '주어'를 추적 중...", 
         "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
     ]
-    with st.status("🕵️ Context Merger v52.0 가동 중...", expanded=True) as status:
+    with st.status("🕵️ Context Merger v53.0 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
@@ -182,39 +188,63 @@ def extract_meaningful_tokens(text):
     noise = ['충격', '경악', '속보', '긴급', '오늘', '내일', '지금', '결국', '뉴스', '영상', '대부분', '이유', '왜', '있는', '없는', '하는', '것', '수', '등', '진짜', '정말', '너무', '그냥', '이제', '사실', '국민', '우리', '대한민국', '여러분', '그리고', '그래서', '그러나', '하지만', '때문에', '해서', '근데', '솔직히', '무슨', '어떤', '이런', '저런']
     return [normalize_korean_word(w) for w in raw_tokens if normalize_korean_word(w) not in noise]
 
-# 🌟 [v52.0] AI Semantic Extraction
 def extract_ai_keywords(text, top_n=1):
     if not text or kw_model is None: return None
     try:
-        # KeyBERT로 n-gram(1~2단어 조합) 키워드 추출
         keywords = kw_model.extract_keywords(text, keyphrase_ngram_range=(1, 2), stop_words=None, top_n=top_n)
         if keywords:
-            return keywords[0][0] # (keyword, score) 튜플에서 키워드만 반환
+            return keywords[0][0] 
     except: pass
     return None
 
-def generate_hybrid_query(title, hashtags, transcript):
-    # 1. 인용구 우선
-    quotes = re.findall(r'[\"“\'](.*?)[\"”\']', title)
-    if quotes:
-        quote_text = max(quotes, key=len)
-        quote_tokens = extract_meaningful_tokens(quote_text)
-        if len(quote_tokens) >= 2:
-            return " ".join(quote_tokens[:4])
-
-    # 2. 🌟 AI Semantic Extraction (KeyBERT)
-    # 제목 + 자막 앞부분 500자를 섞어서 AI에게 '가장 중요한 문구'를 물어봄
-    context_text = f"{title}. {transcript[:500]}"
-    ai_keyword = extract_ai_keywords(context_text)
+# 🌟 [v53.0 Key Feature] NER (Named Entity Recognition) Extraction
+def extract_ner_entities(text):
+    """
+    Spacy AI를 사용하여 문장에서 '사람 이름(PERSON)', '기관(ORG)'만 추출
+    """
+    if not nlp_model: return []
     
-    if ai_keyword:
-        return ai_keyword # AI가 찾은 '의미적 핵심' 사용
+    doc = nlp_model(text)
+    entities = []
+    
+    # 1순위: 사람 이름 (PERSON)
+    # 2순위: 기관/단체 (ORG)
+    for ent in doc.ents:
+        if ent.label_ in ["PERSON", "ORG", "CIVILIZATION"]: # 이재용(PERSON), 삼성(ORG)
+            entities.append(ent.text)
+            
+    return list(dict.fromkeys(entities)) # 중복 제거
 
-    # 3. Fallback: 기존 통계적 방식
-    title_tokens = extract_meaningful_tokens(title)
-    vip_in_title = [w for w in title_tokens if w in VIP_ENTITIES]
-    subject = vip_in_title[0] if vip_in_title else (title_tokens[0] if title_tokens else "")
-    return f"{subject} {extract_meaningful_tokens(transcript)[0]}" if subject else title
+# 🌟 [v53.0] Smart Query Generator (NER + KeyBERT)
+def generate_smart_query(title, transcript):
+    # 1. 제목에서 주어(Entity) 추출 (by NER AI)
+    # 예: "이재용 회장의..." -> "이재용" 추출
+    entities = extract_ner_entities(title)
+    main_subject = entities[0] if entities else ""
+    
+    # 2. KeyBERT로 문맥상 중요한 '행위/사건' 추출
+    # 제목 + 자막 앞부분으로 문맥 파악
+    context = f"{title}. {transcript[:500]}"
+    action_keyword = extract_ai_keywords(context) # 예: "결혼", "이혼"
+    
+    # 3. 조합 (Subject + Action)
+    final_query = ""
+    
+    if main_subject:
+        # 주어가 있으면: [주어] + [KeyBERT 키워드]
+        # 만약 KeyBERT 키워드 안에 주어가 이미 포함되어 있으면 중복 방지
+        if action_keyword:
+            if main_subject in action_keyword:
+                final_query = action_keyword
+            else:
+                final_query = f"{main_subject} {action_keyword}"
+        else:
+            final_query = f"{main_subject} {title.split()[-1]}" # KeyBERT 실패 시 제목 끝단어 사용
+    else:
+        # 주어를 못 찾았으면 KeyBERT 결과 그대로 사용 (기존 방식)
+        final_query = action_keyword if action_keyword else title
+        
+    return final_query
 
 def summarize_transcript(text, title, max_sentences=3):
     if not text or len(text) < 50: return "⚠️ 요약할 자막 내용이 충분하지 않습니다."
@@ -373,8 +403,8 @@ def run_forensic_main(url):
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
-            # 🌟 [v52.0] Hybrid Query (AI + Fallback)
-            query = generate_hybrid_query(title, tags, full_text)
+            # 🌟 [v53.0] Smart Query (NER + KeyBERT)
+            query = generate_smart_query(title, full_text)
 
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
             abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
@@ -416,7 +446,15 @@ def run_forensic_main(url):
             elif is_controversial:
                 news_score = PENALTY_NO_FACT if max_match < 60 else int((max_match/100)**2 * w_news) * -1
             else:
-                news_score = int((max_match/100)**2 * w_news) * -1
+                if max_match >= 60:
+                    news_score = int((max_match/100)**2 * w_news) * -1
+                    news_note = "Verified (High Match)"
+                elif max_match >= 30:
+                    news_score = 0
+                    news_note = "Ambiguous (30~59%)"
+                else:
+                    news_score = 15 
+                    news_note = "Low Match Penalty"
                 
             if is_official: news_score = -50; mismatch_penalty = 0; silent_penalty = 0
             
@@ -458,7 +496,7 @@ def run_forensic_main(url):
             with col1:
                 st.write("**[영상 상세 정보]**")
                 st.table(pd.DataFrame({"항목": ["영상 제목", "채널명", "조회수", "해시태그"], "내용": [title, uploader, f"{info.get('view_count',0):,}회", hashtag_display]}))
-                st.info(f"🎯 **AI 추출 검색어 (KeyBERT)**: {query}")
+                st.info(f"🎯 **AI 스마트 검색어 (NER+KeyBERT)**: {query}")
                 with st.container(border=True):
                     st.markdown("📝 **영상 내용 요약 (AI Abstract)**")
                     st.caption("자막 데이터를 분석하여 핵심 문장 3개를 추출한 결과입니다.")
@@ -466,12 +504,13 @@ def run_forensic_main(url):
                 st.write("**[Score Breakdown]**")
                 
                 silence_label = "미검증 주장 (판단 보류)" if is_gray_zone else "침묵의 메아리 (No News)"
+                news_note_display = locals().get('news_note', '')
                 
                 render_score_breakdown([
                     ["기본 위험도", 50, "Base Score"],
                     ["진실 맥락 보너스 (벡터)", t_impact, "Unknown" if is_gray_zone else ""], 
                     ["가짜 패턴 가점 (벡터)", f_impact, "Unknown" if is_gray_zone else ""],
-                    ["뉴스 교차 대조 (Dual)", news_score, ""],
+                    ["뉴스 교차 대조 (Dual)", news_score, news_note_display],
                     [silence_label, silent_penalty, "Gray Zone (+5)" if is_gray_zone else ""],
                     ["여론/제목/자막 가감", sent_score + clickbait, ""],
                     ["내용 불일치 기만", mismatch_penalty, ""], ["해시태그 어뷰징", abuse_score, ""]
@@ -509,7 +548,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v52.0")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v53.0")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
