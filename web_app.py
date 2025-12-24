@@ -15,7 +15,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v72.5 (3000 Char Limit)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v73.0 (Smart Summary)", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -94,41 +94,42 @@ safety_settings_none = {
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
 
-# [Engine A] 수사관: 3000자 제한 + 순수 추론
-def get_gemini_search_keywords(title, transcript):
+# [Engine A] 수사관: (제목 + 요약본)만 사용 -> 초경량화
+def get_gemini_search_keywords(title, summary):
     genai.configure(api_key=GOOGLE_API_KEY_A)
     model = genai.GenerativeModel('gemini-2.0-flash') 
     
-    # [데이터 초경량화] 3,000자로 제한 (사용자 요청)
-    short_context = transcript[:3000]
-    
+    # [핵심] 전체 자막(transcript) 대신 이미 요약된 summary를 입력으로 사용
     prompt = f"""
     You are a Fact-Check Investigator.
-    Input Title: {title}
-    Input Transcript: {short_context}
     
-    Task: Extract the single most important 'keyword' or 'short phrase' to verify the claims in this video on Google News.
-    Rules: 
+    [Input Data]
+    - Video Title: {title}
+    - Content Summary: {summary}
+    
+    [Task]
+    Based on the summary, extract the single most important 'keyword' or 'short phrase' to verify the claims on Google News.
+    
+    [Rules] 
     1. Ignore clickbait words like 'Shocking', 'Vlog', 'Diet'. 
-    2. Focus on specific Drug names, Medical terms, or Crimes mentioned in the text.
+    2. Focus on specific Drug names, Medical terms, or Crimes mentioned in the summary.
     3. Output ONLY the Korean query string. No explanations.
     """
 
     try:
         response = model.generate_content(prompt, safety_settings=safety_settings_none)
-        return response.text.strip(), "✨ Gemini 2.0 (3000 Char Limit)"
+        return response.text.strip(), "✨ Gemini 2.0 (Summary-Based)"
     except Exception as e:
-        time.sleep(3) # 에러 시 3초 대기 후 재시도
+        time.sleep(2)
         try:
             response = model.generate_content(prompt, safety_settings=safety_settings_none)
             return response.text.strip(), "✨ Gemini 2.0 (Retry)"
         except Exception as e2:
             return f"Error: {str(e2)}", "❌ Key A Error"
 
-# [Engine B] 판사: 기존 유지 (30,000자)
+# [Engine B] 판사: (제목 + 전체 자막) 사용 -> 정밀 판독 (기존 유지)
 def get_gemini_verdict(title, transcript, news_items):
     genai.configure(api_key=GOOGLE_API_KEY_B)
-    
     model = genai.GenerativeModel('gemini-2.0-flash', generation_config={"response_mime_type": "application/json"})
     
     news_text = ""
@@ -140,7 +141,7 @@ def get_gemini_verdict(title, transcript, news_items):
             safe_desc = item.get('desc', '내용 없음')
             news_text += f"{idx+1}. {safe_title} : {safe_desc}\n"
             
-    # [유지] Key B는 정확도를 위해 30,000자 유지
+    # Key B는 정확도를 위해 전체 자막(최대 30,000자) 사용
     full_context = transcript[:30000]
 
     prompt = f"""
@@ -160,7 +161,7 @@ def get_gemini_verdict(title, transcript, news_items):
     1. Identify the core claim.
     2. If the video warns about 'Drug Side Effects' and news confirms it -> TRUTH (Score 0-30).
     3. If the video makes 'Unfounded Conspiracy Claims' -> FAKE (Score 80-100).
-    4. Provide a 'fake_score' (0=Truth, 100=Fake) and a short 'reason'.
+    4. Provide a 'fake_score' (0=Truth, 100=Fake) and a short 'reason' in Korean.
 
     [Output Format - JSON Only]
     {{"score": <int>, "reason": "<string>"}}
@@ -363,7 +364,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v72.5...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v73.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -383,11 +384,13 @@ def run_forensic_main(url):
             # [Step 1] 자막 수집
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
+            
+            # 여기서 summary 생성
             summary = summarize_transcript(full_text, title)
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
-            # [Step 2] Gemini Key A (수사관)
-            query, source = get_gemini_search_keywords(title, full_text)
+            # [Step 2] Gemini Key A (수사관) - 요약본만 전달
+            query, source = get_gemini_search_keywords(title, summary)
 
             # [Step 3] 기본 알고리즘 분석
             is_official = check_is_official(uploader)
@@ -452,7 +455,7 @@ def run_forensic_main(url):
             algo_base_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
             algo_final_prob = max(5, min(99, algo_base_score))
             
-            # [Step 6] Gemini Key B (판사)
+            # [Step 6] Gemini Key B (판사) - 전체 자막 전달
             ai_judge_score, ai_judge_reason = get_gemini_verdict(title, full_text, news_ev)
             
             # [Step 7] 최종 합산
@@ -540,12 +543,12 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v72.5 (3000 Char Limit)")
+st.title("⚖️ Fact-Check Center v73.0 (Smart Summary)")
 
 # [법적 고지 복구]
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론")
+    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (Summary-Based)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (Full-Context)")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
