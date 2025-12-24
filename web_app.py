@@ -6,6 +6,7 @@ import time
 import random
 import math
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from datetime import datetime
 from collections import Counter
 import yt_dlp
@@ -14,7 +15,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v73.0 (Smart Summary)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v74.0 (Title Only)", layout="wide", page_icon="⚡")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -85,51 +86,43 @@ vector_engine = VectorEngine()
 
 # --- [4. Gemini Logic] ---
 
-# [Engine A] 수사관: 키워드 추출 전담 (요약본 사용으로 수정됨)
-def get_gemini_search_keywords(title, summary):
+# 🚨 안전 설정: 필터링 완전 해제
+safety_settings_none = {
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+}
+
+# [Engine A] 수사관: 오직 '제목'만 보고 판단 (토큰 소모 최소화)
+def get_gemini_search_keywords(title):
     genai.configure(api_key=GOOGLE_API_KEY_A)
-    target_model = 'gemini-2.0-flash'
+    model = genai.GenerativeModel('gemini-2.0-flash') 
     
-    # [수정] 전체 자막이 아닌 '요약본(summary)'을 사용
+    # [극단적 단순화] 자막(Transcript) 다 버리고 제목만 보냄
     prompt = f"""
-    You are an expert investigative journalist. 
-    Your task is to extract ONE precise search query for Google News to verify the facts based on the video summary.
+    [Task]
+    Analyze this YouTube Title and extract ONE search keyword for Fact-Checking.
     
-    [Input Data]
-    - Video Title: {title}
-    - Content Summary: {summary}
+    [Title]: {title}
     
-    [Critical Extraction Rules]
-    1. **IGNORE** generic YouTubers' names unless they are the criminal suspect.
-    2. **IGNORE** clickbait phrases like '충격', '경악'.
-    3. **PRIORITIZE** specific Proper Nouns found in the Summary:
-       - Medicine/Drug names (e.g., '나비약', '펜터민').
-       - Legal/Crime terms.
-       - Official Event/Policy names.
-    4. **Output Format:** Just the Korean query string. No explanations.
+    [Rules]
+    1. If the title contains specific Proper Nouns (Person, Drug, Event), use them.
+    2. Output ONLY the Korean query string.
     """
 
     try:
-        model = genai.GenerativeModel(target_model)
-        response = model.generate_content(prompt)
-        if response.text:
-            return response.text.strip(), f"✨ Gemini Investigator (Key A / 2.0-Flash / Summary)"
+        response = model.generate_content(prompt, safety_settings=safety_settings_none)
+        return response.text.strip(), "✨ Gemini 2.0 (Title Only)"
     except Exception as e:
-        return f"Error: {str(e)}", "❌ Key A Error"
-            
-    # 백업 로직
-    tokens = re.findall(r'[가-힣]{2,}', title)
-    return " ".join(tokens[:3]), "🤖 Backup Logic"
+        # 혹시라도 에러나면 진짜 간단한 백업
+        return title, "❌ API Error (Fallback to Title)"
 
-# [Engine B] 판사: 진위 여부 최종 추론 전담 (건드리지 않음 - 기존 코드 유지)
+# [Engine B] 판사: 기존 유지 (30,000자)
 def get_gemini_verdict(title, transcript, news_items):
     genai.configure(api_key=GOOGLE_API_KEY_B)
     
-    model_candidates = [
-        'gemini-2.0-flash', 
-        'gemini-2.5-flash',
-        'gemini-flash-latest'
-    ]
+    model = genai.GenerativeModel('gemini-2.0-flash', generation_config={"response_mime_type": "application/json"})
     
     news_text = ""
     if not news_items:
@@ -140,47 +133,38 @@ def get_gemini_verdict(title, transcript, news_items):
             safe_desc = item.get('desc', '내용 없음')
             news_text += f"{idx+1}. {safe_title} : {safe_desc}\n"
             
+    # [유지] Key B는 정확도를 위해 30,000자 유지
     full_context = transcript[:30000]
 
     prompt = f"""
     You are a professional Fact-Check AI Judge.
     
     [Task]
-    Compare the Video Transcript with the Search Results to determine if the video is 'Fake News/Clickbait' or 'Fact'.
+    Compare the Video Transcript with the Search Results.
     
     [Video Info]
     Title: {title}
-    Transcript Summary: {full_context[:2000]}... (truncated)
+    Transcript Summary: {full_context[:2000]}...
     
-    [Search Results (Evidence)]
+    [Search Results]
     {news_text}
     
     [Instruction]
-    1. Identify the core claim of the video.
-    2. Check if the Search Results support or contradict the claim.
-    3. If the video warns about dangers (e.g., drug side effects) and news confirms those dangers, it is TRUTH (Score 0-30).
-    4. If 'No related news found' BUT the content is a known medical/science fact (like 'Smoking is bad'), assume it is plausible.
-    5. Provide a 'fake_score' from 0 (Truth) to 100 (Fake).
-       - 0~30: Trustworthy / Fact / Beneficial Warning.
-       - 70~100: False claim / Scam / Unfounded conspiracy.
-    6. Write a short 'reason' in Korean (1 sentence).
+    1. Identify the core claim.
+    2. If the video warns about 'Drug Side Effects' and news confirms it -> TRUTH (Score 0-30).
+    3. If the video makes 'Unfounded Conspiracy Claims' -> FAKE (Score 80-100).
+    4. Provide a 'fake_score' (0=Truth, 100=Fake) and a short 'reason'.
 
     [Output Format - JSON Only]
     {{"score": <int>, "reason": "<string>"}}
     """
     
-    last_error = ""
-    for m_name in model_candidates:
-        try:
-            model = genai.GenerativeModel(m_name, generation_config={"response_mime_type": "application/json"})
-            response = model.generate_content(prompt)
-            result = json.loads(response.text)
-            return result['score'], result['reason']
-        except Exception as e:
-            last_error = str(e)
-            continue
-
-    return 50, f"AI 추론 실패 (모델: {model_candidates[0]} 등): {last_error}"
+    try:
+        response = model.generate_content(prompt, safety_settings=safety_settings_none)
+        res_json = json.loads(response.text)
+        return res_json['score'], res_json['reason']
+    except Exception as e:
+        return 50, f"AI 추론 실패 (Key B Error: {str(e)})"
 
 # --- [5. 유틸리티 함수] ---
 def normalize_korean_word(word):
@@ -372,7 +356,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v73.0...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v74.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -389,16 +373,14 @@ def run_forensic_main(url):
             title = info.get('title', ''); uploader = info.get('uploader', '')
             tags = info.get('tags', []); desc = info.get('description', '')
             
-            # [Step 1] 자막 수집
+            # [Step 1] 자막 수집 (Key B를 위해 수집은 함)
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
-            
-            # [Step 1.5] 핵심 요약 (Summary) 생성
             summary = summarize_transcript(full_text, title)
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
-            # [Step 2] Gemini Key A (수사관) - 요약본 전달 (토큰 절약)
-            query, source = get_gemini_search_keywords(title, summary)
+            # [Step 2] Gemini Key A (수사관) - 제목만 사용
+            query, source = get_gemini_search_keywords(title)
 
             # [Step 3] 기본 알고리즘 분석
             is_official = check_is_official(uploader)
@@ -463,7 +445,7 @@ def run_forensic_main(url):
             algo_base_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
             algo_final_prob = max(5, min(99, algo_base_score))
             
-            # [Step 6] Gemini Key B (판사) - 전체 자막 전달
+            # [Step 6] Gemini Key B (판사) - 전체 자막 사용
             ai_judge_score, ai_judge_reason = get_gemini_verdict(title, full_text, news_ev)
             
             # [Step 7] 최종 합산
@@ -535,7 +517,6 @@ def run_forensic_main(url):
                     st.write(f"⚖️ **판결:** {ai_judge_reason}")
                     st.caption(f"* Gemini 독립 추론 점수: {ai_judge_score}점 (Key B)")
 
-                # 결과 해석 리포트
                 reasons = []
                 if final_prob >= 60:
                     reasons.append("🚨 **위험 감지**: AI 판사와 알고리즘 모두 이 영상의 주장을 의심하고 있습니다.")
@@ -551,12 +532,11 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v73.0 (Smart Summary)")
+st.title("⚖️ Fact-Check Center v74.0 (Title Only)")
 
-# [법적 고지 복구]
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론")
+    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (Title Only)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (Full Context)")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
