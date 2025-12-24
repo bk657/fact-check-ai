@@ -10,7 +10,7 @@ from datetime import datetime
 import google.generativeai as genai
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v60.5 (Debug)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v60.6 (Auto-Fix)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets 로드
 try:
@@ -23,20 +23,56 @@ except KeyError as e:
     st.error(f"❌ 필수 키 설정 누락: {e}")
     st.stop()
 
-# 🌟 서비스 초기화
+# 🌟 서비스 초기화 (자동 모델 탐색 로직 탑재)
 @st.cache_resource
 def init_services():
+    sb = None
+    model = None
+    selected_model_name = "Unknown"
+    
     try:
+        # DB 연결
         from supabase import create_client
         sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+        
+        # Gemini 설정
         genai.configure(api_key=GOOGLE_API_KEY)
-        # 최신 라이브러리(0.7.2 이상)에서는 1.5-flash가 표준입니다.
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        return sb, model
-    except Exception as e:
-        return None, None
+        
+        # 🚨 [핵심] 사용 가능한 모델 목록 조회 및 자동 선택
+        available_models = []
+        try:
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    available_models.append(m.name)
+        except:
+            pass
 
-supabase, gemini_model = init_services()
+        # 우선순위: 1.5-flash -> 1.5-pro -> 1.0-pro -> 아무거나
+        if any('gemini-1.5-flash' in m for m in available_models):
+            target_model = 'gemini-1.5-flash'
+        elif any('gemini-1.5-pro' in m for m in available_models):
+            target_model = 'gemini-1.5-pro'
+        elif any('gemini-pro' in m for m in available_models):
+            target_model = 'gemini-pro'
+        elif available_models:
+            target_model = available_models[0] # 뭐라도 있으면 그거 씀
+        else:
+            target_model = 'gemini-pro' # 목록 조회 실패시 기본값 강제 시도
+
+        # 'models/' 접두사 제거 (라이브러리 호환성)
+        if target_model.startswith('models/'):
+            target_model = target_model.replace('models/', '')
+            
+        model = genai.GenerativeModel(target_model)
+        selected_model_name = target_model
+
+    except Exception as e:
+        print(f"Init Error: {e}")
+        return None, None, str(e)
+
+    return sb, model, selected_model_name
+
+supabase, gemini_model, model_name_log = init_services()
 
 # --- [2. Gemini AI 에이전트] ---
 class GeminiAgent:
@@ -46,9 +82,10 @@ class GeminiAgent:
     def extract_keywords(self, title, transcript):
         if not self.model: return title
         prompt = f"""
-        Extract one specific search keyword to fact-check this video.
-        Input: {title} / {transcript[:500]}
-        Output: (Only Keyword)
+        Extract the one best search keyword for fact-checking.
+        Input: {title}
+        Context: {transcript[:500]}
+        Output: (Keyword Only)
         """
         try:
             response = self.model.generate_content(prompt)
@@ -58,24 +95,24 @@ class GeminiAgent:
 
     def analyze_content(self, title, channel, transcript, news_context, comments):
         if not self.model:
-            return {"fake_prob": 50, "verdict": "오류", "summary": "모델 로드 실패", "clickbait_score": 0}
+            return {"fake_prob": 50, "verdict": "오류", "summary": "AI 연결 실패", "clickbait_score": 0}
 
         prompt = f"""
-        Analyze this video for fake news. Respond in JSON.
-        
-        Data:
+        Analyze this video claim against news facts. Respond in JSON.
+
+        [Data]
         - Title: {title}
-        - News: {news_context}
-        - Transcript: {transcript[:5000]}
+        - Transcript: {transcript[:4000]}
+        - News Facts: {news_context}
         - Comments: {comments}
 
-        JSON Format:
+        [Output JSON]
         {{
-            "summary": "Korean summary",
+            "summary": "Korean summary (3 lines)",
             "fake_prob": 0-100,
             "verdict": "위험/주의/안전",
-            "reasoning": "Korean reasoning",
-            "fact_check_status": "Korean status",
+            "reasoning": "Korean reasoning (Fact vs Claim)",
+            "fact_check_status": "Verification result",
             "clickbait_score": 0-100
         }}
         """
@@ -88,7 +125,7 @@ class GeminiAgent:
                 "summary": "분석 실패",
                 "fake_prob": 50,
                 "verdict": "오류",
-                "reasoning": f"에러: {str(e)}",
+                "reasoning": f"에러 발생: {str(e)}",
                 "fact_check_status": "분석 불가",
                 "clickbait_score": 0
             }
@@ -102,7 +139,6 @@ def fetch_youtube_info(url):
         try:
             info = ydl.extract_info(url, download=False)
             transcript = ""
-            # 자막 추출 시도
             for sub_type in ['subtitles', 'automatic_captions']:
                 if sub_type in info and 'ko' in info[sub_type]:
                     url = next((x['url'] for x in info[sub_type]['ko'] if x['ext'] == 'vtt'), None)
@@ -157,23 +193,23 @@ def save_history(data):
 # --- [4. UI 구성] ---
 with st.sidebar:
     st.header("🛡️ 관리자")
-    # 🌟 버전 디버깅용 (문제가 해결되면 지우셔도 됩니다)
-    st.info(f"Gemini Lib Version: {genai.__version__}")
+    # 🌟 연결된 모델명 확인용 (디버깅)
+    st.success(f"Connected Model: {model_name_log}")
     
     if not st.session_state.get("is_admin"):
         if st.button("Login"):
             st.session_state["is_admin"] = True
             st.rerun()
 
-st.title("⚖️ Fact-Check Center v60.5")
-st.caption(f"Gemini Engine (Lib v{genai.__version__})")
+st.title("⚖️ Fact-Check Center v60.6")
+st.caption("Gemini Auto-Selector Engine")
 
 with st.container(border=True):
     url_input = st.text_input("유튜브 URL 입력")
     if st.button("🚀 분석 시작", type="primary", use_container_width=True):
         if url_input:
             if not gemini_model:
-                st.error("⚠️ AI 모델 초기화 실패.")
+                st.error(f"⚠️ AI 모델 초기화 실패: {model_name_log}")
             else:
                 with st.status("🕵️ Gemini AI 분석 중...", expanded=True) as status:
                     
@@ -183,14 +219,14 @@ with st.container(border=True):
                         st.error("영상 정보를 가져오지 못했습니다.")
                         st.stop()
                     
-                    st.write("🧠 Gemini: 뉴스 검색용 핵심 키워드 추출 중...")
+                    st.write(f"🧠 Gemini({model_name_log}): 핵심 키워드 추출 중...")
                     search_keyword = gemini_agent.extract_keywords(v_info['title'], v_info['transcript'])
                     st.info(f"👉 추출된 검색어: **{search_keyword}**")
                     
-                    st.write(f"📰 '{search_keyword}' 관련 뉴스 검색 중...")
+                    st.write(f"📰 '{search_keyword}' 뉴스 검색 중...")
                     news_result = fetch_google_news(search_keyword)
                     
-                    st.write("⚖️ 팩트 교차 검증 및 판결 중...")
+                    st.write("⚖️ 팩트 교차 검증 중...")
                     comments = fetch_comments(v_info['id'])
                     result = gemini_agent.analyze_content(
                         v_info['title'], v_info['channel'], v_info['transcript'], news_result, comments
