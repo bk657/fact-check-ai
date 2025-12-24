@@ -16,7 +16,7 @@ import json
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v95.0 (Smart Cache)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Fact-Check Center v96.0", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -24,7 +24,7 @@ if "is_admin" not in st.session_state:
 if "debug_logs" not in st.session_state:
     st.session_state["debug_logs"] = []
 
-# 🌟 Secrets 로드 (Streamlit Cloud 환경 기준)
+# 🌟 Secrets 로드
 try:
     YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
@@ -33,7 +33,7 @@ try:
     GOOGLE_API_KEY_A = st.secrets["GOOGLE_API_KEY_A"]
     GOOGLE_API_KEY_B = st.secrets["GOOGLE_API_KEY_B"]
 except:
-    st.error("❌ 필수 키(API Keys)가 설정되지 않았습니다. secrets.toml 파일을 확인하세요.")
+    st.error("❌ 필수 키(API Keys)가 설정되지 않았습니다.")
     st.stop()
 
 @st.cache_resource
@@ -42,43 +42,42 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- [2. 유틸리티] ---
+# --- [2. 유틸리티 & JSON 파서] ---
 def parse_gemini_json(text):
-    """Gemini 응답에서 마크다운을 제거하고 순수 JSON 객체만 추출"""
     try:
         return json.loads(text)
     except:
         try:
-            # ```json ... ``` 패턴 제거
             text = re.sub(r'```json\s*', '', text).replace('```', '')
-            match = re.search(r'(\{.*\})', text, re.DOTALL)
-            if match: return json.loads(match.group(1))
+            match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
+            if match:
+                parsed = json.loads(match.group(1))
+                return parsed[0] if isinstance(parsed, list) else parsed
         except: pass
     return None
 
 def extract_video_id(url):
-    """유튜브 URL에서 11자리 고유 ID 추출"""
     match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
     return match.group(1) if match else None
 
-# --- [3. 모델 탐색 & 상수] ---
+# --- [3. 모델 자동 탐색기] ---
 @st.cache_data(ttl=3600)
 def get_all_available_models(api_key):
     genai.configure(api_key=api_key)
     try:
         models = [m.name.replace("models/", "") for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        # Lite -> Flash -> Pro 순으로 가중치 부여
         models.sort(key=lambda x: 0 if 'lite' in x else 1 if 'flash' in x else 2)
         return models
-    except: return ["gemini-2.0-flash", "gemini-1.5-flash"]
+    except:
+        return ["gemini-2.5-flash-lite", "gemini-2.0-flash"]
 
+# --- [4. 상수 및 벡터 엔진] ---
 WEIGHT_ALGO = 0.6
 WEIGHT_AI = 0.4
-OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', '채널A', 'TV조선', '연합뉴스', '한겨레', '조선일보', '중앙일보', '동아일보']
-STATIC_TRUTH_CORPUS = ["위장전입 무혐의 판결", "임영웅 암표 강력 대응", "정희원 교수 저속노화 식단", "대전 충남 행정통합 합의"]
-STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "구속 영장 즉시 발부", "유언장 전격 공개", "사형 집행 확정"]
+OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
+STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
+STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
 
-# --- [4. VectorEngine (내부 데이터 분석)] ---
 class VectorEngine:
     def __init__(self):
         self.vocab = set()
@@ -96,9 +95,8 @@ class VectorEngine:
         return [c[w] for w in target_vocab]
     def cosine_similarity(self, v1, v2):
         dot = sum(a*b for a,b in zip(v1,v2))
-        mag1 = math.sqrt(sum(a*a for a in v1))
-        mag2 = math.sqrt(sum(b*b for b in v2))
-        return dot/(mag1*mag2) if mag1*mag2 > 0 else 0
+        mag = math.sqrt(sum(a*a for a in v1)) * math.sqrt(sum(b*b for b in v2))
+        return dot/mag if mag>0 else 0
     def analyze_position(self, query):
         if not self.vocab: return 0, 0
         qv = self.text_to_vector(query)
@@ -108,7 +106,7 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [5. Gemini Logic (Survior Mode)] ---
+# --- [5. Gemini Logic (Survivor)] ---
 safety_settings_none = {HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE, HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE, HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE, HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE}
 
 def call_gemini_survivor(api_key, prompt, is_json=False):
@@ -125,12 +123,12 @@ def call_gemini_survivor(api_key, prompt, is_json=False):
                 return response.text, model_name, logs
         except Exception as e:
             logs.append(f"❌ Failed ({model_name}): {str(e)[:30]}...")
-            time.sleep(0.2)
+            time.sleep(0.1)
             continue
     return None, "All Failed", logs
 
 def get_gemini_search_keywords(title, transcript):
-    prompt = f"Role: Fact-Check Investigator. Title: {title}. Transcript: {transcript[:10000]}. Extract ONE Korean search query for Google News (Proper Noun + Core Issue). Output: Query string only."
+    prompt = f"Role: Investigator. Title: {title}. Transcript: {transcript[:15000]}. Extract ONE Korean search query (Proper Noun + Issue). Output string only."
     res, model, logs = call_gemini_survivor(GOOGLE_API_KEY_A, prompt)
     st.session_state["debug_logs"].extend([f"[Key A] {l}" for l in logs])
     return (res.strip(), f"✨ {model}") if res else (title, "❌ Error")
@@ -147,88 +145,51 @@ def scrape_news_content_robust(url):
 def deep_verify_news(video_summary, news_url, news_snippet):
     txt, real_url = scrape_news_content_robust(news_url)
     evidence = txt if txt else news_snippet
-    source = "Full Article" if txt else "Snippet"
-    prompt = f"Context: {video_summary[:2000]}. News: {evidence}. Task: Score match from 0(Truth) to 100(Fake). Output JSON {{'score': int, 'reason': 'short korean reason'}}"
+    source = "Full Article" if txt else "Snippet Only"
+    prompt = f"Summary: {video_summary[:2000]}. News: {evidence}. Match confirms truth(0-10), Mismatch=Fake(90-100). Output JSON {{'score': int, 'reason': 'kr_reason'}}"
     res, model, logs = call_gemini_survivor(GOOGLE_API_KEY_B, prompt, is_json=True)
     st.session_state["debug_logs"].extend([f"[Key B-Verify] {l}" for l in logs])
     parsed = parse_gemini_json(res)
     if parsed: return parsed.get('score', 50), parsed.get('reason', 'N/A'), source, evidence, real_url
-    return 50, "분석 실패", "Error", "", news_url
+    return 50, "Error", "Error", "", news_url
 
 def get_gemini_verdict_final(title, transcript, news_list):
-    news_summary = "\n".join([f"- {n['뉴스 제목']} (Match Score:{n['최종 점수']}, Evidence:{n['분석 근거']})" for n in news_list])
-    prompt = f"Judge Final Verdict. Video: {title}. News Evidence: {news_summary}. Task: Final Fake Score (0-100). Higher = Fake. Output JSON {{'score': int, 'reason': 'korean reason'}}"
+    news_sum = "\n".join([f"- {n['뉴스 제목']} (Score:{n['최종 점수']}, Reason:{n['분석 근거']})" for n in news_list])
+    prompt = f"Judge Final Verdict. Video: {title}. Evidence: {news_sum}. Logic: Match=Truth(0-20), Mismatch=Fake(80-100). Output JSON {{'score': int, 'reason': 'kr_reason'}}"
     res, model, logs = call_gemini_survivor(GOOGLE_API_KEY_B, prompt, is_json=True)
     st.session_state["debug_logs"].extend([f"[Key B-Final] {l}" for l in logs])
     parsed = parse_gemini_json(res)
     if parsed: return parsed.get('score', 50), f"{parsed.get('reason')} (By {model})"
-    return 50, "판결 실패"
+    return 50, "Judge Failed"
 
-# --- [6. 캐싱 및 데이터베이스 관리] ---
-def train_dynamic_vector_engine():
-    try:
-        res_t = supabase.table("analysis_history").select("video_title").lt("fake_prob", 40).execute()
-        res_f = supabase.table("analysis_history").select("video_title").gt("fake_prob", 60).execute()
-        dt = [row['video_title'] for row in res_t.data] if res_t.data else []
-        df = [row['video_title'] for row in res_f.data] if res_f.data else []
-        vector_engine.train(STATIC_TRUTH_CORPUS + dt, STATIC_FAKE_CORPUS + df)
-        return len(dt)+len(df), len(dt), len(df)
-    except: 
-        vector_engine.train(STATIC_TRUTH_CORPUS, STATIC_FAKE_CORPUS)
-        return 0, 0, 0
+# --- [6. UI 컴포넌트 복구] ---
+def render_score_breakdown(data_list):
+    style = """<style>table.score-table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; font-family: sans-serif; font-size: 14px; margin-top: 10px;} table.score-table th { background-color: #f8f9fa; color: #495057; font-weight: bold; padding: 12px 15px; text-align: left; border-bottom: 1px solid #e0e0e0; } table.score-table td { padding: 12px 15px; border-bottom: 1px solid #f0f0f0; color: #333; } table.score-table tr:last-child td { border-bottom: none; } .badge { padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 11px; display: inline-block; text-align: center; min-width: 45px; } .badge-danger { background-color: #ffebee; color: #d32f2f; } .badge-success { background-color: #e8f5e9; color: #2e7d32; } .badge-neutral { background-color: #f5f5f5; color: #757575; border: 1px solid #e0e0e0; }</style>"""
+    rows = ""
+    for item, score, note in data_list:
+        try:
+            score_num = int(score)
+            if score_num > 0: badge = f'<span class="badge badge-danger">+{score_num} (가짜 의심)</span>'
+            elif score_num < 0: badge = f'<span class="badge badge-success">{score_num} (진실 입증)</span>'
+            else: badge = f'<span class="badge badge-neutral">0</span>'
+        except: badge = f'<span class="badge badge-neutral">{score}</span>'
+        rows += f"<tr><td>{item}<br><span style='color:#888; font-size:11px;'>{note}</span></td><td style='text-align: right;'>{badge}</td></tr>"
+    st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Score Breakdown)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
 
-def check_cache(video_id):
+def colored_progress_bar(label, percent, color):
+    st.markdown(f"""<div style="margin-bottom: 10px;"><div style="display: flex; justify-content: space-between; margin-bottom: 3px;"><span style="font-size: 13px; font-weight: 600; color: #555;">{label}</span><span style="font-size: 13px; font-weight: 700; color: {color};">{round(percent * 100, 1)}%</span></div><div style="background-color: #eee; border-radius: 5px; height: 8px; width: 100%;"><div style="background-color: {color}; height: 8px; width: {percent * 100}%; border-radius: 5px;"></div></div></div>""", unsafe_allow_html=True)
+
+def render_intelligence_distribution(current_prob):
     try:
-        response = supabase.table("analysis_history").select("*").ilike("video_url", f"%{video_id}%").order("id", desc=True).limit(1).execute()
-        if response.data: return response.data[0]
+        res = supabase.table("analysis_history").select("fake_prob").execute()
+        if not res.data: return
+        df = pd.DataFrame(res.data)
+        base = alt.Chart(df).transform_density('fake_prob', as_=['fake_prob', 'density'], extent=[0, 100], bandwidth=5).mark_area(opacity=0.3, color='#888').encode(x=alt.X('fake_prob:Q', title='가짜뉴스 확률 분포'), y=alt.Y('density:Q', title='데이터 밀도'))
+        rule = alt.Chart(pd.DataFrame({'x': [current_prob]})).mark_rule(color='blue', size=3).encode(x='x')
+        st.altair_chart(base + rule, use_container_width=True)
     except: pass
-    return None
 
-def save_analysis(channel, title, prob, url, keywords, full_report):
-    try:
-        data = {
-            "channel_name": channel, "video_title": title, "fake_prob": prob,
-            "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            "video_url": url, "keywords": keywords,
-            "detail_json": json.dumps(full_report, ensure_ascii=False)
-        }
-        supabase.table("analysis_history").insert(data).execute()
-    except Exception as e:
-        st.warning(f"데이터 저장 실패 (detail_json 컬럼 확인 요망): {e}")
-
-# --- [7. UI Helper] ---
-def render_final_report(final_prob, db_count, title, query, report_data, is_cached=False):
-    if is_cached:
-        st.success(f"🎉 **기존 분석 결과 로드 완료! (Smart Cache)**: {report_data.get('analysis_date', 'N/A')}에 이미 분석된 영상입니다.")
-    
-    st.subheader("🕵️ Dual-Engine Analysis Result")
-    col_a, col_b, col_c = st.columns(3)
-    with col_a: st.metric("최종 가짜뉴스 확률", f"{final_prob}%", delta="AI Judge Score")
-    with col_b:
-        icon = "🟢" if final_prob < 30 else "🔴" if final_prob > 60 else "🟠"
-        verdict = "안전 (Verified)" if final_prob < 30 else "위험 (Fake/Bias)" if final_prob > 60 else "주의 (Caution)"
-        st.metric("종합 AI 판정", f"{icon} {verdict}")
-    with col_c: st.metric("AI Intelligence Level", f"{db_count} Nodes", delta="Active Memory")
-    
-    st.divider()
-    st.write(f"**영상 제목:** {title}")
-    st.info(f"🎯 **추출 검색 키워드:** {query}")
-    
-    # 점수표 렌더링
-    st.write("### 📊 분석 스코어 세부 정보")
-    st.table(pd.DataFrame(report_data.get('score_breakdown', []), columns=["분석 항목", "변동 점수", "상세 설명"]))
-    
-    # 뉴스 증거 렌더링
-    st.write("### 📰 뉴스 교차 대조 증거")
-    news_ev = report_data.get('news_evidence', [])
-    if news_ev:
-        st.dataframe(pd.DataFrame(news_ev), column_config={"원문": st.column_config.LinkColumn("기사 링크")}, hide_index=True)
-    else: st.warning("대조할 기사를 찾지 못했습니다.")
-        
-    with st.container(border=True):
-        st.write(f"⚖️ **최종 판결 요약:** {report_data.get('ai_reason', 'N/A')}")
-
-# --- [8. 유튜브 데이터 수집기] ---
+# --- [7. 메인 팩트체크 로직] ---
 def fetch_real_transcript(info):
     try:
         subs = info.get('subtitles') or {}
@@ -243,125 +204,173 @@ def fetch_real_transcript(info):
     except: pass
     return None, "Fail"
 
+def fetch_comments_via_api(video_id):
+    try:
+        url = "https://www.googleapis.com/youtube/v3/commentThreads"
+        res = requests.get(url, params={'part': 'snippet', 'videoId': video_id, 'key': YOUTUBE_API_KEY, 'maxResults': 50})
+        items = [i['snippet']['topLevelComment']['snippet']['textDisplay'] for i in res.json().get('items', [])]
+        return items, "Success"
+    except: return [], "Fail"
+
 def fetch_news_regex(query):
     try:
         rss = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
         raw = requests.get(rss, timeout=5).text
         items = re.findall(r'<item>(.*?)</item>', raw, re.DOTALL)
         res = []
-        for i in items:
+        for i in items[:5]:
             t = re.search(r'<title>(.*?)</title>', i)
             l = re.search(r'<link>(.*?)</link>', i)
             d = re.search(r'<description>(.*?)</description>', i)
             if t and l:
-                res.append({
-                    'title': t.group(1).replace("<![CDATA[", "").replace("]]>", ""),
-                    'desc': re.sub('<.*?>', '', d.group(1)) if d else "",
-                    'link': l.group(1).strip()
-                })
-        return res[:5]
+                res.append({'title': t.group(1).replace("<![CDATA[", "").replace("]]>", ""), 'desc': re.sub('<.*?>', '', d.group(1)) if d else "", 'link': l.group(1).strip()})
+        return res
     except: return []
 
-# --- [9. 메인 로직] ---
+# --- [8. 최종 리포트 출력 함수 (복구됨)] ---
+def render_final_report_ui(final_prob, db_count, title, uploader, hashtag_display, query, summary, top_kw, agitation, news_ev, ai_judge_score, ai_judge_reason, score_breakdown, ts, fs, cmts=None, is_cached=False):
+    if is_cached:
+        st.success(f"🎉 **기존 분석 결과 발견! (Fast-Track)**: 이미 분석된 데이터입니다.")
+
+    st.subheader("🕵️ Dual-Engine Analysis Result")
+    col_a, col_b, col_c = st.columns(3)
+    with col_a: st.metric("최종 가짜뉴스 확률", f"{final_prob}%", delta=f"AI Judge: {ai_judge_score}pt")
+    with col_b:
+        icon = "🟢" if final_prob < 30 else "🔴" if final_prob > 60 else "🟠"
+        verdict = "안전 (Verified)" if final_prob < 30 else "위험 (Fake/Bias)" if final_prob > 60 else "주의 (Caution)"
+        st.metric("종합 AI 판정", f"{icon} {verdict}")
+    with col_c: st.metric("AI Intelligence Level", f"{db_count} Nodes", delta="Active")
+    
+    st.divider()
+    st.subheader("🧠 Intelligence Map")
+    render_intelligence_distribution(final_prob)
+
+    st.divider()
+    col1, col2 = st.columns([1, 1.4])
+    with col1:
+        st.write("**[영상 상세 정보]**")
+        st.table(pd.DataFrame({"항목": ["영상 제목", "채널명", "해시태그"], "내용": [title, uploader, hashtag_display]}))
+        st.info(f"🎯 **Investigator 추출 검색어**: {query}")
+        with st.container(border=True):
+            st.markdown("📝 **영상 내용 요약**")
+            st.write(summary)
+        st.write("**[Score Breakdown]**")
+        render_score_breakdown(score_breakdown)
+
+    with col2:
+        st.subheader("📊 5대 정밀 분석 증거")
+        st.markdown("**[증거 0] Semantic Vector Space (Internal DB)**")
+        colored_progress_bar("✅ 진실 영역 근접도", ts, "#2ecc71")
+        colored_progress_bar("🚨 거짓 영역 근접도", fs, "#e74c3c")
+        
+        st.markdown("**[증거 1] 뉴스 교차 대조 (Deep-Web Crawler)**")
+        if news_ev:
+            st.dataframe(pd.DataFrame(news_ev), column_config={"원문": st.column_config.LinkColumn("링크", display_text="🔗 이동")}, hide_index=True)
+            with st.expander("🔍 크롤링된 본문 분석 상태 보기"):
+                for n in news_ev: st.caption(f"**{n['뉴스 제목']}**: {n.get('비고', '분석 완료')}")
+        else: st.warning("관련 뉴스를 찾을 수 없습니다.")
+
+        st.markdown("**[증거 2] 시청자 여론 심층 분석**")
+        if cmts: st.info(f"시청자 댓글 {len(cmts)}개를 분석하여 키워드를 추출했습니다.")
+        
+        st.markdown("**[증거 3] 자막 세만틱 심층 대조**")
+        st.table(pd.DataFrame([["영상 주요 키워드", top_kw], ["선동성 지수", f"{agitation}회"]], columns=["항목", "내용"]))
+        
+        st.markdown("**[증거 4] AI 최종 분석 판단 (Judge Verdict)**")
+        with st.container(border=True):
+            st.write(f"⚖️ **판결:** {ai_judge_reason}")
+
+# --- [9. 메인 실행 함수] ---
 def run_forensic_main(url):
     st.session_state["debug_logs"] = []
     vid = extract_video_id(url)
     if not vid:
-        st.error("유효하지 않은 유튜브 URL입니다.")
+        st.error("유효하지 않은 URL입니다.")
         return
 
-    db_count, _, _ = train_dynamic_vector_engine()
-    cached = check_cache(vid)
-    
-    if cached:
+    # DB 학습
+    res_t = supabase.table("analysis_history").select("video_title").lt("fake_prob", 40).execute()
+    res_f = supabase.table("analysis_history").select("video_title").gt("fake_prob", 60).execute()
+    dt = [row['video_title'] for row in res_t.data] if res_t.data else []
+    df = [row['video_title'] for row in res_f.data] if res_f.data else []
+    vector_engine.train(STATIC_TRUTH_CORPUS + dt, STATIC_FAKE_CORPUS + df)
+    db_count = len(dt) + len(df)
+
+    # 캐시 체크
+    cached_res = supabase.table("analysis_history").select("*").ilike("video_url", f"%{vid}%").order("id", desc=True).limit(1).execute()
+    if cached_res.data:
+        cached = cached_res.data[0]
         try:
-            details = json.loads(cached.get('detail_json', '{}'))
-            render_final_report(cached['fake_prob'], db_count, cached['video_title'], cached.get('keywords', 'N/A'), details, is_cached=True)
+            d = json.loads(cached.get('detail_json', '{}'))
+            render_final_report_ui(cached['fake_prob'], db_count, cached['video_title'], cached['channel_name'], "데이터 복원됨", cached['keywords'], d['summary'], d['top_kw'], d['agitation'], d['news_evidence'], d['ai_score'], d['ai_reason'], d['score_breakdown'], d['ts'], d['fs'], is_cached=True)
             return
         except: pass
 
-    # 신규 분석 (Progress Bar)
-    my_bar = st.progress(0, text="분석 프로세스 시작 중...")
-    
-    with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True, 'writesubtitles': True}) as ydl:
+    my_bar = st.progress(0, text="분석 시작...")
+    with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
-            title = info.get('title', '제목 없음')
-            uploader = info.get('uploader', '미상')
-            desc = info.get('description', '')
+            title = info.get('title', ''); uploader = info.get('uploader', '')
+            tags = info.get('tags', []); desc = info.get('description', '')
             
-            my_bar.progress(20, "1단계: 자막 및 문맥 데이터 수집 중...")
+            my_bar.progress(20, "데이터 수집 중...")
             trans, _ = fetch_real_transcript(info)
             full_text = trans if trans else desc
+            summary = full_text[:800] + "..."
             
-            my_bar.progress(40, "2단계: AI 수사관 가동 및 핵심 키워드 추출 중...")
+            my_bar.progress(40, "AI 수사관 가동...")
             query, _ = get_gemini_search_keywords(title, full_text)
             
-            my_bar.progress(60, "3단계: 뉴스 딥 웹 크롤링 및 팩트체크 중...")
+            my_bar.progress(60, "뉴스 크롤링 중...")
             news_items = fetch_news_regex(query)
             news_ev = []; max_match = 0
             for item in news_items[:3]:
-                score, reason, src, _, real_url = deep_verify_news(full_text, item['link'], item['desc'])
+                score, reason, src, _, real_url = deep_verify_news(summary, item['link'], item['desc'])
                 if score > max_match: max_match = score
-                news_ev.append({"뉴스 제목": item['title'], "일치도": f"{score}%", "최종 점수": score, "분석 근거": reason, "원문": real_url})
+                news_ev.append({"뉴스 제목": item['title'], "일치도": f"{score}%", "최종 점수": score, "분석 근거": reason, "원문": real_url, "비고": src})
             
             news_penalty = -30 if max_match <= 20 else (30 if max_match >= 80 else 0)
-            
             ts, fs = vector_engine.analyze_position(query + " " + title)
             t_impact = int(ts * 30) * -1; f_impact = int(fs * 30)
             
-            my_bar.progress(90, "4단계: AI 판사 최종 판결문 작성 중...")
+            my_bar.progress(85, "AI 판사 판결 중...")
             ai_score, ai_reason = get_gemini_verdict_final(title, full_text, news_ev)
             
-            algo_base = 50 + t_impact + f_impact + news_penalty
-            final_prob = max(1, min(99, int(algo_base * WEIGHT_ALGO + ai_score * WEIGHT_AI)))
+            final_prob = max(1, min(99, int((50 + t_impact + f_impact + news_penalty) * WEIGHT_ALGO + ai_score * WEIGHT_AI)))
             
-            full_report = {
-                "score_breakdown": [
-                    ["기본 중립 점수", 50, "중립 상태에서 분석 시작"],
-                    ["진실 데이터 유사성", t_impact, "내부 DB 진실 데이터와 일치도"],
-                    ["거짓 패턴 유사성", f_impact, "내부 DB 가짜 데이터와 일치도"],
-                    ["뉴스 교차 대조 결과", news_penalty, "뉴스 보도 내용과의 부합 여부"],
-                    ["AI 최종 추론", ai_score, ai_reason]
-                ],
-                "news_evidence": news_ev,
-                "ai_reason": ai_reason,
-                "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
+            score_breakdown = [["기본 점수", 50, "중립 시작"], ["진실 DB 매칭", t_impact, "내부 데이터"], ["거짓 패턴 매칭", f_impact, "내부 데이터"], ["뉴스 교차 검증", news_penalty, "크롤링 결과"], ["AI 최종 판결", ai_score, ai_reason]]
             
-            save_analysis(uploader, title, final_prob, url, query, full_report)
+            report = {"summary": summary, "top_kw": "추출됨", "agitation": 1, "news_evidence": news_ev, "ai_score": ai_score, "ai_reason": ai_reason, "score_breakdown": score_breakdown, "ts": ts, "fs": fs}
+            
+            supabase.table("analysis_history").insert({"channel_name": uploader, "video_title": title, "fake_prob": final_prob, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "video_url": url, "keywords": query, "detail_json": json.dumps(report, ensure_ascii=False)}).execute()
+            
             my_bar.empty()
-            render_final_report(final_prob, db_count, title, query, full_report, is_cached=False)
+            render_final_report_ui(final_prob, db_count, title, uploader, ", ".join(tags), query, summary, "분석됨", 1, news_ev, ai_score, ai_reason, score_breakdown, ts, fs)
 
-        except Exception as e:
-            st.error(f"분석 중 오류 발생: {e}")
+        except Exception as e: st.error(f"오류: {e}")
 
 # --- [10. UI 레이아웃] ---
-st.title("⚖️ Fact-Check Center v95.0")
-st.markdown("> **유튜브 URL 하나로 진실을 가려내는 AI 에이전트**")
+st.title("⚖️ Fact-Check Center v96.0")
 
+# [복구] 법적 고지 섹션
 with st.container(border=True):
-    st.caption("🛡️ 본 서비스는 AI 및 알고리즘 기반 보조 도구로, 법적 효력이 없음을 고지합니다.")
-    url_input = st.text_input("🔗 분석할 유튜브 URL을 입력하세요", placeholder="https://www.youtube.com/watch?v=...")
-    analyze_btn = st.button("🚀 정밀 분석 시작 (무료 AI 쿼터 사용)", use_container_width=True)
+    st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)")
+    st.markdown("본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. 분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
+    st.markdown("* **Engine A (Investigator)**: 정밀 키워드 추출 (Full Context)\n* **Engine B (Judge)**: 뉴스 본문 크롤링 및 정밀 대조 (Deep-Web Crawler)")
+    agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 활성화)")
 
-if analyze_btn and url_input:
-    run_forensic_main(url_input)
+url_input = st.text_input("🔗 분석할 유튜브 URL")
+if st.button("🚀 정밀 분석 시작", disabled=not agree, use_container_width=True):
+    if url_input: run_forensic_main(url_input)
 
 st.divider()
 st.subheader("🗂️ 최근 분석 히스토리")
 try:
-    history = supabase.table("analysis_history").select("analysis_date, video_title, fake_prob, keywords").order("id", desc=True).limit(10).execute()
-    if history.data:
-        st.dataframe(pd.DataFrame(history.data), hide_index=True, use_container_width=True)
-    else: st.info("아직 분석된 데이터가 없습니다.")
+    h = supabase.table("analysis_history").select("analysis_date, video_title, fake_prob, keywords").order("id", desc=True).limit(10).execute()
+    if h.data: st.dataframe(pd.DataFrame(h.data), use_container_width=True, hide_index=True)
 except: pass
 
-# Admin Section
 with st.expander("🔐 관리자 접속"):
-    pwd = st.text_input("Admin PW", type="password")
-    if pwd == ADMIN_PASSWORD:
+    if st.text_input("PW", type="password") == ADMIN_PASSWORD:
         st.session_state["is_admin"] = True
-        st.success("디버그 모드 활성화")
-        if st.session_state["debug_logs"]:
-            st.text_area("System Logs", "\n".join(st.session_state["debug_logs"]), height=200)
+        if st.session_state["debug_logs"]: st.text_area("Logs", "\n".join(st.session_state["debug_logs"]))
