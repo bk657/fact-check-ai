@@ -15,7 +15,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v72.4 (Hybrid Final)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v72.5 (3000 Char Limit)", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -94,16 +94,14 @@ safety_settings_none = {
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
 
-# [Engine A] 수사관: 순수 Gemini 추론 + 데이터 다이어트 (5000자)
+# [Engine A] 수사관: 3000자 제한 + 순수 추론
 def get_gemini_search_keywords(title, transcript):
     genai.configure(api_key=GOOGLE_API_KEY_A)
-    # Key A는 2.0 Flash 사용
     model = genai.GenerativeModel('gemini-2.0-flash') 
     
-    # [데이터 다이어트] 5,000자로 제한하여 429 에러 방지
-    short_context = transcript[:5000]
+    # [데이터 초경량화] 3,000자로 제한 (사용자 요청)
+    short_context = transcript[:3000]
     
-    # [순수 프롬프트] 인위적인 알고리즘(Regex 등) 제거
     prompt = f"""
     You are a Fact-Check Investigator.
     Input Title: {title}
@@ -117,22 +115,20 @@ def get_gemini_search_keywords(title, transcript):
     """
 
     try:
-        # 오뚜기 로직 (간단 버전)
         response = model.generate_content(prompt, safety_settings=safety_settings_none)
-        return response.text.strip(), "✨ Gemini 2.0 (Pure & Diet)"
+        return response.text.strip(), "✨ Gemini 2.0 (3000 Char Limit)"
     except Exception as e:
-        time.sleep(2) # 1차 실패 시 2초 대기 후 1번만 더 시도
+        time.sleep(3) # 에러 시 3초 대기 후 재시도
         try:
             response = model.generate_content(prompt, safety_settings=safety_settings_none)
             return response.text.strip(), "✨ Gemini 2.0 (Retry)"
         except Exception as e2:
             return f"Error: {str(e2)}", "❌ Key A Error"
 
-# [Engine B] 판사: 기존 로직 유지 (30,000자 + 정교한 프롬프트)
+# [Engine B] 판사: 기존 유지 (30,000자)
 def get_gemini_verdict(title, transcript, news_items):
     genai.configure(api_key=GOOGLE_API_KEY_B)
     
-    # Key B도 2.0 Flash 사용 (기존 성공 버전)
     model = genai.GenerativeModel('gemini-2.0-flash', generation_config={"response_mime_type": "application/json"})
     
     news_text = ""
@@ -367,7 +363,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v72.4...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v72.5...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -544,12 +540,12 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v72.4 (Hybrid Final)")
+st.title("⚖️ Fact-Check Center v72.5 (3000 Char Limit)")
 
 # [법적 고지 복구]
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (Pure Gemini)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (Full Context)")
+    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
