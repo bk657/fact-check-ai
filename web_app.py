@@ -430,3 +430,135 @@ def run_forensic_main(url):
             clickbait = 10 if any(w in title for w in ['충격','경악','폭로']) else -5
             
             algo_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
+            final_prob = max(5, min(99, algo_score)) # Pure Algo Score
+            
+            save_analysis(uploader, title, final_prob, url, query)
+
+            st.subheader("🕵️ 핵심 분석 지표 (Key Indicators)")
+            col_a, col_b, col_c = st.columns(3)
+            with col_a: st.metric("최종 가짜뉴스 확률", f"{final_prob}%", delta=f"{final_prob - 50}")
+            with col_b:
+                icon = "🟢" if final_prob < 30 else "🔴" if final_prob > 60 else "🟠"
+                verdict = "매우 안전" if final_prob < 30 else "위험 감지" if final_prob > 60 else "주의 요망"
+                st.metric("종합 AI 판정", f"{icon} {verdict}")
+            with col_c: st.metric("AI Intelligence Level", f"{total_intelligence} Knowledge Nodes", delta="+1 Added")
+
+            if is_ai: st.warning(f"🤖 **AI 생성 콘텐츠 감지됨**: {ai_msg}")
+            if is_official: st.success(f"🛡️ **공식 언론사 채널({uploader})입니다.**")
+            if is_gray_zone: st.warning("⚠️ **판단 보류**: 중대한 주장이 포함되어 있으나, 검증된 뉴스가 없습니다.")
+            elif silent_penalty > 0: st.error("🔇 **침묵의 메아리(Silent Echo)**: 자극적인 주장이지만 근거가 부족합니다.")
+
+            st.divider()
+            st.subheader("🧠 Intelligence Map")
+            render_intelligence_distribution(final_prob)
+
+            st.divider()
+            col1, col2 = st.columns([1, 1.4])
+            with col1:
+                st.write("**[영상 상세 정보]**")
+                st.table(pd.DataFrame({"항목": ["영상 제목", "채널명", "조회수", "해시태그"], "내용": [title, uploader, f"{info.get('view_count',0):,}회", hashtag_display]}))
+                st.info(f"🎯 **Gemini 추출 검색어 ({source})**: {query}")
+                with st.container(border=True):
+                    st.markdown("📝 **영상 내용 요약 (AI Abstract)**")
+                    st.caption("자막 데이터를 분석하여 핵심 문장 3개를 추출한 결과입니다.")
+                    st.write(summary)
+                st.write("**[Score Breakdown]**")
+                silence_label = "미검증 주장" if is_gray_zone else "침묵의 메아리 (No News)"
+                
+                render_score_breakdown([
+                    ["기본 위험도", 50, "Base Score"],
+                    ["진실 맥락 보너스", t_impact, ""], 
+                    ["가짜 패턴 가점", f_impact, ""],
+                    ["뉴스 교차 대조 (Penalty/Bonus)", news_score, "60% 이상 일치 시 안전, 불일치 많으면 위험"], 
+                    [silence_label, silent_penalty, ""],
+                    ["여론/제목/자막 가감", sent_score + clickbait, ""],
+                    ["내용 불일치 기만", mismatch_penalty, "검색 결과와 내용 상이"], 
+                    ["해시태그 어뷰징", abuse_score, ""]
+                ])
+
+            with col2:
+                st.subheader("📊 5대 정밀 분석 증거")
+                st.markdown("**[증거 0] Semantic Vector Space**")
+                colored_progress_bar("✅ 진실 영역 근접도", ts, "#2ecc71")
+                colored_progress_bar("🚨 거짓 영역 근접도", fs, "#e74c3c")
+                st.write("---")
+                
+                st.markdown(f"**[증거 1] 뉴스 교차 대조 (Dual-Layer)**")
+                st.caption(f"📡 수집: **{len(news_ev)}건** (불일치 기사가 많을수록 위험도 급증)")
+                if news_ev:
+                    df_news = pd.DataFrame(news_ev)
+                    st.dataframe(df_news, column_config={"기사 링크": st.column_config.LinkColumn("바로가기", display_text="🔗 기사보기")}, use_container_width=True, hide_index=True)
+                else: st.warning("🔍 관련 뉴스를 찾을 수 없습니다. (Silent Echo Risk)")
+                    
+                st.markdown("**[증거 2] 시청자 여론 심층 분석**")
+                st.caption(f"💬 상태: **{c_status}**")
+                if cmts: st.table(pd.DataFrame([["최다 빈출 키워드", ", ".join(top_kw)], ["논란 감지 여부", f"{red_cnt}회"], ["주제 일치도", f"{rel_score}% ({rel_msg})"]], columns=["항목", "내용"]))
+                
+                st.markdown("**[증거 3] 자막 세만틱 심층 대조**")
+                top_kw_str = ", ".join([f"{w}({c})" for w, c in top_transcript_keywords])
+                st.table(pd.DataFrame([["영상 최다 언급 키워드", top_kw_str], ["제목 낚시어", "있음" if clickbait > 0 else "없음"], ["선동성 지수", f"{agitation}회"], ["기사-영상 일치도", f"{max_match}%"]], columns=["분석 항목", "판정 결과"]))
+                
+                st.markdown("**[최종 결론] AI 종합 분석 판단**")
+                
+                reasons = []
+                if news_score <= -20: reasons.append("✅ **언론 교차 검증 성공**: 주요 언론사 보도와 내용이 일치하여 신뢰도가 높습니다.")
+                elif news_score > 0: reasons.append("⚠️ **검증 실패/불일치**: 관련 뉴스는 있으나 내용이 영상의 주장과 다릅니다 (+위험도 증가).")
+                
+                if mismatch_penalty > 0: reasons.append("🚨 **내용 모순 감지**: 검색된 팩트와 영상 내용이 정면으로 배치됩니다.")
+                if silent_penalty > 0: reasons.append("🔇 **침묵의 메아리**: 자극적인 주장이지만 이를 뒷받침할 기사가 없습니다.")
+                
+                if not reasons: reasons.append("🔍 특이한 위험 요인이 발견되지 않아 중립적인 점수가 산출되었습니다.")
+                
+                st.success(f"🔍 현재 분석된 종합 점수는 **{final_prob}점**입니다.")
+                st.markdown("##### 💡 점수 산정 상세 사유")
+                for r in reasons:
+                    st.write(r)
+
+        except Exception as e: st.error(f"오류: {e}")
+
+# --- [UI Layout] ---
+st.title("⚖️ Triple-Evidence Intelligence Forensic v69.0")
+with st.container(border=True):
+    st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.")
+    agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
+
+url_input = st.text_input("🔗 분석할 유튜브 URL")
+if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not agree):
+    if url_input: run_forensic_main(url_input)
+    else: st.warning("URL을 입력해주세요.")
+
+st.divider()
+st.subheader("🗂️ 학습 데이터 관리 (Cloud Knowledge Base)")
+try:
+    response = supabase.table("analysis_history").select("*").order("id", desc=True).execute()
+    df = pd.DataFrame(response.data)
+except: df = pd.DataFrame()
+
+if not df.empty:
+    if st.session_state["is_admin"]:
+        df['Delete'] = False
+        edited_df = st.data_editor(df[['Delete', 'id', 'analysis_date', 'video_title', 'fake_prob', 'keywords']], hide_index=True, use_container_width=True)
+        if st.button("🗑️ 선택 항목 삭제", type="primary"):
+            to_delete = edited_df[edited_df.Delete]
+            if not to_delete.empty:
+                for index, row in to_delete.iterrows(): supabase.table("analysis_history").delete().eq("id", row['id']).execute()
+                st.success("삭제 완료!"); time.sleep(1); st.rerun()
+    else:
+        st.dataframe(df[['analysis_date', 'video_title', 'fake_prob', 'keywords']], hide_index=True, use_container_width=True)
+else: st.info("데이터가 없습니다.")
+
+st.write("")
+with st.expander("🔐 관리자 접속 (Admin Access)"):
+    if st.session_state["is_admin"]:
+        st.success("관리자 권한 활성화됨")
+        if st.button("로그아웃"):
+            st.session_state["is_admin"] = False
+            st.rerun()
+    else:
+        input_pwd = st.text_input("Admin Password", type="password")
+        if st.button("Login"):
+            if input_pwd == ADMIN_PASSWORD:
+                st.session_state["is_admin"] = True
+                st.rerun()
+            else:
+                st.error("Access Denied")
