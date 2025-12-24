@@ -10,7 +10,7 @@ from datetime import datetime
 import google.generativeai as genai
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v60.3 (Fixed)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v60.4 (Stable)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets 로드
 try:
@@ -30,8 +30,8 @@ def init_services():
         from supabase import create_client
         sb = create_client(SUPABASE_URL, SUPABASE_KEY)
         genai.configure(api_key=GOOGLE_API_KEY)
-        # 🚨 [최신 모델] 라이브러리 업데이트 후 1.5-flash 사용 (가장 빠름)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # 🚨 [수정] 1.5-flash 호환성 문제 해결 -> 가장 안정적인 'gemini-pro' 사용
+        model = genai.GenerativeModel('gemini-pro')
         return sb, model
     except Exception as e:
         return None, None
@@ -181,8 +181,8 @@ with st.sidebar:
             st.session_state["is_admin"] = True
             st.rerun()
 
-st.title("⚖️ Fact-Check Center v60.3")
-st.caption("Gemini AI Core • Latest Library Patch")
+st.title("⚖️ Fact-Check Center v60.4")
+st.caption("Gemini Pro Engine • Compatibility Fixed")
 
 with st.container(border=True):
     url_input = st.text_input("유튜브 URL 입력")
