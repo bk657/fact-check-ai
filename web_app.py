@@ -11,23 +11,25 @@ from collections import Counter
 import yt_dlp
 import pandas as pd
 import altair as alt
+import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v65.5 (Deep Context)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v70.0 (Twin Engine)", layout="wide", page_icon="⚖️")
 
-# 세션 상태 초기화
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
 
-# 🌟 Secrets 로드
+# 🌟 Secrets 로드 (Twin Key 적용)
 try:
     YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
     ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
-    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+    # Twin Gemini Keys
+    GOOGLE_API_KEY_A = st.secrets["GOOGLE_API_KEY_A"] # 수사관 (키워드 추출)
+    GOOGLE_API_KEY_B = st.secrets["GOOGLE_API_KEY_B"] # 판사 (최종 추론)
 except:
-    st.error("❌ 필수 키(API Key, DB Key, Password)가 설정되지 않았습니다.")
+    st.error("❌ 필수 키(API Keys)가 설정되지 않았습니다. secrets.toml에 GOOGLE_API_KEY_A와 B를 모두 설정해주세요.")
     st.stop()
 
 @st.cache_resource
@@ -37,8 +39,9 @@ def init_supabase():
 supabase = init_supabase()
 
 # --- [2. 상수 정의] ---
-WEIGHT_NEWS_DEFAULT = 45; WEIGHT_VECTOR = 35; WEIGHT_CONTENT = 15; WEIGHT_SENTIMENT_DEFAULT = 10
-PENALTY_ABUSE = 20; PENALTY_MISMATCH = 30; PENALTY_NO_FACT = 25; PENALTY_SILENT_ECHO = 40
+# 가중치 재조정 (AI 추론 반영을 위해 기존 가중치 밸런스 조정)
+WEIGHT_ALGO = 0.6  # 기존 알고리즘 비중 60%
+WEIGHT_AI = 0.4    # Gemini 추론 비중 40%
 
 VITAL_KEYWORDS = ['위독', '사망', '별세', '구속', '체포', '기소', '실형', '응급실', '이혼', '불화', '파경', '충격', '경악', '속보', '긴급', '폭로', '양성', '확진', '심정지', '뇌사', '중태', '압수수색', '소환', '퇴진', '탄핵', '내란', '간첩']
 CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
@@ -82,45 +85,38 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (Deep Context)] ---
+# --- [4. Gemini Logic (Twin Engine)] ---
+
+# [Engine A] 수사관: 키워드 추출 전담
 def get_gemini_search_keywords(title, transcript):
-    genai.configure(api_key=GOOGLE_API_KEY)
+    # Key A 사용
+    genai.configure(api_key=GOOGLE_API_KEY_A)
     
-    # 모델 자동 탐색
-    target_model = 'gemini-1.5-flash' # Default setting
+    target_model = 'gemini-1.5-flash'
     try:
-        for m in genai.list_models():
-            if 'flash' in m.name: target_model = m.name; break
-    except: pass
-    
-    if target_model:
-        try:
-            model = genai.GenerativeModel(target_model)
-            safety_settings = [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
-            
-            # 🚨 [핵심 수정] 자막 입력 범위를 800 -> 30,000자로 대폭 확대
-            # 1.5 Flash 모델은 100만 토큰까지 처리가 가능하므로 3만자는 아주 가벼운 수준입니다.
-            full_context = transcript[:30000]
-            
-            prompt = f"""
-            Analyze the following video transcript and extract ONE core search query for Google News verification.
-            
-            [Input]
-            Title: {title}
-            Transcript: {full_context}
-            
-            [Rules]
-            1. Read the ENTIRE transcript to find the main claim.
-            2. Ignore introductions, ads, and side stories.
-            3. Extract ONLY nouns: 'Person Name' + 'Key Event/Issue'.
-            4. Example: 'Jay Lee Divorce Reason' (Not 'Why is Jay Lee alone?')
-            5. Output ONLY the query string (Korean).
-            """
-            
-            response = model.generate_content(prompt, safety_settings=safety_settings)
-            if response.text:
-                return response.text.strip(), f"✨ Gemini ({target_model.replace('models/','')})"
-        except: pass
+        model = genai.GenerativeModel(target_model)
+        full_context = transcript[:30000]
+        
+        prompt = f"""
+        Analyze the following video transcript and extract ONE core search query for Google News verification.
+        
+        [Input]
+        Title: {title}
+        Transcript: {full_context}
+        
+        [Rules]
+        1. Read the ENTIRE transcript to find the main claim.
+        2. Ignore introductions, ads, and side stories.
+        3. Extract ONLY nouns: 'Person Name' + 'Key Event/Issue'.
+        4. Example: 'Jay Lee Divorce Reason' (Not 'Why is Jay Lee alone?')
+        5. Output ONLY the query string (Korean).
+        """
+        
+        response = model.generate_content(prompt)
+        if response.text:
+            return response.text.strip(), f"✨ Gemini Investigator (Key A)"
+    except Exception as e:
+        pass
 
     # 백업 로직
     tokens = re.findall(r'[가-힣]{2,}', title)
@@ -129,6 +125,57 @@ def get_gemini_search_keywords(title, transcript):
         t = re.sub(r'(은|는|이|가|을|를|의)$', '', t)
         if len(t) > 1: cleaned.append(t)
     return " ".join(cleaned[:3]) if cleaned else title, "🤖 Backup Logic"
+
+# [Engine B] 판사: 진위 여부 최종 추론 전담
+def get_gemini_verdict(title, transcript, news_items):
+    # Key B 사용 (독립적인 Quota)
+    genai.configure(api_key=GOOGLE_API_KEY_B)
+    
+    target_model = 'gemini-1.5-flash'
+    
+    # 뉴스 데이터를 텍스트로 변환
+    news_text = ""
+    if not news_items:
+        news_text = "No related news articles found."
+    else:
+        for idx, item in enumerate(news_items[:5]):
+            news_text += f"{idx+1}. {item['title']} : {item['desc']}\n"
+            
+    full_context = transcript[:30000]
+
+    prompt = f"""
+    You are a professional Fact-Check AI Judge.
+    
+    [Task]
+    Compare the Video Transcript with the Search Results to determine if the video is 'Fake News/Clickbait' or 'Fact'.
+    
+    [Video Info]
+    Title: {title}
+    Transcript Summary: {full_context[:2000]}... (truncated)
+    
+    [Search Results (Evidence)]
+    {news_text}
+    
+    [Instruction]
+    1. Identify the core claim of the video.
+    2. Check if the Search Results support or contradict the claim.
+    3. If 'No related news found' and the claim is sensational (death, arrest, divorce), consider it highly suspicious (Fake).
+    4. Provide a 'fake_score' from 0 (Truth) to 100 (Fake).
+       - 0~20: Confirmed Fact by major news.
+       - 80~100: False claim, no evidence, or contradicted by news.
+    5. Write a short 'reason' in Korean (1 sentence).
+
+    [Output Format - JSON Only]
+    {{"score": <int>, "reason": "<string>"}}
+    """
+    
+    try:
+        model = genai.GenerativeModel(target_model, generation_config={"response_mime_type": "application/json"})
+        response = model.generate_content(prompt)
+        result = json.loads(response.text)
+        return result['score'], result['reason']
+    except Exception as e:
+        return 50, f"AI 추론 실패 (중립): {str(e)}"
 
 # --- [5. 유틸리티 함수] ---
 def normalize_korean_word(word):
@@ -178,7 +225,7 @@ def render_score_breakdown(data_list):
             badge = f'<span class="badge badge-danger">+{score_num}</span>' if score_num > 0 else f'<span class="badge badge-success">{score_num}</span>' if score_num < 0 else f'<span class="badge badge-neutral">0</span>'
         except: badge = f'<span class="badge badge-neutral">{score}</span>'
         rows += f"<tr><td>{item}<br><span style='color:#888; font-size:11px;'>{note}</span></td><td style='text-align: right;'>{badge}</td></tr>"
-    st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Silent Echo Protocol)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
+    st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
 
 def summarize_transcript(text, title, max_sentences=3):
     if not text or len(text) < 50: return "⚠️ 요약할 자막 내용이 충분하지 않습니다."
@@ -225,7 +272,7 @@ def check_tag_abuse(title, hashtags, channel_name):
     if not hashtags: return 0, "해시태그 없음"
     tn = set(extract_meaningful_tokens(title)); tgn = set(h.replace("#", "").split(":")[-1].strip() for h in hashtags)
     if len(tgn) < 2: return 0, "양호"
-    return (PENALTY_ABUSE, "🚨 심각 (불일치)") if not tn.intersection(tgn) else (0, "양호")
+    return (20, "🚨 심각 (불일치)") if not tn.intersection(tgn) else (0, "양호")
 
 def fetch_real_transcript(info_dict):
     try:
@@ -315,8 +362,8 @@ def check_red_flags(comments):
     return len(detected), list(set(detected))
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
-    messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v65.5...", expanded=True) as status:
+    messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
+    with st.status("🕵️ Dual-Engine Fact-Check v70.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -334,25 +381,28 @@ def run_forensic_main(url):
             title = info.get('title', ''); uploader = info.get('uploader', '')
             tags = info.get('tags', []); desc = info.get('description', '')
             
+            # [Step 1] 자막 수집
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
-            
             summary = summarize_transcript(full_text, title)
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
-            is_official = check_is_official(uploader)
-            is_ai, ai_msg = detect_ai_content(info)
-            w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
-            w_vec = 10 if is_ai else WEIGHT_VECTOR
             
+            # [Step 2] Gemini Key A (수사관) : 검색어 추출
             query, source = get_gemini_search_keywords(title, full_text)
 
+            # [Step 3] 기본 알고리즘 분석
+            is_official = check_is_official(uploader)
+            is_ai, ai_msg = detect_ai_content(info)
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
             abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
             agitation = count_sensational_words(full_text + title)
-            
             ts, fs = vector_engine.analyze_position(query + " " + title)
+            
+            w_news = 70 if is_ai else 45
+            w_vec = 10 if is_ai else 35
             t_impact = int(ts * w_vec) * -1; f_impact = int(fs * w_vec)
 
+            # [Step 4] 뉴스 검색
             news_items = fetch_news_regex(query)
             news_ev = []; max_match = 0
             mismatch_count = 0
@@ -368,6 +418,7 @@ def run_forensic_main(url):
                     "최종 점수": f"{final}%"
                 })
             
+            # [Step 5] 알고리즘 점수 계산 (Rule-based)
             if not news_ev:
                 news_score = 0
             else:
@@ -379,134 +430,107 @@ def run_forensic_main(url):
             cmts, c_status = fetch_comments_via_api(vid)
             top_kw, rel_score, rel_msg = analyze_comment_relevance(cmts, title + " " + full_text)
             red_cnt, red_list = check_red_flags(cmts)
-            is_controversial = red_cnt > 0
-            
-            w_news = 65 if is_controversial else w_news
             
             silent_penalty = 0; mismatch_penalty = 0
             is_silent = (len(news_ev) == 0)
-            has_critical_claim = any(k in title for k in CRITICAL_STATE_KEYWORDS)
-            
-            is_gray_zone = False
             
             if is_silent:
-                if has_critical_claim:
-                    silent_penalty = 5; t_impact = 0; f_impact = 0; is_gray_zone = True
-                elif agitation >= 3:
-                    silent_penalty = PENALTY_SILENT_ECHO
-                    t_impact *= 2; f_impact *= 2
-                else:
-                    mismatch_penalty = 10
+                if any(k in title for k in CRITICAL_STATE_KEYWORDS): silent_penalty = 5; t_impact = 0; f_impact = 0
+                elif agitation >= 3: silent_penalty = 40; t_impact *= 2; f_impact *= 2
+                else: mismatch_penalty = 10
             
-            if not is_silent and mismatch_count > 0 and max_match < 30:
-                mismatch_penalty = PENALTY_MISMATCH
-                
+            if not is_silent and mismatch_count > 0 and max_match < 30: mismatch_penalty = 30
             if is_official: news_score = -50; mismatch_penalty = 0; silent_penalty = 0
             
             sent_score = 0
-            if cmts and not is_controversial:
+            if cmts and red_cnt == 0:
                 neg = sum(1 for c in cmts for k in ['가짜','선동'] if k in c) / len(cmts)
                 sent_score = int(neg * 10)
-                
+            
             clickbait = 10 if any(w in title for w in ['충격','경악','폭로']) else -5
             
-            total = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
-            prob = max(5, min(99, total))
+            algo_base_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
+            algo_final_prob = max(5, min(99, algo_base_score))
             
-            save_analysis(uploader, title, prob, url, query)
+            # [Step 6] Gemini Key B (판사) : 최종 추론
+            ai_judge_score, ai_judge_reason = get_gemini_verdict(title, full_text, news_ev)
+            
+            # [Step 7] 최종 하이브리드 점수 산출
+            # 가중치: 알고리즘 60% + AI 판사 40%
+            final_prob = int((algo_final_prob * WEIGHT_ALGO) + (ai_judge_score * WEIGHT_AI))
+            final_prob = max(1, min(99, final_prob))
+            
+            save_analysis(uploader, title, final_prob, url, query)
 
-            st.subheader("🕵️ 핵심 분석 지표 (Key Indicators)")
+            st.subheader("🕵️ Dual-Engine Analysis Result")
             col_a, col_b, col_c = st.columns(3)
-            with col_a: st.metric("최종 가짜뉴스 확률", f"{prob}%", delta=f"{total - 50}")
+            with col_a: 
+                st.metric("최종 가짜뉴스 확률", f"{final_prob}%", delta=f"AI Judge: {ai_judge_score}pt")
             with col_b:
-                icon = "🟢" if prob < 30 else "🔴" if prob > 60 else "🟠"
-                verdict = "매우 안전" if prob < 30 else "위험 감지" if prob > 60 else "주의 요망"
+                icon = "🟢" if final_prob < 30 else "🔴" if final_prob > 60 else "🟠"
+                verdict = "안전 (Verified)" if final_prob < 30 else "위험 (Fake/Bias)" if final_prob > 60 else "주의 (Caution)"
                 st.metric("종합 AI 판정", f"{icon} {verdict}")
-            with col_c: st.metric("AI Intelligence Level", f"{total_intelligence} Knowledge Nodes", delta="+1 Added")
+            with col_c: st.metric("AI Intelligence Level", f"{total_intelligence} Nodes", delta="Twin-Engine Active")
 
             if is_ai: st.warning(f"🤖 **AI 생성 콘텐츠 감지됨**: {ai_msg}")
             if is_official: st.success(f"🛡️ **공식 언론사 채널({uploader})입니다.**")
-            if is_gray_zone: st.warning("⚠️ **판단 보류**: 중대한 주장이 포함되어 있으나, 검증된 뉴스가 없습니다.")
-            elif silent_penalty > 0: st.error("🔇 **침묵의 메아리(Silent Echo)**: 자극적인 주장이지만 근거가 부족합니다.")
 
-            st.divider()
-            st.subheader("🧠 Intelligence Map")
-            render_intelligence_distribution(prob)
+            # AI 판사 의견 출력
+            with st.chat_message("assistant", avatar="⚖️"):
+                st.write(f"**AI Judge Verdict (Key B):** {ai_judge_reason}")
+                st.caption(f"이 의견은 뉴스 검색 결과와 자막을 종합하여 Gemini가 독립적으로 추론한 결과입니다. (점수: {ai_judge_score}점)")
 
             st.divider()
             col1, col2 = st.columns([1, 1.4])
             with col1:
                 st.write("**[영상 상세 정보]**")
                 st.table(pd.DataFrame({"항목": ["영상 제목", "채널명", "조회수", "해시태그"], "내용": [title, uploader, f"{info.get('view_count',0):,}회", hashtag_display]}))
-                st.info(f"🎯 **Gemini 추출 검색어 ({source})**: {query}")
+                st.info(f"🎯 **Investigator (Key A) 추출 검색어**: {query}")
                 with st.container(border=True):
-                    st.markdown("📝 **영상 내용 요약 (AI Abstract)**")
-                    st.caption("자막 데이터를 분석하여 핵심 문장 3개를 추출한 결과입니다.")
+                    st.markdown("📝 **영상 내용 요약**")
                     st.write(summary)
-                st.write("**[Score Breakdown]**")
-                silence_label = "미검증 주장" if is_gray_zone else "침묵의 메아리 (No News)"
                 
+                st.write("**[Score Breakdown]**")
                 render_score_breakdown([
-                    ["기본 위험도", 50, "Base Score"],
-                    ["진실 맥락 보너스", t_impact, ""], 
-                    ["가짜 패턴 가점", f_impact, ""],
-                    ["뉴스 교차 대조 (Penalty/Bonus)", news_score, "60% 이상 일치 시 안전, 불일치 많으면 위험"], 
-                    [silence_label, silent_penalty, ""],
-                    ["여론/제목/자막 가감", sent_score + clickbait, ""],
-                    ["내용 불일치 기만", mismatch_penalty, "검색 결과와 내용 상이"], 
-                    ["해시태그 어뷰징", abuse_score, ""]
+                    ["Rule-based Algo Score (60%)", algo_final_prob, "기존 패턴/뉴스 매칭 점수"],
+                    ["AI Judge Score (40%)", ai_judge_score, "Gemini 최종 추론 점수"],
+                    ["뉴스 매칭 상태", f"{max_match}%", "가장 유사한 기사와의 일치율"],
+                    ["침묵의 메아리", silent_penalty, "관련 기사 부재 시 페널티"]
                 ])
 
             with col2:
                 st.subheader("📊 5대 정밀 분석 증거")
-                st.markdown("**[증거 0] Semantic Vector Space**")
-                colored_progress_bar("✅ 진실 영역 근접도", ts, "#2ecc71")
-                colored_progress_bar("🚨 거짓 영역 근접도", fs, "#e74c3c")
-                st.write("---")
-                
                 st.markdown(f"**[증거 1] 뉴스 교차 대조 (Dual-Layer)**")
-                st.caption(f"📡 수집: **{len(news_ev)}건** (불일치 기사가 많을수록 위험도 급증)")
                 if news_ev: st.dataframe(pd.DataFrame(news_ev), use_container_width=True, hide_index=True)
                 else: st.warning("🔍 관련 뉴스를 찾을 수 없습니다. (Silent Echo Risk)")
                     
                 st.markdown("**[증거 2] 시청자 여론 심층 분석**")
-                st.caption(f"💬 상태: **{c_status}**")
                 if cmts: st.table(pd.DataFrame([["최다 빈출 키워드", ", ".join(top_kw)], ["논란 감지 여부", f"{red_cnt}회"], ["주제 일치도", f"{rel_score}% ({rel_msg})"]], columns=["항목", "내용"]))
                 
                 st.markdown("**[증거 3] 자막 세만틱 심층 대조**")
                 top_kw_str = ", ".join([f"{w}({c})" for w, c in top_transcript_keywords])
-                st.table(pd.DataFrame([["영상 최다 언급 키워드", top_kw_str], ["제목 낚시어", "있음" if clickbait > 0 else "없음"], ["선동성 지수", f"{agitation}회"], ["기사-영상 일치도", f"{max_match}%"]], columns=["분석 항목", "판정 결과"]))
+                st.table(pd.DataFrame([["영상 최다 언급 키워드", top_kw_str], ["제목 낚시어", "있음" if clickbait > 0 else "없음"], ["선동성 지수", f"{agitation}회"]], columns=["분석 항목", "판정 결과"]))
                 
-                st.markdown("**[증거 4] AI 최종 분석 판단**")
-                
-                # 🚨 [신규] XAI (설명 가능한 AI) 리포트 생성 로직
+                # 결과 해석 리포트
                 reasons = []
-                if news_score <= -20: reasons.append("✅ **언론 교차 검증 성공**: 주요 언론사 보도와 내용이 일치하여 신뢰도가 높습니다.")
-                elif news_score > 0: reasons.append("⚠️ **검증 실패/불일치**: 관련 뉴스는 있으나 내용이 영상의 주장과 다릅니다 (+위험도 증가).")
+                if final_prob >= 60:
+                    reasons.append("🚨 **위험 감지**: AI 판사와 알고리즘 모두 이 영상의 주장을 의심하고 있습니다.")
+                    if len(news_ev) == 0: reasons.append("🔇 **근거 부재**: 자극적인 주장에 비해 언론 보도가 전무합니다.")
+                elif final_prob <= 30:
+                    reasons.append("✅ **안전 판정**: 영상 내용이 주요 뉴스 보도와 일치하며, AI 추론 결과도 긍정적입니다.")
+                else:
+                    reasons.append("⚠️ **주의 요망**: 일부 과장된 표현이나 확인되지 않은 사실이 포함되어 있을 수 있습니다.")
                 
-                if mismatch_penalty > 0: reasons.append("🚨 **내용 모순 감지**: 검색된 팩트와 영상 내용이 정면으로 배치됩니다.")
-                if silent_penalty > 0: reasons.append("🔇 **침묵의 메아리**: 자극적인 주장이지만 이를 뒷받침할 기사가 없습니다.")
-                
-                if f_impact > 5: reasons.append(f"📉 **가짜뉴스 패턴**: 과거 허위 정보 데이터와 문맥적 유사성이 높습니다 (+{f_impact}점).")
-                if t_impact < -5: reasons.append(f"📈 **진실 데이터 패턴**: 신뢰할 수 있는 정보 구조를 가지고 있습니다 ({t_impact}점).")
-                
-                if clickbait > 0: reasons.append("🎣 **낚시성 제목**: 클릭을 유도하는 자극적인 제목이 감지되었습니다.")
-                if abuse_score > 0: reasons.append("🏷️ **태그 어뷰징**: 영상과 무관한 해시태그가 다수 사용되었습니다.")
-                
-                if not reasons: reasons.append("🔍 특이한 위험 요인이 발견되지 않아 중립적인 점수가 산출되었습니다.")
-                
-                st.success(f"🔍 현재 분석된 종합 점수는 **{prob}점**입니다.")
-                st.markdown("##### 💡 점수 산정 상세 사유")
-                for r in reasons:
-                    st.write(r)
+                st.success(f"🔍 최종 분석 결과: **{final_prob}점**")
+                for r in reasons: st.write(r)
 
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v65.5")
+st.title("⚖️ Fact-Check Center v70.0 (Twin Gemini Engine)")
 with st.container(border=True):
-    st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.")
-    agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
+    st.markdown("### 🛡️ Twin-Engine Architecture 적용됨\n* **Engine A (Investigator)**: 문맥 최적화 검색어 추출\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론\n* **Hybrid Scoring**: Rule-based (60%) + LLM Inference (40%)")
+    agree = st.checkbox("위 내용을 확인하였으며, 분석 결과에 동의합니다.")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
 if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not agree):
