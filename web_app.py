@@ -15,7 +15,7 @@ import altair as alt
 import importlib.metadata 
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v74.0 (One-Shot)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v75.0 (Brute Force)", layout="wide", page_icon="⚖️")
 
 # 세션 상태 초기화
 if "is_admin" not in st.session_state:
@@ -38,7 +38,7 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# 🚨 라이브러리 버전 체크 (사이드바)
+# 🚨 라이브러리 버전 체크
 try:
     genai_version = importlib.metadata.version("google-generativeai")
 except:
@@ -46,10 +46,7 @@ except:
 
 with st.sidebar:
     st.header("🔧 시스템 상태")
-    if genai_version >= "0.7.0":
-        st.success(f"✅ AI 라이브러리: v{genai_version}")
-    else:
-        st.error(f"❌ AI 라이브러리: v{genai_version} (업데이트 필요)")
+    st.caption(f"GenAI Lib: v{genai_version}")
 
 # --- [2. 상수 정의 & NLP 필터] ---
 WEIGHT_NEWS_DEFAULT = 45; WEIGHT_VECTOR = 35; WEIGHT_CONTENT = 15; WEIGHT_SENTIMENT_DEFAULT = 10
@@ -59,7 +56,7 @@ VITAL_KEYWORDS = ['위독', '사망', '별세', '구속', '체포', '기소', '�
 CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
 OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
 
-# 🚨 불용어 리스트 (백업 로직용)
+# 🚨 불용어 리스트
 STOP_WORDS = [
     '충격', '경악', '속보', '긴급', '단독', '결국', '영상', '현장', '실제', '상황', 
     '이거', '그냥', '진짜', '오늘', '지금', '공개', '내용', '이유', '직후', '소름', 
@@ -107,65 +104,72 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (Keyword Only)] ---
+# --- [4. Gemini Logic (Brute Force)] ---
 def surgical_text_cleaning(text):
-    """🚨 백업용: 형용사/동사 어미 정밀 절단 수술"""
     text = re.sub(r'(은|는|이|가|을|를|의|에|에게|로|으로|와|과|도|만)$', '', text)
     text = re.sub(r'(한|된|인|는|을|할|수)$', '', text) 
     text = re.sub(r'(합니다|됩니다|입니다|있습니다|없습니다|았|었|겠|니|다|죠|네요|세요|예요|인가|나|요|함|음|됨|임)$', '', text)
     return text
 
 def get_backup_keywords(title):
-    """🚨 AI 실패 시 작동하는 수술용 백업 추출기"""
     clean_title = re.sub(r'[^\w\s가-힣]', ' ', title)
     tokens = clean_title.split()
-    
     meaningful = []
     for t in tokens:
         korean_only = re.sub(r'[^가-힣]', '', t)
         if len(korean_only) < 2: continue 
         if korean_only in STOP_WORDS: continue
-        
         refined = surgical_text_cleaning(korean_only)
-        
         if refined not in STOP_WORDS and len(refined) >= 2:
             meaningful.append(refined)
-            
     result = " ".join(meaningful[:3])
     return result if result else title
 
 def get_gemini_search_keywords(title, transcript):
     """
-    🚨 오직 키워드 추출만 수행 (Single Shot)
+    🚨 가능한 모든 모델 이름을 다 찔러보는 무차별 대입 함수
     """
     genai.configure(api_key=GOOGLE_API_KEY)
     
-    # 모델 순서: Pro(안정성) -> Flash(속도) -> 1.5 Pro
-    candidates = [('gemini-pro', 5000), ('gemini-1.5-flash', 30000), ('gemini-1.5-pro', 20000)]
+    # 🚨 Brute Force List: 어떤 환경에서도 하나는 걸리게 되어 있음
+    candidates = [
+        ('gemini-1.5-flash', 30000), 
+        ('models/gemini-1.5-flash', 30000), # 접두사 붙은 버전
+        ('gemini-pro', 5000),
+        ('models/gemini-pro', 5000),        # 접두사 붙은 버전
+        ('gemini-1.5-pro', 20000),
+        ('models/gemini-1.5-pro', 20000)
+    ]
+    
     safety_settings = [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}, {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"}, {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"}, {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
 
     prompt_template = f"Extract ONE core search query (Nouns only). Input: {title} Transcript: {{INPUT}} Output: Query string only (Korean)."
     error_logs = []
 
-    for i, (model_name, char_limit) in enumerate(candidates):
+    for model_name, char_limit in candidates:
         try:
             current_context = transcript[:char_limit]
             formatted_prompt = prompt_template.replace("{INPUT}", current_context)
+            
+            # 모델 인스턴스 생성 시도
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(formatted_prompt, safety_settings=safety_settings)
             
             if response.text:
-                return response.text.strip(), f"✨ Gemini ({model_name.replace('models/','')})"
+                clean_name = model_name.replace('models/', '')
+                return response.text.strip(), f"✨ Gemini ({clean_name})"
                 
         except Exception as e:
-            error_logs.append(f"{model_name}: {str(e)[:30]}")
-            time.sleep(1)
+            err_msg = str(e)
+            # 429(Quota)는 대기, 404(Not Found)는 즉시 통과
+            if "429" in err_msg:
+                time.sleep(2)
+            error_logs.append(f"{model_name}: {err_msg[:20]}")
             continue
             
-    # AI 실패 시 스마트 백업 로직 가동
+    # 모든 시도 실패 시 스마트 백업
     backup_query = get_backup_keywords(title)
-    err_summary = " / ".join(error_logs) if error_logs else "Connection Error"
-    return backup_query, f"🤖 Smart Backup (AI Fail: {err_summary[:20]}...)"
+    return backup_query, f"🤖 Smart Backup (All Failed)"
 
 # --- [5. 유틸리티 함수] ---
 def extract_meaningful_tokens(text):
@@ -353,7 +357,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v74.0...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v75.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -381,9 +385,11 @@ def run_forensic_main(url):
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
-            # Gemini Call (Single Shot - Only Keyword)
+            # 🚨 Gemini Call (One Shot + Brute Force)
             query, source = get_gemini_search_keywords(title, full_text)
             
+            time.sleep(1)
+
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
             abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
             agitation = count_sensational_words(full_text + title)
@@ -451,7 +457,7 @@ def run_forensic_main(url):
                 
             clickbait = 10 if any(w in title for w in ['충격','경악','폭로']) else -5
             
-            # 🚨 최종 점수 합산 (AI Judge 제거)
+            # 최종 점수 합산
             final_prob = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
             final_prob = max(5, min(99, final_prob))
             
@@ -480,7 +486,14 @@ def run_forensic_main(url):
             with col1:
                 st.write("**[영상 상세 정보]**")
                 st.table(pd.DataFrame({"항목": ["영상 제목", "채널명", "조회수", "해시태그"], "내용": [title, uploader, f"{info.get('view_count',0):,}회", hashtag_display]}))
-                st.info(f"🎯 **Gemini 추출 검색어 ({source})**: {query}")
+                
+                if "Backup" in source:
+                    st.error(f"🎯 **Gemini 추출 검색어**: {query}")
+                    st.caption(f"⚠️ 원인: {source}")
+                else:
+                    st.success(f"🎯 **Gemini 추출 검색어**: {query}")
+                    st.caption(f"✅ 출처: {source}")
+                
                 with st.container(border=True):
                     st.markdown("📝 **영상 내용 요약 (AI Abstract)**")
                     st.caption("자막 데이터를 분석하여 핵심 문장 3개를 추출한 결과입니다.")
@@ -540,7 +553,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v74.0")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v75.0")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
