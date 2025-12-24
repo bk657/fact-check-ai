@@ -94,12 +94,12 @@ safety_settings_none = {
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
 
-# [Engine A] 수사관: (제목 + 요약본)만 사용 -> 초경량화
+# [Engine A] 수사관: (제목 + 요약본)만 사용 -> 초경량화/고효율
 def get_gemini_search_keywords(title, summary):
     genai.configure(api_key=GOOGLE_API_KEY_A)
     model = genai.GenerativeModel('gemini-2.0-flash') 
     
-    # [핵심] 전체 자막(transcript) 대신 이미 요약된 summary를 입력으로 사용
+    # [핵심 변경] 전체 자막(full_context) 대신 요약본(summary)을 사용
     prompt = f"""
     You are a Fact-Check Investigator.
     
@@ -385,11 +385,11 @@ def run_forensic_main(url):
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
             
-            # 여기서 summary 생성
+            # [Step 1.5] 요약 생성 (이게 먼저 되어야 함)
             summary = summarize_transcript(full_text, title)
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
-            # [Step 2] Gemini Key A (수사관) - 요약본만 전달
+            # [Step 2] Gemini Key A (수사관) - 요약본 전달 (토큰 절약)
             query, source = get_gemini_search_keywords(title, summary)
 
             # [Step 3] 기본 알고리즘 분석
@@ -455,7 +455,7 @@ def run_forensic_main(url):
             algo_base_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
             algo_final_prob = max(5, min(99, algo_base_score))
             
-            # [Step 6] Gemini Key B (판사) - 전체 자막 전달
+            # [Step 6] Gemini Key B (판사) - 전체 자막 전달 (정밀 분석)
             ai_judge_score, ai_judge_reason = get_gemini_verdict(title, full_text, news_ev)
             
             # [Step 7] 최종 합산
