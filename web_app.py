@@ -15,7 +15,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v84.0 (Korean Fixed)", layout="wide", page_icon="🇰🇷")
+st.set_page_config(page_title="Fact-Check Center v85.0 (Neutral Base)", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -38,7 +38,7 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- [2. 모델 프리-체크 (Start-up Logic)] ---
+# --- [2. 모델 프리-체크] ---
 CANDIDATE_MODELS = [
     "gemini-2.5-flash-lite", 
     "gemini-flash-lite-latest",
@@ -60,7 +60,7 @@ def find_best_model(api_key):
     return "gemini-2.0-flash"
 
 if "best_model_name" not in st.session_state:
-    with st.spinner("🚀 최적의 AI 모델을 탐색 중입니다..."):
+    with st.spinner("🚀 최적의 AI 모델을 탐색 중입니다... (1회)"):
         found_model = find_best_model(GOOGLE_API_KEY_A)
         st.session_state["best_model_name"] = found_model
     st.toast(f"✅ 모델 설정 완료: {found_model}", icon="⚡")
@@ -112,8 +112,6 @@ class VectorEngine:
 vector_engine = VectorEngine()
 
 # --- [5. Gemini Logic] ---
-
-# 🚨 안전 설정
 safety_settings_none = {
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -132,12 +130,11 @@ def call_gemini_fast(api_key, prompt, is_json=False):
         return response.text, target_model
     except Exception as e:
         try:
-            fallback_model = "gemini-2.0-flash"
-            model = genai.GenerativeModel(fallback_model, generation_config=generation_config)
+            fallback = "gemini-2.0-flash"
+            model = genai.GenerativeModel(fallback, generation_config=generation_config)
             response = model.generate_content(prompt, safety_settings=safety_settings_none)
-            return response.text, fallback_model
-        except:
-            return None, str(e)
+            return response.text, fallback
+        except: return None, str(e)
 
 # [Engine A] 수사관
 def get_gemini_search_keywords(title, transcript):
@@ -152,7 +149,7 @@ def get_gemini_search_keywords(title, transcript):
     result_text, model_used = call_gemini_fast(GOOGLE_API_KEY_A, prompt)
     return (result_text.strip(), f"✨ {model_used}") if result_text else (title, "❌ Error")
 
-# [Engine B] 판사: 한글 출력 강제 (Prompt Enhanced)
+# [Engine B] 판사: 한국어 강제
 def get_gemini_verdict(title, transcript, news_items):
     news_text = ""
     if not news_items:
@@ -192,13 +189,11 @@ def get_gemini_verdict(title, transcript, news_items):
     """
     
     result_text, model_used = call_gemini_fast(GOOGLE_API_KEY_B, prompt, is_json=True)
-    
     if result_text:
         try:
             data = json.loads(result_text)
             return data['score'], f"{data['reason']} (By {model_used})"
-        except:
-            return 50, f"JSON Error"
+        except: return 50, f"JSON Error"
     return 50, f"Judge Failed"
 
 # --- [6. 유틸리티 함수] ---
@@ -342,7 +337,7 @@ def fetch_news_regex(query):
         for item in items[:10]:
             t = re.search(r'<title>(.*?)</title>', item)
             d = re.search(r'<description>(.*?)</description>', item)
-            l = re.search(r'<link>(.*?)</link>', item) # [링크 추출]
+            l = re.search(r'<link>(.*?)</link>', item)
             
             nt = t.group(1).replace("<![CDATA[", "").replace("]]>", "") if t else "제목 없음"
             nd = clean_html_regex(d.group(1).replace("<![CDATA[", "").replace("]]>", "")) if d else "내용 없음"
@@ -393,7 +388,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v84.0...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v85.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -442,7 +437,7 @@ def run_forensic_main(url):
                     "제목 일치": f"{t_score}%",
                     "내용 유사": f"{c_score}%",
                     "최종 점수": f"{final}%",
-                    "원문": item.get('link', '') # 링크를 맨 뒤로
+                    "원문": item.get('link', '')
                 })
             
             if not news_ev:
@@ -476,11 +471,15 @@ def run_forensic_main(url):
             clickbait = 10 if any(w in title for w in ['충격','경악','폭로']) else -5
             
             algo_base_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
-            algo_final_prob = max(5, min(99, algo_base_score))
             
+            # [중립성 강화] AI 판사 점수 보정 로직
             ai_judge_score, ai_judge_reason = get_gemini_verdict(title, full_text, news_ev)
             
-            final_prob = int((algo_final_prob * WEIGHT_ALGO) + (ai_judge_score * WEIGHT_AI))
+            # 1. DB도 없고, 뉴스도 없으면 -> AI 점수를 50점 쪽으로 끌어당김 (Damping)
+            if t_impact == 0 and f_impact == 0 and is_silent:
+                ai_judge_score = int((ai_judge_score + 50) / 2)
+            
+            final_prob = int((algo_base_score * WEIGHT_ALGO) + (ai_judge_score * WEIGHT_AI))
             final_prob = max(1, min(99, final_prob))
             
             save_analysis(uploader, title, final_prob, url, query)
@@ -515,12 +514,13 @@ def run_forensic_main(url):
                 
                 st.write("**[Score Breakdown]**")
                 render_score_breakdown([
-                    ["AI Judge Score (40%)", ai_judge_score, "Gemini 최종 추론 점수"],
+                    ["🏁 기본 중립 점수 (Base Score)", 50, "모든 분석은 50점(중립)에서 시작"],
                     ["진실 데이터 맥락", t_impact, "내부 DB 진실 데이터와 유사성"],
                     ["가짜 패턴 맥락", f_impact, "내부 DB 가짜 데이터와 유사성"],
-                    ["뉴스 매칭 상태", f"{max_match}%", "가장 유사한 기사와의 일치율"],
-                    ["침묵의 메아리", silent_penalty, "관련 기사 부재 시 페널티"],
-                    ["여론/제목/태그 가감", sent_score + clickbait + abuse_score, ""]
+                    ["뉴스 매칭 상태", f"{max_match}%", "가장 유사한 기사와의 일치율 (부재 시 페널티 반영)"],
+                    ["여론/제목/태그 가감", sent_score + clickbait + abuse_score, ""],
+                    ["-----------------", "", ""],
+                    ["⚖️ AI Judge Score (40%)", ai_judge_score, "Gemini 종합 추론 (증거 부재 시 중립 보정)"]
                 ])
 
             with col2:
@@ -570,7 +570,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v84.0 (Korean Fixed)")
+st.title("⚖️ Fact-Check Center v85.0 (Neutral Base)")
 
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
