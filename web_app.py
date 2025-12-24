@@ -12,13 +12,10 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 import altair as alt
-from keybert import KeyBERT
-import spacy
-import spacy.cli # 🌟 [v53.2] 내부 다운로더 모듈 명시적 임포트
 import sys
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v53.2 (Auto-Install)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v53.3 (Unbreakable)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -36,42 +33,47 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# 🌟 [v53.2 Fix] 모델 자동 설치 및 로드 (가장 안전한 방법)
+# 🌟 [v53.3 Fix] 절대 꺼지지 않는 AI 로더 (Fail-Safe)
 @st.cache_resource
-def load_ai_models():
+def load_ai_models_safely():
     ai_status_msg = ""
     kw_model = None
     nlp_model = None
+    is_success = False
+
+    try:
+        # 1. 라이브러리 임포트 시도 (메모리 부족 시 여기서 터질 수 있음)
+        import spacy
+        from keybert import KeyBERT
+        
+        # 2. KeyBERT 로드 (가장 무거운 작업)
+        try:
+            kw_model = KeyBERT('paraphrase-multilingual-MiniLM-L12-v2')
+            ai_status_msg += "✅ KeyBERT "
+        except Exception as e:
+            ai_status_msg += "🔻 KeyBERT(Skip) "
+            print(f"KeyBERT Load Error: {e}")
+
+        # 3. SpaCy (NER) 로드
+        try:
+            if not spacy.util.is_package("ko_core_news_sm"):
+                spacy.cli.download("ko_core_news_sm") # 없으면 다운로드
+            nlp_model = spacy.load("ko_core_news_sm")
+            ai_status_msg += "✅ NER"
+        except Exception as e:
+            ai_status_msg += "🔻 NER(Skip)"
+            print(f"SpaCy Load Error: {e}")
+
+        is_success = True
+
+    except Exception as e:
+        ai_status_msg = f"⚠️ AI Load Fail (Memory Limit): {str(e)[:50]}..."
+        print(f"Critical AI Error: {e}")
     
-    # 1. KeyBERT 로드
-    try:
-        kw_model = KeyBERT('paraphrase-multilingual-MiniLM-L12-v2')
-        ai_status_msg += "✅ KeyBERT "
-    except Exception as e:
-        ai_status_msg += "❌ KeyBERT(Fail) "
-        print(f"KeyBERT Error: {e}")
+    return kw_model, nlp_model, ai_status_msg, is_success
 
-    # 2. SpaCy (NER) 로드 - 없으면 다운로드
-    model_name = "ko_core_news_sm"
-    try:
-        if not spacy.util.is_package(model_name):
-            with st.spinner(f"📥 AI 모델({model_name})을 다운로드 중입니다... (최초 1회)"):
-                spacy.cli.download(model_name)
-        
-        nlp_model = spacy.load(model_name)
-        ai_status_msg += "✅ NER(SpaCy)"
-    except Exception as e:
-        ai_status_msg += "❌ NER(Fail) "
-        print(f"SpaCy Error: {e}")
-        
-    return kw_model, nlp_model, ai_status_msg
-
-# AI 로딩 시도 (실패해도 앱은 켜짐)
-try:
-    kw_model, nlp_model, ai_status = load_ai_models()
-except Exception as e:
-    kw_model, nlp_model = None, None, ""
-    ai_status = f"⚠️ AI Init Warning: {e}"
+# AI 로딩 시도 (실패해도 앱은 켜지도록 변수 초기화)
+kw_model, nlp_model, ai_status_text, ai_loaded = load_ai_models_safely()
 
 # --- [관리자 인증] ---
 if "is_admin" not in st.session_state:
@@ -79,7 +81,10 @@ if "is_admin" not in st.session_state:
 
 with st.sidebar:
     st.header("🛡️ 관리자 메뉴")
-    st.caption(ai_status)
+    st.caption(ai_status_text) # AI 상태 표시
+    if not ai_loaded:
+        st.warning("서버 메모리 부족으로 AI 기능이 제한됩니다. (기본 로직 사용)")
+        
     with st.form("login_form"):
         password_input = st.text_input("관리자 비밀번호", type="password")
         submit_button = st.form_submit_button("로그인")
@@ -102,7 +107,7 @@ PENALTY_ABUSE = 20; PENALTY_MISMATCH = 30; PENALTY_NO_FACT = 25; PENALTY_SILENT_
 
 CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
 OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
-# Fallback용 VIP 리스트
+# Fallback용 VIP 리스트 (AI 실패 시 사용)
 VIP_ENTITIES = ['윤석열', '대통령', '이재명', '한동훈', '김건희', '문재인', '박근혜', '이명박', '트럼프', '바이든', '푸틴', '젤렌스키', '시진핑', '정은', '이준석', '조국', '추미애', '홍준표', '유승민', '안철수', '손흥민', '이강인', '김민재', '류현진', '재용', '정의선', '최태원', '류중일', '감독', '조세호', '유재석', '장동민', '유호정', '이재룡']
 
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
@@ -183,14 +188,15 @@ def render_score_breakdown(data_list):
         rows += f"<tr><td>{item}<br><span style='color:#888; font-size:11px;'>{note}</span></td><td style='text-align: right;'>{badge}</td></tr>"
     st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Silent Echo Protocol)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
 
-def witty_loading_sequence(total, t_cnt, f_cnt):
+def witty_loading_sequence(total, t_cnt, f_cnt, is_ai_active):
+    mode_text = "🤖 NER(개체명 인식) + KeyBERT AI 가동..." if is_ai_active else "⚡ 가벼운 기본 로직(Basic Mode) 가동..."
     messages = [
         f"🧠 [Intelligence Level: {total}] 집단 지성 로드 중...",
         f"📚 학습된 진실 데이터: {t_cnt}건 | 거짓 데이터: {f_cnt}건",
-        "🤖 NER(개체명 인식) AI가 '주어'를 추적 중...", 
+        mode_text, 
         "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
     ]
-    with st.status("🕵️ Context Merger v53.2 가동 중...", expanded=True) as status:
+    with st.status("🕵️ Context Merger v53.3 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
@@ -211,8 +217,7 @@ def extract_ai_keywords(text, top_n=1):
     if not text or kw_model is None: return None
     try:
         keywords = kw_model.extract_keywords(text, keyphrase_ngram_range=(1, 2), stop_words=None, top_n=top_n)
-        if keywords:
-            return keywords[0][0] 
+        if keywords: return keywords[0][0] 
     except: pass
     return None
 
@@ -222,38 +227,39 @@ def extract_ner_entities(text):
         doc = nlp_model(text)
         entities = []
         for ent in doc.ents:
-            # SpaCy 한국어 모델의 개체명 태그
             if ent.label_ in ["PERSON", "ORG", "CIVILIZATION", "PS", "OG"]:
                 entities.append(ent.text)
         return list(dict.fromkeys(entities))
     except: return []
 
-# 🌟 [v53.2] Smart Query Generator
+# 🌟 [v53.3 Fix] Smart Query (Fail-Safe 적용)
 def generate_smart_query(title, transcript):
-    # 1. NER AI로 주어 찾기 (1순위)
+    # 1. NER AI로 주어 찾기 (가능하면)
     entities = extract_ner_entities(title)
     main_subject = entities[0] if entities else ""
     
-    # NER 실패 시 Fallback (VIP 리스트 사용)
+    # 2. NER 실패 또는 AI 없을 때 Fallback (VIP 리스트 사용)
     if not main_subject:
         title_tokens = extract_meaningful_tokens(title)
         vip_found = [w for w in title_tokens if w in VIP_ENTITIES]
         if vip_found: main_subject = vip_found[0]
 
-    # 2. KeyBERT로 행위 찾기
+    # 3. KeyBERT로 행위 찾기 (가능하면)
     context = f"{title}. {transcript[:500]}"
     action_keyword = extract_ai_keywords(context) 
     
-    # 3. 조합
+    # 4. 조합
     final_query = ""
     if main_subject:
         if action_keyword:
             if main_subject in action_keyword: final_query = action_keyword
             else: final_query = f"{main_subject} {action_keyword}"
         else:
+            # AI가 없거나 키워드 추출 실패 시: [주어] + [제목 끝단어]
             final_query = f"{main_subject} {title.split()[-1]}"
     else:
-        final_query = action_keyword if action_keyword else title
+        # 주어도 못 찾고 AI도 없으면: 제목의 명사 3개 사용
+        final_query = action_keyword if action_keyword else " ".join(extract_meaningful_tokens(title)[:3])
         
     return final_query
 
@@ -392,7 +398,7 @@ def extract_top_keywords_from_transcript(text, top_n=5):
 # --- [Main Execution] ---
 def run_forensic_main(url):
     total_intelligence, t_cnt, f_cnt = train_dynamic_vector_engine()
-    witty_loading_sequence(total_intelligence, t_cnt, f_cnt)
+    witty_loading_sequence(total_intelligence, t_cnt, f_cnt, ai_loaded)
     
     vid = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
     if vid: vid = vid.group(1)
@@ -414,7 +420,7 @@ def run_forensic_main(url):
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
-            # 🌟 [v53.2] Smart Query (NER+KeyBERT)
+            # 🌟 [v53.3] Smart Query
             query = generate_smart_query(title, full_text)
 
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
@@ -507,7 +513,7 @@ def run_forensic_main(url):
             with col1:
                 st.write("**[영상 상세 정보]**")
                 st.table(pd.DataFrame({"항목": ["영상 제목", "채널명", "조회수", "해시태그"], "내용": [title, uploader, f"{info.get('view_count',0):,}회", hashtag_display]}))
-                st.info(f"🎯 **AI 스마트 검색어 (NER+KeyBERT)**: {query}")
+                st.info(f"🎯 **AI 스마트 검색어**: {query}")
                 with st.container(border=True):
                     st.markdown("📝 **영상 내용 요약 (AI Abstract)**")
                     st.caption("자막 데이터를 분석하여 핵심 문장 3개를 추출한 결과입니다.")
@@ -559,7 +565,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v53.2")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v53.3")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
