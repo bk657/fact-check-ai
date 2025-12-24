@@ -6,107 +6,170 @@ import time
 import random
 import math
 import os
-# --- [변경됨] Mistral AI 라이브러리 임포트 ---
-from mistralai import Mistral
-from datetime import datetime
+import json
 from collections import Counter
+from datetime import datetime
+
+# --- [라이브러리 임포트] ---
+from mistralai import Mistral
+import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import yt_dlp
 import pandas as pd
 import altair as alt
-import json
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="유튜브 가짜뉴스 판독기 (Mistral Edition)", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="유튜브 가짜뉴스 판독기 (Triple Engine)", layout="wide", page_icon="🛡️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
-
 if "debug_logs" not in st.session_state:
     st.session_state["debug_logs"] = []
 
-# 🌟 Secrets 로드
+# 🌟 Secrets 로드 (3중 키 로드)
 try:
     YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
     ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
-    # --- [변경됨] Mistral API Key 로드 ---
+    
     MISTRAL_API_KEY = st.secrets["MISTRAL_API_KEY"]
+    GOOGLE_API_KEY_A = st.secrets["GOOGLE_API_KEY_A"]
+    GOOGLE_API_KEY_B = st.secrets["GOOGLE_API_KEY_B"]
 except:
-    st.error("❌ 필수 키(API Keys)가 설정되지 않았습니다. .streamlit/secrets.toml에 MISTRAL_API_KEY 등을 확인해주세요.")
+    st.error("❌ secrets.toml 파일에 API Key 설정이 필요합니다. (Mistral, Google A, Google B)")
     st.stop()
 
 @st.cache_resource
-def init_supabase():
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+def init_clients():
+    # Supabase & Mistral (Gemini는 호출 시마다 키 변경)
+    su = create_client(SUPABASE_URL, SUPABASE_KEY)
+    mi = Mistral(api_key=MISTRAL_API_KEY)
+    return su, mi
 
-@st.cache_resource
-def init_mistral():
-    return Mistral(api_key=MISTRAL_API_KEY)
+supabase, mistral_client = init_clients()
 
-supabase = init_supabase()
-mistral_client = init_mistral()
+# --- [2. 모델 정의] ---
+# Mistral 우선순위 리스트
+MISTRAL_MODELS = [
+    "mistral-large-latest",
+    "mistral-medium-latest",
+    "mistral-small-latest",
+    "open-mixtral-8x22b"
+]
 
-# --- [2. 유틸리티: JSON 파싱 헬퍼] ---
-def parse_llm_json(text):
-    """LLM이 리스트로 주든 마크다운을 섞든 무조건 딕셔너리로 변환"""
+# Gemini 모델 탐색 함수 (키 별로 동작)
+def get_gemini_models_dynamic(api_key):
+    """특정 API Key로 사용 가능한 모델 리스트를 가져옴"""
+    genai.configure(api_key=api_key)
     try:
-        # 1. 순수 파싱 시도
+        models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                name = m.name.replace("models/", "")
+                models.append(name)
+        # 성능순 정렬
+        models.sort(key=lambda x: 0 if 'flash' in x else 1 if 'pro' in x else 2)
+        return models
+    except:
+        return ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"] # 실패 시 기본값
+
+# --- [3. 유틸리티] ---
+def parse_llm_json(text):
+    try:
         parsed = json.loads(text)
     except:
         try:
-            # 2. 마크다운 제거 후 파싱 시도
             text = re.sub(r'```json\s*', '', text)
             text = re.sub(r'```', '', text)
-            # 중괄호나 대괄호로 시작하는 부분 추출
             match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
-            if match:
-                parsed = json.loads(match.group(1))
-            else:
-                return None
-        except:
-            return None
-
-    # 리스트면 첫 번째 요소 추출
-    if isinstance(parsed, list):
-        if len(parsed) > 0 and isinstance(parsed[0], dict):
-            return parsed[0]
-        else:
-            return None 
-            
-    # 딕셔너리면 그대로 반환
-    if isinstance(parsed, dict):
-        return parsed
-        
+            if match: parsed = json.loads(match.group(1))
+            else: return None
+        except: return None
+    if isinstance(parsed, list): return parsed[0] if len(parsed) > 0 and isinstance(parsed[0], dict) else None
+    if isinstance(parsed, dict): return parsed
     return None
 
-# --- [3. 모델 자동 탐색기 (Mistral 버전)] ---
-# Mistral은 모델 리스트가 비교적 고정적이므로 안정적인 모델들을 우선순위대로 배치합니다.
-AVAILABLE_MISTRAL_MODELS = [
-    "mistral-large-latest",  # 성능 최우선
-    "mistral-medium-latest", # 밸런스
-    "mistral-small-latest",  # 속도/비용 최우선
-    "open-mixtral-8x22b"     # 백업
-]
+# --- [4. ⭐ Triple Hybrid Survivor Logic] ---
+def call_triple_survivor(prompt, is_json=False):
+    logs = []
+    
+    # === [Phase 1: Mistral AI (1선발)] ===
+    response_format = {"type": "json_object"} if is_json else None
+    for model_name in MISTRAL_MODELS:
+        try:
+            resp = mistral_client.chat.complete(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                response_format=response_format,
+                temperature=0.2
+            )
+            if resp.choices:
+                content = resp.choices[0].message.content
+                logs.append(f"✅ Success (Mistral): {model_name}")
+                return content, f"{model_name}", logs
+        except Exception as e:
+            logs.append(f"❌ Mistral Failed ({model_name}): {str(e)[:30]}...")
+            time.sleep(0.2)
+            continue
 
-# --- [4. 상수 정의] ---
+    # === [Phase 2: Google Gemini Key A (2선발)] ===
+    logs.append("⚠️ Mistral 전멸 -> Gemini Key A 투입")
+    models_a = get_gemini_models_dynamic(GOOGLE_API_KEY_A)
+    
+    generation_config = {"response_mime_type": "application/json"} if is_json else {}
+    safety_settings = {
+        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    }
+
+    # 키 A 설정 (중요: 재설정)
+    genai.configure(api_key=GOOGLE_API_KEY_A)
+    
+    for model_name in models_a:
+        try:
+            model = genai.GenerativeModel(model_name, generation_config=generation_config)
+            resp = model.generate_content(prompt, safety_settings=safety_settings)
+            if resp.text:
+                logs.append(f"✅ Success (Gemini Key A): {model_name}")
+                return resp.text, f"{model_name} (Key A)", logs
+        except Exception as e:
+            continue
+
+    # === [Phase 3: Google Gemini Key B (최후의 보루)] ===
+    logs.append("⚠️ Key A 전멸 -> Gemini Key B 투입 (Final Stand)")
+    
+    # 키 B 설정 (중요: 재설정)
+    genai.configure(api_key=GOOGLE_API_KEY_B)
+    models_b = get_gemini_models_dynamic(GOOGLE_API_KEY_B) # 모델 리스트 다시 확보
+    
+    for model_name in models_b:
+        try:
+            model = genai.GenerativeModel(model_name, generation_config=generation_config)
+            resp = model.generate_content(prompt, safety_settings=safety_settings)
+            if resp.text:
+                logs.append(f"✅ Success (Gemini Key B): {model_name}")
+                return resp.text, f"{model_name} (Key B)", logs
+        except Exception as e:
+            continue
+
+    return None, "All Failed (Mistral + Key A + Key B)", logs
+
+# --- [5. 상수 및 데이터] ---
 WEIGHT_ALGO = 0.6
 WEIGHT_AI = 0.4
-
-VITAL_KEYWORDS = ['위독', '사망', '별세', '구속', '체포', '기소', '실형', '응급실', '이혼', '불화', '파경', '충격', '경악', '속보', '긴급', '폭로', '양성', '확진', '심정지', '뇌사', '중태', '압수수색', '소환', '퇴진', '탄핵', '내란', '간첩']
-CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
 OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
+CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
 
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
 STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
 
-# --- [5. VectorEngine] ---
 class VectorEngine:
     def __init__(self):
-        self.vocab = set()
-        self.truth_vectors = []
-        self.fake_vectors = []
+        self.vocab = set(); self.truth_vectors = []; self.fake_vectors = []
     def tokenize(self, text): return re.findall(r'[가-힣]{2,}', text)
     def train(self, truth, fake):
         for t in truth + fake: self.vocab.update(self.tokenize(t))
@@ -126,63 +189,21 @@ class VectorEngine:
         mt = max([self.cosine_similarity(qv, v) for v in self.truth_vectors] or [0])
         mf = max([self.cosine_similarity(qv, v) for v in self.fake_vectors] or [0])
         return mt, mf
-    def compute_content_similarity(self, text1, text2):
-        tokens1 = self.tokenize(text1); tokens2 = self.tokenize(text2)
-        local_vocab = sorted(list(set(tokens1 + tokens2)))
-        if not local_vocab: return 0.0
-        v1 = self.text_to_vector(text1, local_vocab)
-        v2 = self.text_to_vector(text2, local_vocab)
-        return self.cosine_similarity(v1, v2)
 
 vector_engine = VectorEngine()
 
-# --- [6. Mistral Logic (변경됨)] ---
-def call_mistral_survivor(prompt, is_json=False):
-    logs = []
-    
-    # JSON 포맷 설정
-    response_format = {"type": "json_object"} if is_json else None
-    
-    for model_name in AVAILABLE_MISTRAL_MODELS:
-        try:
-            messages = [
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
-            
-            chat_response = mistral_client.chat.complete(
-                model=model_name,
-                messages=messages,
-                response_format=response_format,
-                temperature=0.2 # 사실 여부 판단이므로 낮은 온도 설정
-            )
-            
-            if chat_response.choices:
-                content = chat_response.choices[0].message.content
-                logs.append(f"✅ Success: {model_name}")
-                return content, model_name, logs
-                
-        except Exception as e:
-            logs.append(f"❌ Failed ({model_name}): {str(e)[:50]}...")
-            time.sleep(0.5)
-            continue
-            
-    return None, "All Failed", logs
-
-# [Engine A] 수사관 (Mistral)
-def get_mistral_search_keywords(title, transcript):
+# [Engine A] 수사관
+def get_hybrid_search_keywords(title, transcript):
     context_data = transcript[:15000] 
     prompt = f"""
     You are a Fact-Check Investigator.
     [Input] Title: {title}, Transcript: {context_data}
     [Task] Extract ONE precise Google News search query.
     [Rules] Focus on Proper Nouns (Person, Drug, Event). Ignore Generic Verbs.
-    [Output] ONLY the Korean search query string (2-4 words). Do not add quotes or explanations.
+    [Output] ONLY the Korean search query string (2-4 words). Do not add quotes.
     """
-    result_text, model_used, logs = call_mistral_survivor(prompt)
-    st.session_state["debug_logs"].extend([f"[Mistral A] {l}" for l in logs])
+    result_text, model_used, logs = call_triple_survivor(prompt)
+    st.session_state["debug_logs"].extend([f"[Key A] {l}" for l in logs])
     return (result_text.strip(), f"✨ {model_used}") if result_text else (title, "❌ Error")
 
 # [크롤러] 뉴스 본문 수집
@@ -198,7 +219,7 @@ def scrape_news_content_robust(google_url):
         return (text[:4000], final_url) if len(text) > 100 else (None, final_url)
     except: return None, google_url
 
-# [Engine B] 뉴스 정밀 대조 (Mistral)
+# [Engine B] 뉴스 정밀 대조
 def deep_verify_news(video_summary, news_url, news_snippet):
     scraped_text, real_url = scrape_news_content_robust(news_url)
     evidence_text = scraped_text if scraped_text else news_snippet
@@ -211,15 +232,15 @@ def deep_verify_news(video_summary, news_url, news_snippet):
     [Task] Does news confirm video claim? Match(90-100), Related(40-60), Mismatch(0-10).
     [Output JSON] {{ "score": <int>, "reason": "<short korean reason>" }}
     """
-    result_text, model_used, logs = call_mistral_survivor(prompt, is_json=True)
-    st.session_state["debug_logs"].extend([f"[Mistral B-Verify] {l}" for l in logs])
+    result_text, model_used, logs = call_triple_survivor(prompt, is_json=True)
+    st.session_state["debug_logs"].extend([f"[Verify] {l}" for l in logs])
     
     res = parse_llm_json(result_text)
     if res: return res.get('score', 0), res.get('reason', 'N/A'), source_type, evidence_text, real_url
     return 0, "Error", "Error", "", news_url
 
-# [Engine B] 최종 판결 (Mistral)
-def get_mistral_verdict_final(title, transcript, verified_news_list):
+# [Engine B] 최종 판결
+def get_hybrid_verdict_final(title, transcript, verified_news_list):
     news_summary = ""
     for item in verified_news_list:
         news_summary += f"- News: {item['뉴스 제목']} (Score: {item['최종 점수']}, Reason: {item['분석 근거']})\n"
@@ -232,14 +253,14 @@ def get_mistral_verdict_final(title, transcript, verified_news_list):
     [Instruction] Verify truth. Match->Truth(0-30), Mismatch->Fake(70-100). 
     Output JSON format only: {{ "score": <int>, "reason": "<korean explanation>" }}
     """
-    result_text, model_used, logs = call_mistral_survivor(prompt, is_json=True)
-    st.session_state["debug_logs"].extend([f"[Mistral B-Final] {l}" for l in logs])
+    result_text, model_used, logs = call_triple_survivor(prompt, is_json=True)
+    st.session_state["debug_logs"].extend([f"[Judge] {l}" for l in logs])
     
     res = parse_llm_json(result_text)
     if res: return res.get('score', 50), f"{res.get('reason')} (By {model_used})"
     return 50, "Judge Failed"
 
-# --- [7. 유틸리티 함수] ---
+# --- [6. 유틸리티] ---
 def normalize_korean_word(word):
     word = re.sub(r'[^가-힣0-9]', '', word)
     for j in ['은','는','이','가','을','를','의','에','에게','로','으로']:
@@ -267,9 +288,6 @@ def train_dynamic_vector_engine():
     except: 
         vector_engine.train(STATIC_TRUTH_CORPUS, STATIC_FAKE_CORPUS)
         return 0, [], []
-
-def check_db_similarity(query, truth_list, fake_list):
-    return vector_engine.analyze_position(query)
 
 def save_analysis(channel, title, prob, url, keywords):
     try: supabase.table("analysis_history").insert({"channel_name": channel, "video_title": title, "fake_prob": prob, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "video_url": url, "keywords": keywords}).execute()
@@ -299,7 +317,7 @@ def render_score_breakdown(data_list):
         rows += f"<tr><td>{item}<br><span style='color:#888; font-size:11px;'>{note}</span></td><td style='text-align: right;'>{badge}</td></tr>"
     st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Score Breakdown)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
 
-def summarize_transcript(text, title, max_sentences=3):
+def summarize_transcript(text, title):
     return text[:800] + "..." if len(text) > 800 else text
 
 def clean_html_regex(text):
@@ -389,7 +407,7 @@ def check_red_flags(comments):
 
 def run_forensic_main(url):
     st.session_state["debug_logs"] = []
-    progress_text = "분석 시작 중..."
+    progress_text = "트리플 엔진(Mistral + Gemini A/B) 가동 중..."
     my_bar = st.progress(0, text=progress_text)
     
     db_count, db_truth, db_fake = train_dynamic_vector_engine()
@@ -409,8 +427,8 @@ def run_forensic_main(url):
             summary = summarize_transcript(full_text, title)
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
-            my_bar.progress(30, text="2단계: AI 수사관(Mistral)이 검색 키워드 추출 중...")
-            query, source = get_mistral_search_keywords(title, full_text)
+            my_bar.progress(30, text="2단계: AI 수사관(Triple)이 검색 키워드 추출 중...")
+            query, source = get_hybrid_search_keywords(title, full_text)
 
             my_bar.progress(50, text="3단계: 뉴스 크롤링 및 딥 웹 탐색 중...")
             is_official = check_is_official(uploader)
@@ -462,8 +480,8 @@ def run_forensic_main(url):
             
             algo_base_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + silent_penalty
             
-            my_bar.progress(90, text="5단계: AI 판사(Mistral) 최종 판결 중...")
-            ai_judge_score, ai_judge_reason = get_mistral_verdict_final(title, full_text, news_ev)
+            my_bar.progress(90, text="5단계: AI 판사(Triple) 최종 판결 중...")
+            ai_judge_score, ai_judge_reason = get_hybrid_verdict_final(title, full_text, news_ev)
             
             if t_impact == 0 and f_impact == 0 and is_silent:
                 ai_judge_score = int((ai_judge_score + 50) / 2)
@@ -474,7 +492,7 @@ def run_forensic_main(url):
             save_analysis(uploader, title, final_prob, url, query)
             my_bar.empty()
 
-            st.subheader("🕵️ Dual-Engine Analysis Result (Mistral Powered)")
+            st.subheader(f"🕵️ Triple-Engine Analysis Result")
             col_a, col_b, col_c = st.columns(3)
             with col_a: 
                 st.metric("최종 가짜뉴스 확률", f"{final_prob}%", delta=f"AI Judge: {ai_judge_score}pt")
@@ -483,7 +501,7 @@ def run_forensic_main(url):
                 verdict = "안전 (Verified)" if final_prob < 30 else "위험 (Fake/Bias)" if final_prob > 60 else "주의 (Caution)"
                 st.metric("종합 AI 판정", f"{icon} {verdict}")
             with col_c: 
-                st.metric("AI Intelligence Level", f"{db_count} Nodes", delta="Hybrid Active")
+                st.metric("AI Intelligence Level", f"{db_count} Nodes", delta="Triple Active")
             
             st.divider()
             st.subheader("🧠 Intelligence Map")
@@ -497,7 +515,7 @@ def run_forensic_main(url):
             with col1:
                 st.write("**[영상 상세 정보]**")
                 st.table(pd.DataFrame({"항목": ["영상 제목", "채널명", "조회수", "해시태그"], "내용": [title, uploader, f"{info.get('view_count',0):,}회", hashtag_display]}))
-                st.info(f"🎯 **Investigator (Mistral A) 추출 검색어**: {query}")
+                st.info(f"🎯 **Investigator (Triple) 추출 검색어**: {query}")
                 with st.container(border=True):
                     st.markdown("📝 **영상 내용 요약**")
                     st.write(summary)
@@ -510,7 +528,7 @@ def run_forensic_main(url):
                     ["뉴스 매칭 상태", news_score, "Deep-Crawler 정밀 대조 결과"],
                     ["여론/제목/태그 가감", sent_score + clickbait + abuse_score, ""],
                     ["-----------------", "", ""],
-                    ["⚖️ AI Judge Score (40%)", ai_judge_score, "Mistral 종합 추론"]
+                    ["⚖️ AI Judge Score (40%)", ai_judge_score, "Triple 종합 추론"]
                 ])
 
             with col2:
@@ -546,7 +564,7 @@ def run_forensic_main(url):
                 st.markdown("**[증거 4] AI 최종 분석 판단 (Judge Verdict)**")
                 with st.container(border=True):
                     st.write(f"⚖️ **판결:** {ai_judge_reason}")
-                    st.caption(f"* Mistral 독립 추론 점수: {ai_judge_score}점 (Engine B)")
+                    st.caption(f"* Triple 독립 추론 점수: {ai_judge_score}점")
 
                 reasons = []
                 if final_prob >= 60:
@@ -563,11 +581,11 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️유튜브 가짜뉴스 판독기 (Mistral Edition)")
+st.title("⚖️유튜브 가짜뉴스 판독기 (Triple Engine)")
 
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **Engine A (Investigator)**: Mistral Large/Small 기반 키워드 추출\n* **Engine B (Judge)**: 뉴스 본문 크롤링 및 정밀 대조")
+    st.markdown("* **1st Line**: Mistral AI\n* **2nd Line**: Google Gemini Key A\n* **3rd Line**: Google Gemini Key B (Final Backup)")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
@@ -604,9 +622,21 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
         st.divider()
         st.subheader("🛠️ 시스템 상태 및 디버그 로그")
         
-        st.write(f"**🤖 가용 모델 (Mistral):**")
-        st.code(", ".join(AVAILABLE_MISTRAL_MODELS))
+        st.write("**🤖 Triple Defense System Status:**")
         
+        st.caption("1️⃣ Mistral Priority Chain")
+        st.code(", ".join(MISTRAL_MODELS))
+        
+        st.caption("2️⃣ Gemini Key A (Dynamic Scan)")
+        try:
+            st.code(", ".join(get_gemini_models_dynamic(GOOGLE_API_KEY_A)))
+        except: st.error("Key A 연결 실패")
+
+        st.caption("3️⃣ Gemini Key B (Dynamic Scan)")
+        try:
+            st.code(", ".join(get_gemini_models_dynamic(GOOGLE_API_KEY_B)))
+        except: st.error("Key B 연결 실패")
+
         if "debug_logs" in st.session_state and st.session_state["debug_logs"]:
             st.write(f"**📜 최근 실행 로그 ({len(st.session_state['debug_logs'])}건):**")
             log_text = "\n".join(st.session_state["debug_logs"])
