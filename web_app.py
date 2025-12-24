@@ -16,7 +16,7 @@ import json
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v93.2 (JSON Fixed)", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="유튜브 가짜뉴스 판독기", layout="wide", page_icon="🛡️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -550,7 +550,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v93.2 (JSON Fixed)")
+st.title("⚖️유튜브 가짜뉴스 판독기")
 
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
@@ -613,3 +613,4 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
                 st.rerun()
             else:
                 st.error("Access Denied")
+
