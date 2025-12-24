@@ -16,10 +16,14 @@ import json
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v90.0 (Real Survivor)", layout="wide", page_icon="🧬")
+st.set_page_config(page_title="Fact-Check Center v91.0 (Admin Debug)", layout="wide", page_icon="🛡️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
+
+# 디버그 로그 저장을 위한 세션 초기화
+if "debug_logs" not in st.session_state:
+    st.session_state["debug_logs"] = []
 
 # 🌟 Secrets 로드
 try:
@@ -40,25 +44,18 @@ def init_supabase():
 supabase = init_supabase()
 
 # --- [2. 모델 자동 탐색기 (Auto-Discovery)] ---
-@st.cache_data(ttl=3600) # 1시간마다 갱신
+@st.cache_data(ttl=3600)
 def get_all_available_models(api_key):
     genai.configure(api_key=api_key)
     models = []
     try:
-        # 구글 API에 등록된 모든 모델을 긁어옵니다.
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
-                # v1beta 모델 등 이름 정리
                 model_name = m.name.replace("models/", "")
                 models.append(model_name)
     except Exception as e:
-        # API 호출 실패 시 비상용 하드코딩 리스트
         return ["gemini-2.5-flash-lite", "gemini-flash-lite-latest", "gemini-2.0-flash", "gemini-1.5-flash"]
     
-    # [우선순위 정렬] Lite > Flash > Pro 순서로 정렬 (속도 및 쿼터 최적화)
-    # 1. Lite가 들어간 것 우선
-    # 2. 그 다음 Flash가 들어간 것
-    # 3. 나머지는 뒤로
     def sort_key(name):
         if 'lite' in name: return 0
         if 'flash' in name: return 1
@@ -115,7 +112,6 @@ vector_engine = VectorEngine()
 
 # --- [5. Gemini Logic (The Real Survivor)] ---
 
-# 🚨 안전 설정
 safety_settings_none = {
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -128,88 +124,55 @@ def call_gemini_survivor(api_key, prompt, is_json=False):
     genai.configure(api_key=api_key)
     generation_config = {"response_mime_type": "application/json"} if is_json else {}
     
-    # 1. 현재 사용 가능한 모든 모델 리스트를 가져옵니다.
     all_models = get_all_available_models(api_key)
-    
     logs = []
     
-    # 2. 리스트를 순회하며 살아있는 모델을 찾습니다.
     for model_name in all_models:
         try:
             model = genai.GenerativeModel(model_name, generation_config=generation_config)
-            # 아주 짧은 타임아웃은 두지 않음 (생성 시간 필요)
             response = model.generate_content(prompt, safety_settings=safety_settings_none)
             
             if response.text:
-                # 성공하면 로그에 남기고 리턴
+                logs.append(f"✅ Success: {model_name}")
                 return response.text, model_name, logs
                 
         except Exception as e:
-            # 실패하면 로그에 남기고 다음 모델로 넘어감
-            logs.append(f"❌ {model_name}: {str(e)[:50]}...")
-            time.sleep(0.2) # 과부하 방지용 미세 딜레이
+            logs.append(f"❌ Failed ({model_name}): {str(e)[:30]}...")
+            time.sleep(0.2) 
             continue
             
-    # 3. 모든 모델이 다 죽었을 때 (최악의 경우)
     return None, "All Failed", logs
 
-# [Engine A] 수사관: 키워드 추출
+# [Engine A] 수사관
 def get_gemini_search_keywords(title, transcript):
-    # 자막이 너무 길면 모델이 힘들어하므로 앞부분만 (그러나 충분히 길게)
     context_data = transcript[:15000] 
-    
     prompt = f"""
     You are a Fact-Check Investigator.
-    
-    [Input]
-    Title: {title}
-    Transcript (Partial): {context_data}
-    
-    [Task]
-    Extract ONE specific search query for Google News.
-    
-    [Rules]
-    1. **IGNORE** generic terms (Vlog, Mukbang, Daily life).
-    2. **FOCUS** on specific Proper Nouns (Person's Name, Drug Name, Company Name, Crime Type).
-    3. If the video mentions a specific scandal or death, include those keywords.
-    4. **Output:** ONLY the Korean search query string (2-4 words).
+    [Input] Title: {title}, Transcript: {context_data}
+    [Task] Extract ONE specific search query for Google News.
+    [Rules] IGNORE generic terms. FOCUS on specific Proper Nouns.
+    [Output] ONLY the Korean search query string (2-4 words).
     """
-    
     result_text, model_used, logs = call_gemini_survivor(GOOGLE_API_KEY_A, prompt)
     
-    # 사이드바에 로그 출력
-    with st.sidebar.expander(f"🕵️ Key A (Investigator) Logs", expanded=False):
-        for log in logs: st.write(log)
-        if result_text: st.success(f"✅ Used: {model_used}")
-        else: st.error("❌ All models failed")
-
+    # [수정] 로그를 세션에 저장 (화면 출력 X)
+    st.session_state["debug_logs"].extend([f"[Key A] {l}" for l in logs])
+    
     return (result_text.strip(), f"✨ {model_used}") if result_text else (title, "❌ Error")
 
 # [크롤러] 뉴스 본문 수집
 def scrape_news_content_robust(google_url):
     try:
         session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        })
+        session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'})
         response = session.get(google_url, timeout=5, allow_redirects=True)
         final_url = response.url
-        
         soup = BeautifulSoup(response.text, 'html.parser')
-        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'iframe']):
-            tag.decompose()
-            
-        paragraphs = soup.find_all('p')
-        clean_text = []
-        for p in paragraphs:
-            text = p.get_text().strip()
-            if len(text) > 30: clean_text.append(text)
-        
-        full_text = " ".join(clean_text)
-        if len(full_text) < 100: return None, final_url
-        return full_text[:4000], final_url
-    except:
-        return None, google_url
+        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'iframe']): tag.decompose()
+        text = " ".join([p.get_text().strip() for p in soup.find_all('p') if len(p.get_text().strip()) > 30])
+        if len(text) < 100: return None, final_url
+        return text[:4000], final_url
+    except: return None, google_url
 
 # [Engine B] 판사: 뉴스 정밀 대조
 def deep_verify_news(video_summary, news_url, news_snippet):
@@ -219,24 +182,16 @@ def deep_verify_news(video_summary, news_url, news_snippet):
     
     prompt = f"""
     Compare Video Summary vs News Evidence.
-    
-    [Video Summary]
-    {video_summary[:2000]}
-    
-    [News Evidence ({source_type})]
-    {evidence_text}
-    
-    [Task]
-    Does the news confirm the video's claim?
-    - Match: Score 90-100.
-    - Related: Score 40-60.
-    - Mismatch: Score 0-10.
-    
-    [Output JSON]
-    {{ "score": <int>, "reason": "<short korean reason>" }}
+    [Video] {video_summary[:2000]}
+    [News ({source_type})] {evidence_text}
+    [Task] Does the news confirm the video's claim? Match(90-100), Related(40-60), Mismatch(0-10).
+    [Output JSON] {{ "score": <int>, "reason": "<short korean reason>" }}
     """
     
     result_text, model_used, logs = call_gemini_survivor(GOOGLE_API_KEY_B, prompt, is_json=True)
+    
+    # [수정] 로그 저장
+    st.session_state["debug_logs"].extend([f"[Key B-Verify] {l}" for l in logs])
     
     try:
         res = json.loads(result_text)
@@ -253,31 +208,16 @@ def get_gemini_verdict_final(title, transcript, verified_news_list):
     full_context = transcript[:30000]
     prompt = f"""
     You are a professional Fact-Check AI Judge.
-    
-    [Video Info]
-    Title: {title}
-    Transcript Summary: {full_context[:2000]}...
-    
-    [Cross-Checked Evidence]
-    {news_summary}
-    
-    [Instruction]
-    1. Verify truthfulness based on evidence.
-    2. Reliable match -> Truth (0-30).
-    3. Mismatch/No evidence -> Fake (70-100).
-    4. MUST OUTPUT REASON IN KOREAN.
-    
-    [Output Format - JSON Only]
-    {{ "score": <int>, "reason": "<한글 판결문>" }}
+    [Video] {title} / {full_context[:2000]}...
+    [Evidence] {news_summary}
+    [Instruction] Verify truthfulness. Match->Truth(0-30), Mismatch->Fake(70-100). Output JSON with Korean reason.
     """
     
     result_text, model_used, logs = call_gemini_survivor(GOOGLE_API_KEY_B, prompt, is_json=True)
     
-    # 사이드바에 로그 출력
-    with st.sidebar.expander(f"⚖️ Key B (Judge) Logs", expanded=False):
-        for log in logs: st.write(log)
-        if result_text: st.success(f"✅ Used: {model_used}")
-        
+    # [수정] 로그 저장
+    st.session_state["debug_logs"].extend([f"[Key B-Final] {l}" for l in logs])
+    
     if result_text:
         try:
             data = json.loads(result_text)
@@ -457,11 +397,14 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v90.0...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v91.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
 def run_forensic_main(url):
+    # [수정] 로그 리셋
+    st.session_state["debug_logs"] = []
+    
     db_count, db_truth, db_fake = train_dynamic_vector_engine()
     witty_loading_sequence(db_count, 0, 0)
     
@@ -474,13 +417,6 @@ def run_forensic_main(url):
             title = info.get('title', ''); uploader = info.get('uploader', '')
             tags = info.get('tags', []); desc = info.get('description', '')
             
-            # 사이드바 초기화
-            st.sidebar.title("🤖 AI Model Status")
-            avail_models = get_all_available_models(GOOGLE_API_KEY_A)
-            st.sidebar.success(f"Detected {len(avail_models)} Active Models")
-            with st.sidebar.expander("Show Available Models"):
-                st.write(avail_models)
-                
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
             summary = summarize_transcript(full_text, title)
@@ -559,7 +495,7 @@ def run_forensic_main(url):
                 verdict = "안전 (Verified)" if final_prob < 30 else "위험 (Fake/Bias)" if final_prob > 60 else "주의 (Caution)"
                 st.metric("종합 AI 판정", f"{icon} {verdict}")
             with col_c: 
-                st.metric("AI Intelligence Level", f"{db_count} Nodes", delta="Twin-Engine Active")
+                st.metric("AI Intelligence Level", f"{db_count} Nodes", delta="Hybrid Active")
             
             st.divider()
             st.subheader("🧠 Intelligence Map")
@@ -639,7 +575,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v90.0 (Real Survivor)")
+st.title("⚖️ Fact-Check Center v91.0 (Admin Debug)")
 
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
@@ -672,9 +608,28 @@ if not df.empty:
 else: st.info("데이터가 없습니다.")
 
 st.write("")
+# [관리자 전용 섹션 강화]
 with st.expander("🔐 관리자 접속 (Admin Access)"):
     if st.session_state["is_admin"]:
         st.success("관리자 권한 활성화됨")
+        
+        # [NEW] 시스템 상태 및 로그 뷰어
+        st.divider()
+        st.subheader("🛠️ 시스템 상태 및 디버그 로그")
+        
+        # 1. 모델 상태
+        avail_models = get_all_available_models(GOOGLE_API_KEY_A)
+        st.write(f"**🤖 가용 모델 ({len(avail_models)}개):**")
+        st.code(", ".join(avail_models))
+        
+        # 2. 실행 로그
+        if "debug_logs" in st.session_state and st.session_state["debug_logs"]:
+            st.write(f"**📜 최근 실행 로그 ({len(st.session_state['debug_logs'])}건):**")
+            log_text = "\n".join(st.session_state["debug_logs"])
+            st.text_area("Logs", log_text, height=300)
+        else:
+            st.info("실행된 로그가 없습니다.")
+
         if st.button("로그아웃"):
             st.session_state["is_admin"] = False
             st.rerun()
