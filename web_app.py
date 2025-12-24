@@ -14,7 +14,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v66.1 (HyperLink)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v66.2 (Stability)", layout="wide", page_icon="⚖️")
 
 # 세션 상태 초기화
 if "is_admin" not in st.session_state:
@@ -83,7 +83,7 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic] ---
+# --- [4. Gemini Logic (With Retry)] ---
 def get_gemini_model():
     genai.configure(api_key=GOOGLE_API_KEY)
     available_models = []
@@ -103,6 +103,19 @@ def get_gemini_model():
     
     return genai.GenerativeModel(target_model) if target_model else None, target_model
 
+def generate_with_retry(model, prompt, safety_settings, retries=3):
+    """🚨 429 에러 발생 시 재시도하는 로직"""
+    for i in range(retries):
+        try:
+            return model.generate_content(prompt, safety_settings=safety_settings)
+        except Exception as e:
+            if "429" in str(e):
+                time.sleep(2 * (i + 1)) # 2초, 4초, 6초 대기
+                continue
+            else:
+                raise e # 다른 에러는 즉시 발생
+    return None
+
 def get_gemini_search_keywords(title, transcript):
     model, model_name = get_gemini_model()
     if model:
@@ -110,8 +123,11 @@ def get_gemini_search_keywords(title, transcript):
             safety_settings = [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
             full_context = transcript[:30000]
             prompt = f"Analyze the video and extract ONE core search query for Google News verification. [Input] Title: {title} Transcript: {full_context} [Rules] 1. Extract ONLY nouns. 2. Output ONLY the query string (Korean)."
-            response = model.generate_content(prompt, safety_settings=safety_settings)
-            if response.text: return response.text.strip(), f"✨ Gemini ({model_name.replace('models/','')})"
+            
+            # 재시도 적용
+            response = generate_with_retry(model, prompt, safety_settings)
+            if response and response.text: 
+                return response.text.strip(), f"✨ Gemini ({model_name.replace('models/','')})"
         except: pass
 
     tokens = re.findall(r'[가-힣]{2,}', title)
@@ -154,10 +170,17 @@ def get_gemini_verdict(title, summary, news_items):
     
     try:
         safety_settings = [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
-        response = model.generate_content(prompt, safety_settings=safety_settings)
-        txt = response.text.replace("```json", "").replace("```", "").strip()
-        data = json.loads(txt)
-        return data.get("risk_score", 50), data.get("reason", "분석 결과 없음")
+        
+        # 재시도 적용
+        response = generate_with_retry(model, prompt, safety_settings)
+        
+        if response:
+            txt = response.text.replace("```json", "").replace("```", "").strip()
+            data = json.loads(txt)
+            return data.get("risk_score", 50), data.get("reason", "분석 결과 없음")
+        else:
+            return 50, "AI 응답 없음 (재시도 실패)"
+            
     except Exception as e:
         return 50, f"AI 판단 중 오류 발생 ({str(e)[:30]}...)"
 
@@ -291,7 +314,6 @@ def fetch_comments_via_api(video_id):
     except: pass
     return [], "❌ API 통신 실패"
 
-# 🚨 [뉴스 링크 추출 기능 추가]
 def fetch_news_regex(query):
     news_res = []
     try:
@@ -301,7 +323,7 @@ def fetch_news_regex(query):
         for item in items[:10]:
             t = re.search(r'<title>(.*?)</title>', item)
             d = re.search(r'<description>(.*?)</description>', item)
-            l = re.search(r'<link>(.*?)</link>', item) # 링크 추출
+            l = re.search(r'<link>(.*?)</link>', item)
             
             nt = t.group(1).replace("<![CDATA[", "").replace("]]>", "") if t else ""
             nd = clean_html_regex(d.group(1).replace("<![CDATA[", "").replace("]]>", "")) if d else ""
@@ -352,7 +374,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v66.1...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v66.2...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -380,7 +402,11 @@ def run_forensic_main(url):
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
+            # Gemini Call 1 (Keyword)
             query, source = get_gemini_search_keywords(title, full_text)
+            
+            # Throttling (속도 조절)
+            time.sleep(1) 
 
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
             abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
@@ -398,7 +424,6 @@ def run_forensic_main(url):
                 if final > max_match: max_match = final
                 if final < 20: mismatch_count += 1
                 
-                # 🚨 [UI 변경] 데이터프레임용 데이터 구성
                 news_ev.append({
                     "뉴스 제목": item['title'],
                     "제목 일치": f"{t_score}%",
@@ -407,6 +432,8 @@ def run_forensic_main(url):
                     "기사 링크": item['link']
                 })
             
+            # Gemini Call 2 (Judge)
+            time.sleep(1) # 안전 대기
             gemini_risk, gemini_reason = get_gemini_verdict(title, summary, news_items)
             
             if not news_ev:
@@ -490,7 +517,6 @@ def run_forensic_main(url):
                 st.write("**[Score Breakdown]**")
                 silence_label = "미검증 주장" if is_gray_zone else "침묵의 메아리 (No News)"
                 
-                # 🚨 Score Breakdown에 AI Impact 추가
                 render_score_breakdown([
                     ["기본 위험도", 50, "Base Score"],
                     ["Gemini AI 심층 판정", gemini_impact, "AI 판단 가중치 적용"],
@@ -510,22 +536,11 @@ def run_forensic_main(url):
                 colored_progress_bar("🚨 거짓 영역 근접도", fs, "#e74c3c")
                 st.write("---")
                 
-                # 🚨 [증거 1] 뉴스 교차 대조 (아웃링크 적용)
                 st.markdown(f"**[증거 1] 뉴스 교차 대조 (Dual-Layer)**")
                 st.caption(f"📡 수집: **{len(news_ev)}건** (불일치 기사가 많을수록 위험도 급증)")
                 if news_ev:
-                    # 링크 컬럼 설정
                     df_news = pd.DataFrame(news_ev)
-                    st.dataframe(
-                        df_news,
-                        column_config={
-                            "기사 링크": st.column_config.LinkColumn(
-                                "바로가기", display_text="🔗 기사보기"
-                            )
-                        },
-                        use_container_width=True,
-                        hide_index=True
-                    )
+                    st.dataframe(df_news, column_config={"기사 링크": st.column_config.LinkColumn("바로가기", display_text="🔗 기사보기")}, use_container_width=True, hide_index=True)
                 else: st.warning("🔍 관련 뉴스를 찾을 수 없습니다. (Silent Echo Risk)")
                     
                 st.markdown("**[증거 2] 시청자 여론 심층 분석**")
@@ -536,14 +551,12 @@ def run_forensic_main(url):
                 top_kw_str = ", ".join([f"{w}({c})" for w, c in top_transcript_keywords])
                 st.table(pd.DataFrame([["영상 최다 언급 키워드", top_kw_str], ["제목 낚시어", "있음" if clickbait > 0 else "없음"], ["선동성 지수", f"{agitation}회"], ["기사-영상 일치도", f"{max_match}%"]], columns=["분석 항목", "판정 결과"]))
                 
-                # 🚨 [증거 4] Gemini AI 심층 판정 (Judge)
                 st.markdown("**[증거 4] Gemini AI 심층 판정 (Judge)**")
                 st.info(f"🤖 **AI 위험도 평가: {gemini_risk}점**")
                 st.caption(f"💡 판단 근거: {gemini_reason}")
                 
                 st.markdown("**[최종 결론] AI 종합 분석 판단**")
                 
-                # XAI Report
                 reasons = []
                 if news_score <= -20: reasons.append("✅ **언론 교차 검증 성공**: 주요 언론사 보도와 내용이 일치하여 신뢰도가 높습니다.")
                 elif news_score > 0: reasons.append("⚠️ **검증 실패/불일치**: 관련 뉴스는 있으나 내용이 영상의 주장과 다릅니다 (+위험도 증가).")
