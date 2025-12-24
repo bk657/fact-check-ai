@@ -14,7 +14,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v70.4 (Final Fix)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v70.5 (Model Sync)", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -88,9 +88,9 @@ vector_engine = VectorEngine()
 
 # [Engine A] 수사관: 키워드 추출 전담
 def get_gemini_search_keywords(title, transcript):
+    # Key A 사용 (성공 확인된 모델 사용)
     genai.configure(api_key=GOOGLE_API_KEY_A)
-    # 모델 후보군 (Key A용)
-    candidates = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.0-pro', 'gemini-pro']
+    target_model = 'gemini-1.5-flash'
     
     full_context = transcript[:30000]
     prompt = f"""
@@ -108,14 +108,13 @@ def get_gemini_search_keywords(title, transcript):
     5. Output ONLY the query string (Korean).
     """
 
-    for model_name in candidates:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            if response.text:
-                return response.text.strip(), f"✨ Gemini Investigator (Key A / {model_name})"
-        except:
-            continue
+    try:
+        model = genai.GenerativeModel(target_model)
+        response = model.generate_content(prompt)
+        if response.text:
+            return response.text.strip(), f"✨ Gemini Investigator (Key A / 1.5-Flash)"
+    except Exception as e:
+        pass
             
     # 백업 로직
     tokens = re.findall(r'[가-힣]{2,}', title)
@@ -127,16 +126,11 @@ def get_gemini_search_keywords(title, transcript):
 
 # [Engine B] 판사: 진위 여부 최종 추론 전담
 def get_gemini_verdict(title, transcript, news_items):
+    # Key B 사용
     genai.configure(api_key=GOOGLE_API_KEY_B)
     
-    # [수정] 모델 후보군 대폭 확대 (에러 방지)
-    model_candidates = [
-        'gemini-1.5-flash', 
-        'gemini-1.5-flash-latest',
-        'gemini-1.5-pro',
-        'gemini-1.0-pro', 
-        'gemini-pro'
-    ]
+    # [수정] Key A와 동일한 모델로 고정 (에러 원인인 pro 모델 제거)
+    target_model = 'gemini-1.5-flash'
     
     news_text = ""
     if not news_items:
@@ -175,18 +169,13 @@ def get_gemini_verdict(title, transcript, news_items):
     {{"score": <int>, "reason": "<string>"}}
     """
     
-    last_error = ""
-    for m_name in model_candidates:
-        try:
-            model = genai.GenerativeModel(m_name, generation_config={"response_mime_type": "application/json"})
-            response = model.generate_content(prompt)
-            result = json.loads(response.text)
-            return result['score'], result['reason']
-        except Exception as e:
-            last_error = str(e)
-            continue
-
-    return 50, f"AI 추론 실패 (오류: {last_error})"
+    try:
+        model = genai.GenerativeModel(target_model, generation_config={"response_mime_type": "application/json"})
+        response = model.generate_content(prompt)
+        result = json.loads(response.text)
+        return result['score'], result['reason']
+    except Exception as e:
+        return 50, f"AI 추론 실패 (오류: {str(e)})"
 
 # --- [5. 유틸리티 함수] ---
 def normalize_korean_word(word):
@@ -380,7 +369,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v70.4...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v70.5...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -558,7 +547,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v70.4 (Final Fix)")
+st.title("⚖️ Fact-Check Center v70.5 (Model Sync)")
 
 # [법적 고지 복구]
 with st.container(border=True):
