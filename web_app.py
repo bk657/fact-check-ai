@@ -17,7 +17,7 @@ import json
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="유튜브 가짜뉴스 판독기 v99.6", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="유튜브 가짜뉴스 판독기 v99.7", layout="wide", page_icon="🛡️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -76,27 +76,48 @@ def extract_video_id(url):
     match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
     return match.group(1) if match else None
 
-# --- [3. 모델 엔진 세팅] ---
-
-# [Key A] Gemini 기존 로직 유지
-def get_gemini_search_keywords(title, transcript):
-    genai.configure(api_key=GOOGLE_API_KEY_A)
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    prompt = f"Role: Fact-Check Investigator. [Input] Title: {title}, Transcript: {transcript[:15000]}. [Task] Extract ONE Korean search query (2-4 words). Output ONLY the string."
+# --- [3. 모델 자동 탐색기 (복구 완료)] ---
+@st.cache_data(ttl=3600)
+def get_all_available_gemini_models(api_key):
+    genai.configure(api_key=api_key)
     try:
-        response = model.generate_content(prompt)
-        st.session_state["debug_logs"].append(f"✅ Key A (Gemini) Keyword Extracted")
-        return response.text.strip()
+        # 가용한 모든 모델을 리스트업하여 generateContent를 지원하는 것만 필터링
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        # 우선순위 정렬 (Lite -> Flash -> Latest 순)
+        models.sort(key=lambda x: 0 if 'lite' in x else 1 if 'flash' in x else 2)
+        return models
     except Exception as e:
-        st.session_state["debug_logs"].append(f"❌ Key A Failed: {e}")
-        return title
+        st.session_state["debug_logs"].append(f"⚠️ Model List Fetch Failed: {e}")
+        return ["models/gemini-1.5-flash", "models/gemini-1.5-pro", "models/gemini-1.0-pro"]
 
-# [Key B] Mistral Judge 전용
+# --- [4. AI 모델 엔진 (Survivor Mode)] ---
+
+# [Key A] Gemini Survivor 로직 100% 복구
+def get_gemini_search_keywords_survivor(title, transcript):
+    genai.configure(api_key=GOOGLE_API_KEY_A)
+    available_models = get_all_available_gemini_models(GOOGLE_API_KEY_A)
+    
+    prompt = f"Role: Fact-Check Investigator. [Input] Title: {title}, Transcript: {transcript[:15000]}. [Task] Extract ONE Korean search query (2-4 words). Output ONLY the string."
+    
+    for model_path in available_models:
+        try:
+            model = genai.GenerativeModel(model_name=model_path)
+            response = model.generate_content(prompt)
+            if response.text:
+                st.session_state["debug_logs"].append(f"✅ Key A Survivor Success: {model_path}")
+                return response.text.strip(), model_path
+        except Exception as e:
+            st.session_state["debug_logs"].append(f"❌ Key A Survivor Failed ({model_path}): {str(e)[:50]}...")
+            continue
+            
+    return title, "All Failed"
+
+# [Key B] Mistral Judge (안정성 확보)
 def call_mistral_judge(prompt):
     try:
         response = mistral_client.chat.completions.create(
             model="mistral-large-latest",
-            messages=[{"role": "system", "content": "당신은 전문 팩트체크 판사입니다. 모든 분석 결과는 한국어로 작성하고 JSON으로만 응답하세요."},
+            messages=[{"role": "system", "content": "당신은 전문 팩트체크 판사입니다. 모든 답변은 한국어로 작성하고 JSON으로만 응답하세요."},
                       {"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.1
@@ -107,7 +128,7 @@ def call_mistral_judge(prompt):
         st.session_state["debug_logs"].append(f"❌ Key B Mistral Error: {e}")
         return None
 
-# --- [4. 분석 엔진 (증거 수집 로직 복구)] ---
+# --- [5. 분석 엔진 및 증거 수집 로직] ---
 
 class VectorEngine:
     def __init__(self):
@@ -166,7 +187,7 @@ def check_red_flags(comments):
 def count_sensational_words(text):
     return sum(text.count(w) for w in ['충격', '경악', '실체', '폭로', '속보', '긴급', '단독'])
 
-# --- [5. UI 컴포넌트 (디자인 복구)] ---
+# --- [6. UI 컴포넌트] ---
 
 def render_score_breakdown(data_list):
     style = """<style>table.score-table { width: 100%; border-collapse: separate; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 14px; margin-top: 10px;} table.score-table th { background-color: #f8f9fa; padding: 12px; text-align: left; } table.score-table td { padding: 12px; border-bottom: 1px solid #f0f0f0; } .badge { padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 11px; display: inline-block; } .badge-danger { background-color: #ffebee; color: #d32f2f; } .badge-success { background-color: #e8f5e9; color: #2e7d32; }</style>"""
@@ -192,21 +213,21 @@ def render_intelligence_distribution(current_prob):
         st.altair_chart(base + rule, use_container_width=True)
     except: pass
 
-# --- [6. 메인 로직] ---
+# --- [7. 메인 로직] ---
 
 def run_forensic_main(url):
     st.session_state["debug_logs"] = []
     vid = extract_video_id(url)
-    if not vid: return st.error("URL 오류")
+    if not vid: return st.error("유효하지 않은 유튜브 URL입니다.")
 
-    # DB 학습
+    # 1. DB 학습 및 지능 레벨 계산
     res_t = supabase.table("analysis_history").select("video_title").lt("fake_prob", 40).execute()
     res_f = supabase.table("analysis_history").select("video_title").gt("fake_prob", 60).execute()
     dt, df = [r['video_title'] for r in res_t.data], [r['video_title'] for r in res_f.data]
     vector_engine.train(STATIC_TRUTH_CORPUS + dt, STATIC_FAKE_CORPUS + df)
     db_count = len(dt) + len(df)
 
-    # 캐시 체크
+    # 2. 캐시 체크 (Smart Cache)
     cached_res = supabase.table("analysis_history").select("*").ilike("video_url", f"%{vid}%").order("id", desc=True).limit(1).execute()
     if cached_res.data:
         c = cached_res.data[0]
@@ -216,15 +237,16 @@ def run_forensic_main(url):
             return
         except: pass
 
-    my_bar = st.progress(0, text="분석 시작...")
+    # 3. 신규 분석 프로세스
+    my_bar = st.progress(0, text="분석 프로세스 가동 중...")
     with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
             title, uploader, desc = info.get('title',''), info.get('uploader',''), info.get('description','')
             tags = info.get('tags', [])
             
-            # [1단계] 데이터 수집 (API 기반)
-            my_bar.progress(10, "1단계: 자막 및 댓글 수집 중...")
+            # [1단계] 데이터 수집
+            my_bar.progress(10, "1단계: 자막 및 댓글 데이터 수집...")
             subs = info.get('subtitles') or {}
             auto = info.get('automatic_captions') or {}
             merged = {**subs, **auto}
@@ -237,12 +259,12 @@ def run_forensic_main(url):
                         break
             cmts, _ = fetch_comments_via_api(vid)
 
-            # [2단계] AI 수사관 (Key A 기존 로직)
-            my_bar.progress(30, "2단계: AI 수사관(Gemini) 키워드 추출 중...")
-            query = get_gemini_search_keywords(title, full_text)
+            # [2단계] AI 수사관 (Survivor Mode 적용)
+            my_bar.progress(30, "2단계: Gemini Survivor 로직으로 키워드 추출...")
+            query, model_path_a = get_gemini_search_keywords_survivor(title, full_text)
             
-            # [3단계] 뉴스 교차 대조
-            my_bar.progress(50, "3단계: 뉴스 교차 대조 진행 중...")
+            # [3단계] 뉴스 교차 대조 (Mistral Judge)
+            my_bar.progress(50, "3단계: 뉴스 교차 대조(Mistral Large) 진행...")
             rss = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
             news_raw = requests.get(rss).text
             items = re.findall(r'<item>(.*?)</item>', news_raw, re.DOTALL)[:3]
@@ -250,10 +272,9 @@ def run_forensic_main(url):
             for i in items:
                 nt = re.search(r'<title>(.*?)</title>', i).group(1).replace("<![CDATA[", "").replace("]]>", "")
                 nl = re.search(r'<link>(.*?)</link>', i).group(1)
-                nd = re.search(r'<description>(.*?)</description>', i).group(1)
                 
-                # Mistral을 이용한 뉴스 대조
-                prompt_b = f"비교 분석: 영상[{title}] vs 뉴스[{nt}]. 일치하면 0-10, 다르면 90-100. JSON {{'score': int, 'reason': '한글이유'}}"
+                # Mistral 대조 판결
+                prompt_b = f"비교 분석: 영상제목 '{title}' vs 뉴스제목 '{nt}'. 내용이 일치하면 0-10, 불일치하면 90-100점. JSON {{'score': int, 'reason': '한글이유'}}"
                 res_b = call_mistral_judge(prompt_b)
                 p_b = parse_ai_json(res_b)
                 s_b = safe_int_convert(p_b.get('score')) if p_b else 50
@@ -265,22 +286,23 @@ def run_forensic_main(url):
             t_impact, f_impact = int(ts*30)*-1, int(fs*30)
             news_penalty = -30 if max_match <= 20 else (30 if max_match >= 80 else 0)
             
-            # 증거 2, 3 로직 복구
+            # 증거 2, 3 로직
             top_cmt_kw, rel_score, rel_msg = analyze_comment_relevance(cmts, title + " " + full_text)
             red_cnt, red_list = check_red_flags(cmts)
             agitation = count_sensational_words(title + full_text)
 
-            # [4단계] AI 판사 최종 판결 (Mistral)
-            my_bar.progress(85, "4단계: AI 판사(Mistral) 최종 판결 중...")
-            prompt_final = f"최종 판결: 영상 제목 '{title}', 뉴스 증거: {news_ev}. 진실이면 0-20, 가짜면 80-100. JSON {{'score': int, 'reason': '한글판결문'}}"
+            # [4단계] AI 최종 판결 (Mistral)
+            my_bar.progress(85, "4단계: AI 판사 최종 판결문 작성 중...")
+            prompt_final = f"최종 판결: 영상 제목 '{title}', 추출 키워드 '{query}', 뉴스 증거: {news_ev}. 사실이면 0-20, 가짜면 80-100. JSON {{'score': int, 'reason': '한글판결문'}}"
             res_f = call_mistral_judge(prompt_final)
             p_f = parse_ai_json(res_f)
             ai_score = safe_int_convert(p_f.get('score')) if p_f else 50
             
             final_prob = max(1, min(99, int((50 + t_impact + f_impact + news_penalty)*WEIGHT_ALGO + ai_score*WEIGHT_AI)))
             
-            score_breakdown = [["기본 중립 점수", 50, "분석 시작점"], ["진실 DB 맥락", t_impact, "내부 DB 매칭"], ["가짜 패턴 맥락", f_impact, "내부 DB 매칭"], ["뉴스 교차 검증", news_penalty, "크롤링 결과"], ["AI 최종 판결", ai_score, p_f.get('reason','') if p_f else 'Error']]
+            score_breakdown = [["기본 중립 점수", 50, "분석 시작점"], ["진실 DB 맥락", t_impact, "내부 데이터 매칭"], ["가짜 패턴 맥락", f_impact, "내부 DB 매칭"], ["뉴스 교차 검증", news_penalty, "뉴스 대조 결과"], ["AI 최종 판결", ai_score, p_f.get('reason','') if p_f else 'Error']]
             
+            # [리포트 패키징 및 저장]
             report = {
                 "summary": full_text[:800], "news_evidence": news_ev, "ai_score": ai_score, "ai_reason": p_f.get('reason','') if p_f else 'Error',
                 "score_breakdown": score_breakdown, "ts": ts, "fs": fs, "query": query, "tags": ", ".join(tags),
@@ -295,7 +317,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"분석 중 오류: {e}")
 
 def render_report_full_ui(prob, db_count, title, uploader, d, is_cached=False):
-    if is_cached: st.success("🎉 기존 분석 결과 발견 (Smart Cache)")
+    if is_cached: st.success("🎉 기존 분석 결과 로드 (Smart Cache)")
 
     st.subheader("🕵️ Dual-Engine Analysis Result")
     col_a, col_b, col_c = st.columns(3)
@@ -333,18 +355,18 @@ def render_report_full_ui(prob, db_count, title, uploader, d, is_cached=False):
         st.table(pd.DataFrame([["분석 댓글 수", f"{d.get('cmt_count',0)}개"], ["최다 빈출 키워드", ", ".join(d.get('top_cmt_kw', []))], ["논란 감지 건수", f"{d.get('red_cnt',0)}건"], ["주제 일치도", d.get('cmt_rel','0%')]], columns=["항목", "내용"]))
         
         st.markdown("**[증거 3] 자막 세만틱 심층 대조**")
-        st.table(pd.DataFrame([["영상 주요 키워드", "분석 완료"], ["선동성 지수", f"{d.get('agitation',0)}회"]], columns=["항목", "내용"]))
+        st.table(pd.DataFrame([["영상 주요 키워드", "분석 완료"], ["선동성 지수", f"{d.get('agitation',0)}회"]], columns=["분석 항목", "판정 결과"]))
         
         st.markdown("**[증거 4] AI 최종 분석 판단 (Judge Verdict)**")
         with st.container(border=True): st.write(f"⚖️ **판결:** {d.get('ai_reason', 'N/A')}")
 
-# --- [7. UI 레이아웃 및 관리자 기능] ---
+# --- [8. UI 메인 레이아웃 및 관리자 기능] ---
 
-st.title("⚖️ Fact-Check Center v99.6")
+st.title("⚖️ Fact-Check Center v99.7")
 
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **Engine A (Investigator)**: Gemini 1.5 Flash (키워드 추출 로직)\n* **Engine B (Judge)**: Mistral Large 2 (한글 심층 분석 및 판결)")
+    st.markdown("* **Engine A (Investigator)**: Gemini Survivor Mode (34개 이상 모델 자동 탐색)\n* **Engine B (Judge)**: Mistral Large 2 (한글 심층 분석 및 판결)")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
@@ -354,7 +376,7 @@ if st.button("🚀 정밀 분석 시작", disabled=not agree, use_container_widt
 st.divider()
 st.subheader("🗂️ 학습 데이터 관리 (Cloud Knowledge Base)")
 try:
-    resp = supabase.table("analysis_history").select("*").order("id", desc=True).limit(20).execute()
+    resp = supabase.table("analysis_history").select("*").order("id", desc=True).limit(15).execute()
     df_h = pd.DataFrame(resp.data)
     if not df_h.empty:
         if st.session_state["is_admin"]:
@@ -377,7 +399,7 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
     else:
         st.success("관리자 권한 활성화됨")
         if st.session_state["debug_logs"]:
-            st.write("**📜 실시간 디버그 로그**")
+            st.write("**📜 실시간 디버그 로그 (Survivor 시도 기록 포함)**")
             st.text_area("Logs", "\n".join(st.session_state["debug_logs"]), height=300)
         if st.button("로그아웃"):
             st.session_state["is_admin"] = False
