@@ -13,9 +13,9 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v65.2 (Penalty Logic)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v65.3 (Threshold Fix)", layout="wide", page_icon="⚖️")
 
-# 세션 상태 초기화 (관리자 여부)
+# 세션 상태 초기화
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
 
@@ -302,7 +302,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v65.2...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v65.3...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -341,15 +341,12 @@ def run_forensic_main(url):
 
             news_items = fetch_news_regex(query)
             news_ev = []; max_match = 0
-            # 🚨 [Penalty Logic] 불일치 기사 카운트
             mismatch_count = 0
             
             for item in news_items:
                 t_score, c_score, final = calculate_dual_match(item, extract_meaningful_tokens(query), summary)
                 if final > max_match: max_match = final
-                # 내용이 너무 안 맞으면(20% 미만) 불일치 카운트 증가
                 if final < 20: mismatch_count += 1
-                
                 news_ev.append({
                     "뉴스 제목": item['title'],
                     "제목 일치": f"{t_score}%",
@@ -357,18 +354,20 @@ def run_forensic_main(url):
                     "최종 점수": f"{final}%"
                 })
             
-            # 🚨 [핵심] 뉴스 점수 산출 로직 수정 (불일치가 많으면 감점 폭증)
+            # 🚨 [Penalty Logic v65.3] 불일치 기사 다수면 위험!
             if not news_ev:
-                # 검색 결과 없음 -> 침묵의 메아리
                 news_score = 0
             else:
-                # 검색 결과 있음
-                if mismatch_count >= len(news_ev) * 0.7:
-                    # 70% 이상이 불일치하면 강력한 페널티 (예: -40점)
-                    news_score = 40 
-                else:
-                    # 일치하는 기사가 있으면 안전 점수 (예: -30점)
+                # 1. 긍정 판정 (감점) 조건: 일치도 60% 이상인 기사가 하나라도 있어야 함
+                if max_match >= 60:
                     news_score = int((max_match / 100) * w_news) * -1
+                # 2. 애매함 (점수 없음) 조건: 일치도 60% 미만
+                else:
+                    # 3. 부정 판정 (가점) 조건: 불일치가 50% 이상이면 오히려 위험
+                    if mismatch_count >= len(news_ev) * 0.5:
+                        news_score = 20 # 불일치 기사가 많으면 위험도 증가
+                    else:
+                        news_score = 0
 
             cmts, c_status = fetch_comments_via_api(vid)
             top_kw, rel_score, rel_msg = analyze_comment_relevance(cmts, title + " " + full_text)
@@ -392,9 +391,8 @@ def run_forensic_main(url):
                 else:
                     mismatch_penalty = 10
             
-            # 불일치 페널티 적용 (뉴스는 있는데 내용이 다를 때)
             if not is_silent and mismatch_count > 0 and max_match < 30:
-                mismatch_penalty = PENALTY_MISMATCH # +30점 추가
+                mismatch_penalty = PENALTY_MISMATCH
                 
             if is_official: news_score = -50; mismatch_penalty = 0; silent_penalty = 0
             
@@ -405,7 +403,6 @@ def run_forensic_main(url):
                 
             clickbait = 10 if any(w in title for w in ['충격','경악','폭로']) else -5
             
-            # 최종 점수 합산 (news_score가 양수면 위험, 음수면 안전)
             total = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
             prob = max(5, min(99, total))
             
@@ -442,12 +439,11 @@ def run_forensic_main(url):
                 st.write("**[Score Breakdown]**")
                 silence_label = "미검증 주장" if is_gray_zone else "침묵의 메아리 (No News)"
                 
-                # 점수판 시각화
                 render_score_breakdown([
                     ["기본 위험도", 50, "Base Score"],
                     ["진실 맥락 보너스", t_impact, ""], 
                     ["가짜 패턴 가점", f_impact, ""],
-                    ["뉴스 교차 대조 (Penalty/Bonus)", news_score, "양수=불일치(위험) / 음수=일치(안전)"], # 설명 추가
+                    ["뉴스 교차 대조 (Penalty/Bonus)", news_score, "60% 이상 일치 시 안전, 불일치 많으면 위험"], 
                     [silence_label, silent_penalty, ""],
                     ["여론/제목/자막 가감", sent_score + clickbait, ""],
                     ["내용 불일치 기만", mismatch_penalty, "검색 결과와 내용 상이"], 
@@ -480,7 +476,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v65.2")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v65.3")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
