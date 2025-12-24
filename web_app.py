@@ -89,7 +89,7 @@ vector_engine = VectorEngine()
 # [Engine A] 수사관: 키워드 추출 전담 (Ver 2.0 - Deep Dive)
 def get_gemini_search_keywords(title, transcript):
     genai.configure(api_key=GOOGLE_API_KEY_A)
-    target_model = 'gemini-2.0-flash'
+    target_model = 'gemini-2.5-flash'
     
     full_context = transcript[:30000]
     
@@ -138,9 +138,7 @@ def get_gemini_verdict(title, transcript, news_items):
     genai.configure(api_key=GOOGLE_API_KEY_B)
     
     model_candidates = [
-        'gemini-2.0-flash', 
         'gemini-2.5-flash',
-        'gemini-flash-latest'
     ]
     
     news_text = ""
@@ -610,3 +608,4 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
                 st.rerun()
             else:
                 st.error("Access Denied")
+
