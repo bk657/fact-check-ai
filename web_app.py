@@ -13,7 +13,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="유튜브 가짜뉴스 판독 사이트 (XAI)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v65.5 (Deep Context)", layout="wide", page_icon="⚖️")
 
 # 세션 상태 초기화
 if "is_admin" not in st.session_state:
@@ -82,33 +82,47 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic] ---
+# --- [4. Gemini Logic (Deep Context)] ---
 def get_gemini_search_keywords(title, transcript):
     genai.configure(api_key=GOOGLE_API_KEY)
-    available_models = []
+    
+    # 모델 자동 탐색
+    target_model = 'gemini-1.5-flash' # Default setting
     try:
         for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
+            if 'flash' in m.name: target_model = m.name; break
     except: pass
-    
-    target_model = None
-    for m in available_models:
-        if 'flash' in m: target_model = m; break
-    if not target_model:
-        for m in available_models:
-            if 'pro' in m: target_model = m; break
-    if not target_model and available_models: target_model = available_models[0]
     
     if target_model:
         try:
             model = genai.GenerativeModel(target_model)
             safety_settings = [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
-            prompt = f"Extract ONE simple Korean search query (Nouns only). Input: {title} Context: {transcript[:800]} Rules: Remove emotional words. Return 'Person + Event'. No explanations."
+            
+            # 🚨 [핵심 수정] 자막 입력 범위를 800 -> 30,000자로 대폭 확대
+            # 1.5 Flash 모델은 100만 토큰까지 처리가 가능하므로 3만자는 아주 가벼운 수준입니다.
+            full_context = transcript[:30000]
+            
+            prompt = f"""
+            Analyze the following video transcript and extract ONE core search query for Google News verification.
+            
+            [Input]
+            Title: {title}
+            Transcript: {full_context}
+            
+            [Rules]
+            1. Read the ENTIRE transcript to find the main claim.
+            2. Ignore introductions, ads, and side stories.
+            3. Extract ONLY nouns: 'Person Name' + 'Key Event/Issue'.
+            4. Example: 'Jay Lee Divorce Reason' (Not 'Why is Jay Lee alone?')
+            5. Output ONLY the query string (Korean).
+            """
+            
             response = model.generate_content(prompt, safety_settings=safety_settings)
-            if response.text: return response.text.strip(), f"✨ Gemini ({target_model.replace('models/','')})"
+            if response.text:
+                return response.text.strip(), f"✨ Gemini ({target_model.replace('models/','')})"
         except: pass
 
+    # 백업 로직
     tokens = re.findall(r'[가-힣]{2,}', title)
     cleaned = []
     for t in tokens:
@@ -302,7 +316,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v65.4...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v65.5...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -489,7 +503,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ 유튜브 가짜 뉴스 판독기")
+st.title("⚖️ 유튜브 가짜뉴스 판독기")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
