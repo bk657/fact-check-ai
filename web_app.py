@@ -14,10 +14,11 @@ from bs4 import BeautifulSoup
 import altair as alt
 from keybert import KeyBERT
 import spacy
+import spacy.cli # 🌟 [v53.2] 내부 다운로더 모듈 명시적 임포트
 import sys
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v53.1 (Stable)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v53.2 (Auto-Install)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -35,7 +36,7 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# 🌟 [v53.1 Fix] 안전한 AI 모델 로딩 (Crash 방지)
+# 🌟 [v53.2 Fix] 모델 자동 설치 및 로드 (가장 안전한 방법)
 @st.cache_resource
 def load_ai_models():
     ai_status_msg = ""
@@ -50,27 +51,27 @@ def load_ai_models():
         ai_status_msg += "❌ KeyBERT(Fail) "
         print(f"KeyBERT Error: {e}")
 
-    # 2. SpaCy (NER) 로드
+    # 2. SpaCy (NER) 로드 - 없으면 다운로드
+    model_name = "ko_core_news_sm"
     try:
-        # requirements.txt에서 설치되었다고 가정하고 로드
-        if not spacy.util.is_package("ko_core_news_sm"):
-            # 비상용: 패키지가 없으면 다운로드 시도 (최후의 수단)
-            spacy.cli.download("ko_core_news_sm")
+        if not spacy.util.is_package(model_name):
+            with st.spinner(f"📥 AI 모델({model_name})을 다운로드 중입니다... (최초 1회)"):
+                spacy.cli.download(model_name)
         
-        nlp_model = spacy.load("ko_core_news_sm")
+        nlp_model = spacy.load(model_name)
         ai_status_msg += "✅ NER(SpaCy)"
     except Exception as e:
-        ai_status_msg += "❌ NER(Fail) - Using Fallback"
+        ai_status_msg += "❌ NER(Fail) "
         print(f"SpaCy Error: {e}")
         
     return kw_model, nlp_model, ai_status_msg
 
-# 여기서 에러가 나도 앱은 켜지도록 예외 처리
+# AI 로딩 시도 (실패해도 앱은 켜짐)
 try:
     kw_model, nlp_model, ai_status = load_ai_models()
 except Exception as e:
-    kw_model, nlp_model = None, None
-    ai_status = f"⚠️ Critical AI Load Error: {e}"
+    kw_model, nlp_model = None, None, ""
+    ai_status = f"⚠️ AI Init Warning: {e}"
 
 # --- [관리자 인증] ---
 if "is_admin" not in st.session_state:
@@ -101,7 +102,7 @@ PENALTY_ABUSE = 20; PENALTY_MISMATCH = 30; PENALTY_NO_FACT = 25; PENALTY_SILENT_
 
 CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
 OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
-# Fallback용 VIP 리스트 (AI 실패 시 사용)
+# Fallback용 VIP 리스트
 VIP_ENTITIES = ['윤석열', '대통령', '이재명', '한동훈', '김건희', '문재인', '박근혜', '이명박', '트럼프', '바이든', '푸틴', '젤렌스키', '시진핑', '정은', '이준석', '조국', '추미애', '홍준표', '유승민', '안철수', '손흥민', '이강인', '김민재', '류현진', '재용', '정의선', '최태원', '류중일', '감독', '조세호', '유재석', '장동민', '유호정', '이재룡']
 
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
@@ -189,7 +190,7 @@ def witty_loading_sequence(total, t_cnt, f_cnt):
         "🤖 NER(개체명 인식) AI가 '주어'를 추적 중...", 
         "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
     ]
-    with st.status("🕵️ Context Merger v53.1 가동 중...", expanded=True) as status:
+    with st.status("🕵️ Context Merger v53.2 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
@@ -215,19 +216,19 @@ def extract_ai_keywords(text, top_n=1):
     except: pass
     return None
 
-# 🌟 [v53.1 Fix] NER 안전하게 실행
 def extract_ner_entities(text):
-    if nlp_model is None: return [] # 모델 로드 실패 시 빈 리스트
+    if nlp_model is None: return []
     try:
         doc = nlp_model(text)
         entities = []
         for ent in doc.ents:
-            if ent.label_ in ["PERSON", "ORG", "CIVILIZATION"]:
+            # SpaCy 한국어 모델의 개체명 태그
+            if ent.label_ in ["PERSON", "ORG", "CIVILIZATION", "PS", "OG"]:
                 entities.append(ent.text)
         return list(dict.fromkeys(entities))
     except: return []
 
-# 🌟 [v53.1] Smart Query Generator (NER + KeyBERT + Fallback)
+# 🌟 [v53.2] Smart Query Generator
 def generate_smart_query(title, transcript):
     # 1. NER AI로 주어 찾기 (1순위)
     entities = extract_ner_entities(title)
@@ -413,7 +414,7 @@ def run_forensic_main(url):
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
-            # 🌟 [v53.1] Smart Query
+            # 🌟 [v53.2] Smart Query (NER+KeyBERT)
             query = generate_smart_query(title, full_text)
 
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
@@ -558,7 +559,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v53.1")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v53.2")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
