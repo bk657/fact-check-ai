@@ -13,7 +13,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v65.1 (Bottom Admin)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v65.2 (Penalty Logic)", layout="wide", page_icon="⚖️")
 
 # 세션 상태 초기화 (관리자 여부)
 if "is_admin" not in st.session_state:
@@ -302,7 +302,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v65.1...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v65.2...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -341,10 +341,15 @@ def run_forensic_main(url):
 
             news_items = fetch_news_regex(query)
             news_ev = []; max_match = 0
+            # 🚨 [Penalty Logic] 불일치 기사 카운트
+            mismatch_count = 0
             
             for item in news_items:
                 t_score, c_score, final = calculate_dual_match(item, extract_meaningful_tokens(query), summary)
                 if final > max_match: max_match = final
+                # 내용이 너무 안 맞으면(20% 미만) 불일치 카운트 증가
+                if final < 20: mismatch_count += 1
+                
                 news_ev.append({
                     "뉴스 제목": item['title'],
                     "제목 일치": f"{t_score}%",
@@ -352,6 +357,19 @@ def run_forensic_main(url):
                     "최종 점수": f"{final}%"
                 })
             
+            # 🚨 [핵심] 뉴스 점수 산출 로직 수정 (불일치가 많으면 감점 폭증)
+            if not news_ev:
+                # 검색 결과 없음 -> 침묵의 메아리
+                news_score = 0
+            else:
+                # 검색 결과 있음
+                if mismatch_count >= len(news_ev) * 0.7:
+                    # 70% 이상이 불일치하면 강력한 페널티 (예: -40점)
+                    news_score = 40 
+                else:
+                    # 일치하는 기사가 있으면 안전 점수 (예: -30점)
+                    news_score = int((max_match / 100) * w_news) * -1
+
             cmts, c_status = fetch_comments_via_api(vid)
             top_kw, rel_score, rel_msg = analyze_comment_relevance(cmts, title + " " + full_text)
             red_cnt, red_list = check_red_flags(cmts)
@@ -359,8 +377,8 @@ def run_forensic_main(url):
             
             w_news = 65 if is_controversial else w_news
             
-            silent_penalty = 0; news_score = 0; mismatch_penalty = 0
-            is_silent = (len(news_ev) == 0) or (max_match < 20)
+            silent_penalty = 0; mismatch_penalty = 0
+            is_silent = (len(news_ev) == 0)
             has_critical_claim = any(k in title for k in CRITICAL_STATE_KEYWORDS)
             
             is_gray_zone = False
@@ -373,10 +391,10 @@ def run_forensic_main(url):
                     t_impact *= 2; f_impact *= 2
                 else:
                     mismatch_penalty = 10
-            elif is_controversial:
-                news_score = PENALTY_NO_FACT if max_match < 60 else int((max_match/100)**2 * w_news) * -1
-            else:
-                news_score = int((max_match/100)**2 * w_news) * -1
+            
+            # 불일치 페널티 적용 (뉴스는 있는데 내용이 다를 때)
+            if not is_silent and mismatch_count > 0 and max_match < 30:
+                mismatch_penalty = PENALTY_MISMATCH # +30점 추가
                 
             if is_official: news_score = -50; mismatch_penalty = 0; silent_penalty = 0
             
@@ -386,6 +404,8 @@ def run_forensic_main(url):
                 sent_score = int(neg * 10)
                 
             clickbait = 10 if any(w in title for w in ['충격','경악','폭로']) else -5
+            
+            # 최종 점수 합산 (news_score가 양수면 위험, 음수면 안전)
             total = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
             prob = max(5, min(99, total))
             
@@ -421,14 +441,17 @@ def run_forensic_main(url):
                     st.write(summary)
                 st.write("**[Score Breakdown]**")
                 silence_label = "미검증 주장" if is_gray_zone else "침묵의 메아리 (No News)"
+                
+                # 점수판 시각화
                 render_score_breakdown([
                     ["기본 위험도", 50, "Base Score"],
                     ["진실 맥락 보너스", t_impact, ""], 
                     ["가짜 패턴 가점", f_impact, ""],
-                    ["뉴스 교차 대조", news_score, ""],
+                    ["뉴스 교차 대조 (Penalty/Bonus)", news_score, "양수=불일치(위험) / 음수=일치(안전)"], # 설명 추가
                     [silence_label, silent_penalty, ""],
                     ["여론/제목/자막 가감", sent_score + clickbait, ""],
-                    ["내용 불일치 기만", mismatch_penalty, ""], ["해시태그 어뷰징", abuse_score, ""]
+                    ["내용 불일치 기만", mismatch_penalty, "검색 결과와 내용 상이"], 
+                    ["해시태그 어뷰징", abuse_score, ""]
                 ])
 
             with col2:
@@ -439,7 +462,7 @@ def run_forensic_main(url):
                 st.write("---")
                 
                 st.markdown(f"**[증거 1] 뉴스 교차 대조 (Dual-Layer)**")
-                st.caption(f"📡 수집: **{len(news_ev)}건**")
+                st.caption(f"📡 수집: **{len(news_ev)}건** (불일치 기사가 많을수록 위험도 급증)")
                 if news_ev: st.dataframe(pd.DataFrame(news_ev), use_container_width=True, hide_index=True)
                 else: st.warning("🔍 관련 뉴스를 찾을 수 없습니다. (Silent Echo Risk)")
                     
@@ -457,7 +480,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v65.1")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v65.2")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
@@ -476,7 +499,6 @@ except: df = pd.DataFrame()
 
 if not df.empty:
     if st.session_state["is_admin"]:
-        # 관리자 모드: 선택 삭제 가능
         df['Delete'] = False
         edited_df = st.data_editor(df[['Delete', 'id', 'analysis_date', 'video_title', 'fake_prob', 'keywords']], hide_index=True, use_container_width=True)
         if st.button("🗑️ 선택 항목 삭제", type="primary"):
@@ -485,11 +507,9 @@ if not df.empty:
                 for index, row in to_delete.iterrows(): supabase.table("analysis_history").delete().eq("id", row['id']).execute()
                 st.success("삭제 완료!"); time.sleep(1); st.rerun()
     else:
-        # 일반 모드: 조회만 가능
         st.dataframe(df[['analysis_date', 'video_title', 'fake_prob', 'keywords']], hide_index=True, use_container_width=True)
 else: st.info("데이터가 없습니다.")
 
-# 🔐 관리자 접속 (하단 Expander)
 st.write("")
 with st.expander("🔐 관리자 접속 (Admin Access)"):
     if st.session_state["is_admin"]:
