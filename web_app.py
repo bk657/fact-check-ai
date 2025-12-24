@@ -13,10 +13,10 @@ import yt_dlp
 import pandas as pd
 import altair as alt
 import json
-from bs4 import BeautifulSoup # 크롤링을 위한 필수 라이브러리
+from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v87.0 (Deep Web Crawler)", layout="wide", page_icon="🕸️")
+st.set_page_config(page_title="Fact-Check Center v88.0 (Real URL Resolver)", layout="wide", page_icon="🕵️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -102,94 +102,103 @@ def call_gemini_fast(api_key, prompt, is_json=False):
             return response.text, fallback
         except: return None, str(e)
 
-# [Engine A] 수사관: 전체 자막 분석 -> 정밀 키워드 추출
+# [Engine A] 수사관
 def get_gemini_search_keywords(title, transcript):
-    context_data = transcript[:30000] # 전체 자막 사용
+    context_data = transcript[:10000]
     prompt = f"""
     You are a Fact-Check Investigator.
-    
-    [Input]
-    Title: {title}
-    Transcript: {context_data}
-    
-    [Task]
-    Extract ONE precise Google News search query to verify the core claim.
-    
+    [Input] Title: {title}, Transcript: {context_data}
+    [Task] Extract ONE specific Google News search query.
     [Rules]
-    1. **PRIORITY:** Find the specific Name (Drug Name, Person Name, Event).
-    2. **IGNORE:** General verbs like 'Exercise', 'Diet', 'Vlog' unless they are the main cause of death/crime.
-    3. **COMBINATION:** "Specific Noun" + "Issue".
-    4. Example:
-       - Bad: "Exercise diet death" (Too broad)
-       - Good: "Phentermine butterfly pill side effects" (Specific)
-    
-    [Output] ONLY the Korean search query string.
+    1. Focus on specific 'Medical Drug Names' or 'Criminal Charges' mentioned.
+    2. Example: "Phentermine butterfly pill death" (나비약 펜터민 사망)
+    3. Output: ONLY the Korean search query string.
     """
     result_text, model_used = call_gemini_fast(GOOGLE_API_KEY_A, prompt)
     return (result_text.strip(), f"✨ {model_used}") if result_text else (title, "❌ Error")
 
-# [New Tool] 뉴스 본문 크롤러
-def scrape_news_content(url):
+# [핵심] 진짜 URL 추적 및 본문 추출 함수
+def scrape_news_content_robust(google_url):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(url, headers=headers, timeout=3)
-        if response.status_code != 200: return None
+        # 1. 리다이렉트 추적 (진짜 URL 찾기)
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        })
         
+        # Google 뉴스 링크는 여러 번 리다이렉트 될 수 있음
+        response = session.get(google_url, timeout=5, allow_redirects=True)
+        final_url = response.url
+        
+        # 2. 본문 파싱
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 기사 본문 추정 (대부분의 한국 언론사는 p 태그나 특정 div 사용)
-        # 1차 시도: 모든 P 태그 수집
-        paragraphs = soup.find_all('p')
-        text = " ".join([p.text.strip() for p in paragraphs if len(p.text) > 20])
-        
-        if len(text) < 100: # 너무 짧으면 메타 태그 시도
-            desc = soup.find('meta', attrs={'name': 'description'})
-            if desc: text = desc.get('content')
+        # 불필요한 태그 제거
+        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'iframe']):
+            tag.decompose()
             
-        return text[:5000] # 너무 길면 자름
-    except:
-        return None
+        # 본문 추출 전략: p 태그가 가장 많은 영역 찾기 or main 태그
+        paragraphs = soup.find_all('p')
+        
+        # 의미 있는 텍스트만 필터링 (너무 짧은 문장 제외)
+        clean_text = []
+        for p in paragraphs:
+            text = p.get_text().strip()
+            if len(text) > 30: # 30자 이상인 문단만 본문으로 인정
+                clean_text.append(text)
+        
+        full_text = " ".join(clean_text)
+        
+        if len(full_text) < 100: # 본문 추출 실패 시
+            return None, final_url
+            
+        return full_text[:4000], final_url # 너무 길면 4000자에서 자름
+        
+    except Exception as e:
+        return None, google_url
 
-# [Engine B] 판사: 뉴스 원문 vs 영상 내용 대조 (1:1 정밀 검증)
-def deep_verify_news(video_summary, news_url, news_snippet, index):
-    # 1. 뉴스 본문 긁어오기
-    full_news_body = scrape_news_content(news_url)
+# [Engine B] 판사: 뉴스 정밀 대조
+def deep_verify_news(video_summary, news_url, news_snippet):
+    # 크롤링 수행
+    scraped_text, real_url = scrape_news_content_robust(news_url)
     
-    # 2. 본문 없으면 스니펫 사용
-    target_text = full_news_body if full_news_body else news_snippet
-    source_type = "FULL_ARTICLE" if full_news_body else "SNIPPET_ONLY"
+    # 본문 없으면 스니펫 사용 (Fallback)
+    evidence_text = scraped_text if scraped_text else news_snippet
+    source_type = "Full Article" if scraped_text else "Snippet Only"
     
     prompt = f"""
-    Compare the Video Summary with the News Article.
+    Compare Video Summary vs News Evidence.
     
     [Video Summary]
     {video_summary[:2000]}
     
-    [News Article ({source_type})]
-    {target_text}
+    [News Evidence ({source_type})]
+    {evidence_text}
     
     [Task]
-    Does this specific news article confirm the specific claims in the video?
-    - If the video talks about 'Phentermine' but the news is about 'Steroids', Score = 0.
-    - If the specific subject matches, Score = 80~100.
+    Does the news confirm the video's specific claim?
+    - If topics match exactly (e.g., same drug, same incident): Score 90-100.
+    - If topics are related but not exact: Score 40-60.
+    - If topics differ (e.g., Steroid vs Phentermine): Score 0-10.
     
     [Output JSON]
-    {{ "score": <int 0-100>, "reason": "<short korean reason>" }}
+    {{ "score": <int>, "reason": "<short korean reason>" }}
     """
     
     result_text, model_used = call_gemini_fast(GOOGLE_API_KEY_B, prompt, is_json=True)
     
     try:
         res = json.loads(result_text)
-        return res['score'], res['reason'], source_type
+        return res['score'], res['reason'], source_type, evidence_text, real_url
     except:
-        return 0, "Analysis Failed", "ERROR"
+        return 0, "Analysis Failed", "Error", "", news_url
 
-# [Engine B] 판사: 최종 판결 (한글 강제)
+# [Engine B] 최종 판결
 def get_gemini_verdict_final(title, transcript, verified_news_list):
     news_summary = ""
     for item in verified_news_list:
-        news_summary += f"- News: {item['뉴스 제목']} (Match: {item['최종 점수']}, Reason: {item.get('비고', '')})\n"
+        news_summary += f"- News: {item['뉴스 제목']} (Score: {item['최종 점수']}, Reason: {item['분석 근거']})\n"
             
     full_context = transcript[:30000]
 
@@ -200,20 +209,17 @@ def get_gemini_verdict_final(title, transcript, verified_news_list):
     Title: {title}
     Transcript Summary: {full_context[:2000]}...
     
-    [Verified News Evidence]
+    [Cross-Checked Evidence]
     {news_summary}
     
     [Instruction]
-    1. Based on the CROSS-CHECKED evidences above, determine if the video is FAKE or TRUTH.
-    2. If the news articles discuss DIFFERENT topics (low match scores), consider the video as 'Unverified'.
-    3. Determine 'fake_score' (0=Truth, 100=Fake).
-    4. Write the 'reason' MUST BE IN KOREAN (한국어).
+    1. Based on the evidence, verify the truthfulness.
+    2. If reliable news confirms the claim -> Truth (0-30).
+    3. If news contradicts or is irrelevant -> Fake/Unverified (70-100).
+    4. MUST OUTPUT REASON IN KOREAN.
     
     [Output Format - JSON Only]
-    {{
-        "score": <int>,
-        "reason": "<한글로 작성된 3문장 이내의 판결 사유>" 
-    }}
+    {{ "score": <int>, "reason": "<한글 판결문>" }}
     """
     
     result_text, model_used = call_gemini_fast(GOOGLE_API_KEY_B, prompt, is_json=True)
@@ -242,8 +248,11 @@ def train_dynamic_vector_engine():
         res_f = supabase.table("analysis_history").select("video_title").gt("fake_prob", 60).execute()
         dt = [row['video_title'] for row in res_t.data] if res_t.data else []
         df = [row['video_title'] for row in res_f.data] if res_f.data else []
-        return len(dt)+len(df), dt, df
-    except: return 0, [], []
+        vector_engine.train(STATIC_TRUTH_CORPUS + dt, STATIC_FAKE_CORPUS + df)
+        return len(STATIC_TRUTH_CORPUS + dt) + len(STATIC_FAKE_CORPUS + df), len(dt), len(df)
+    except: 
+        vector_engine.train(STATIC_TRUTH_CORPUS, STATIC_FAKE_CORPUS)
+        return 0, 0, 0
 
 def check_db_similarity(query, truth_list, fake_list):
     q_tokens = set(extract_meaningful_tokens(query))
@@ -375,9 +384,11 @@ def fetch_news_regex(query):
             t = re.search(r'<title>(.*?)</title>', item)
             d = re.search(r'<description>(.*?)</description>', item)
             l = re.search(r'<link>(.*?)</link>', item)
+            
             nt = t.group(1).replace("<![CDATA[", "").replace("]]>", "") if t else "제목 없음"
             nd = clean_html_regex(d.group(1).replace("<![CDATA[", "").replace("]]>", "")) if d else "내용 없음"
             nl = l.group(1).strip() if l else ""
+            
             news_res.append({'title': nt, 'desc': nd, 'link': nl})
     except: pass
     return news_res
@@ -386,6 +397,26 @@ def extract_top_keywords_from_transcript(text, top_n=5):
     if not text: return []
     tokens = extract_meaningful_tokens(text)
     return Counter(tokens).most_common(top_n)
+
+def calculate_dual_match(news_item, query_nouns, video_summary):
+    news_title_tokens = set(extract_meaningful_tokens(news_item.get('title', '')))
+    qn = set(query_nouns)
+    title_match_score = 0
+    if len(qn & news_title_tokens) >= 2: title_match_score = 100
+    elif len(qn & news_title_tokens) >= 1: title_match_score = 50
+    
+    news_desc = news_item.get('desc', '')
+    content_sim_score = 0
+    if news_desc and video_summary:
+        sim = vector_engine.compute_content_similarity(video_summary, news_desc)
+        content_sim_score = int(sim * 100)
+    
+    final_score = int((title_match_score * 0.4) + (content_sim_score * 0.6))
+    for critical in CRITICAL_STATE_KEYWORDS:
+        if critical in query_nouns and critical not in news_title_tokens:
+            final_score = 0
+            
+    return title_match_score, content_sim_score, final_score
 
 def analyze_comment_relevance(comments, context_text):
     if not comments: return [], 0, "분석 불가"
@@ -403,7 +434,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v87.0...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v88.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -425,7 +456,6 @@ def run_forensic_main(url):
             summary = summarize_transcript(full_text, title)
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
-            # [Key A] 전체 자막으로 정밀 키워드 추출
             query, source = get_gemini_search_keywords(title, full_text)
 
             is_official = check_is_official(uploader)
@@ -437,12 +467,12 @@ def run_forensic_main(url):
             ts, fs = check_db_similarity(query + " " + title, STATIC_TRUTH_CORPUS + db_truth, STATIC_FAKE_CORPUS + db_fake)
             t_impact = int(ts * 30) * -1; f_impact = int(fs * 30)
 
-            # [Key B] 뉴스 상위 3개 본문 크롤링 및 정밀 대조
             news_items = fetch_news_regex(query)
             news_ev = []; max_match = 0; mismatch_count = 0
             
-            for idx, item in enumerate(news_items[:3]): # 상위 3개만 정밀 분석 (속도 고려)
-                ai_s, ai_r, source_type = deep_verify_news(summary, item['link'], item['desc'], idx)
+            # [KEY B 정밀 분석] 상위 3개 기사 본문 크롤링 및 대조
+            for idx, item in enumerate(news_items[:3]):
+                ai_s, ai_r, source_type, evidence_text, real_url = deep_verify_news(summary, item['link'], item['desc'])
                 
                 if ai_s > max_match: max_match = ai_s
                 if ai_s < 30: mismatch_count += 1
@@ -454,8 +484,8 @@ def run_forensic_main(url):
                     "일치도": f"{status_icon} {ai_s}%",
                     "최종 점수": f"{ai_s}%",
                     "분석 근거": ai_r,
-                    "비고": f"{source_type}",
-                    "원문": item['link']
+                    "비고": f"[{source_type}] {len(evidence_text)}자 분석",
+                    "원문": real_url
                 })
             
             if not news_ev: news_score = 0
@@ -503,7 +533,7 @@ def run_forensic_main(url):
                 verdict = "안전 (Verified)" if final_prob < 30 else "위험 (Fake/Bias)" if final_prob > 60 else "주의 (Caution)"
                 st.metric("종합 AI 판정", f"{icon} {verdict}")
             with col_c: 
-                st.metric("AI Intelligence Level", f"{db_count} Nodes", delta="Deep-Crawler Active")
+                st.metric("AI Intelligence Level", f"{db_count} Nodes", delta="Twin-Engine Active")
             
             st.divider()
             st.subheader("🧠 Intelligence Map")
@@ -551,6 +581,11 @@ def run_forensic_main(url):
                         use_container_width=True,
                         hide_index=True
                     )
+                    
+                    # [디버깅] 사용자가 크롤링된 내용을 확인할 수 있게 추가
+                    with st.expander("🔍 크롤링된 뉴스 본문 샘플 보기"):
+                        for n in news_ev:
+                            st.caption(f"**{n['뉴스 제목']}**: {n['비고']}")
                 else: st.warning("🔍 관련 뉴스를 찾을 수 없습니다. (Silent Echo Risk)")
                     
                 st.markdown("**[증거 2] 시청자 여론 심층 분석**")
@@ -580,7 +615,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v87.0 (Deep Crawler)")
+st.title("⚖️ Fact-Check Center v88.0 (Real URL Resolver)")
 
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
