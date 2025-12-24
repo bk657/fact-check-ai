@@ -16,7 +16,7 @@ import json
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="유튜브 가짜뉴스 판독기", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Fact-Check Center v94.0 (Logic Fixed)", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -42,38 +42,18 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- [2. 유틸리티: JSON 파싱 헬퍼 (강화됨)] ---
+# --- [2. 유틸리티: JSON 파싱 헬퍼] ---
 def parse_gemini_json(text):
-    """Gemini가 리스트로 주든 마크다운을 섞든 무조건 딕셔너리로 변환"""
     try:
-        # 1. 순수 파싱 시도
-        parsed = json.loads(text)
+        return json.loads(text)
     except:
         try:
-            # 2. 마크다운 제거 후 파싱 시도
             text = re.sub(r'```json\s*', '', text)
             text = re.sub(r'```', '', text)
-            # 중괄호나 대괄호로 시작하는 부분 추출
-            match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
-            if match:
-                parsed = json.loads(match.group(1))
-            else:
-                return None
-        except:
+            match = re.search(r'(\{.*\})', text, re.DOTALL)
+            if match: return json.loads(match.group(1))
             return None
-
-    # [핵심 수정] 리스트면 첫 번째 요소 추출
-    if isinstance(parsed, list):
-        if len(parsed) > 0 and isinstance(parsed[0], dict):
-            return parsed[0]
-        else:
-            return None # 빈 리스트거나 이상한 리스트
-            
-    # 딕셔너리면 그대로 반환
-    if isinstance(parsed, dict):
-        return parsed
-        
-    return None
+        except: return None
 
 # --- [3. 모델 자동 탐색기] ---
 @st.cache_data(ttl=3600)
@@ -206,19 +186,38 @@ def deep_verify_news(video_summary, news_url, news_snippet):
     if res: return res.get('score', 0), res.get('reason', 'N/A'), source_type, evidence_text, real_url
     return 0, "Error", "Error", "", news_url
 
-# [Engine B] 최종 판결
+# [Engine B] 최종 판결 (프롬프트 대폭 수정)
 def get_gemini_verdict_final(title, transcript, verified_news_list):
     news_summary = ""
     for item in verified_news_list:
         news_summary += f"- News: {item['뉴스 제목']} (Score: {item['최종 점수']}, Reason: {item['분석 근거']})\n"
     
     full_context = transcript[:30000]
+    
+    # [핵심] 점수 기준 명확화 프롬프트
     prompt = f"""
-    You are a Fact-Check Judge.
-    [Video] {title} / {full_context[:2000]}...
-    [Evidence] {news_summary}
-    [Instruction] Verify truth. Match->Truth(0-30), Mismatch->Fake(70-100). Output JSON with Korean reason.
+    You are a professional Fact-Check AI Judge.
+    
+    [Video Info]
+    Title: {title}
+    Transcript Summary: {full_context[:2000]}...
+    
+    [Verified Evidence]
+    {news_summary}
+    
+    [Logic]
+    1. **MATCH:** If the news confirms the events described in the video (even if it's a scandal or rumor), it is FACTUAL reporting. -> **Score 0-10 (Truth)**
+    2. **MISMATCH:** If the news says the opposite, or if the video makes up lies. -> **Score 90-100 (Fake)**
+    3. **UNCERTAIN:** If no evidence is found. -> Score 50.
+    
+    [Goal]
+    Determine the 'fake_score'. (Higher score means FAKE NEWS, Lower score means TRUTH).
+    If the video accurately reports a controversy, it is TRUTH (Low Score).
+    
+    [Output Format - JSON Only]
+    {{ "score": <int>, "reason": "<Write reasoning in KOREAN>" }}
     """
+    
     result_text, model_used, logs = call_gemini_survivor(GOOGLE_API_KEY_B, prompt, is_json=True)
     st.session_state["debug_logs"].extend([f"[Key B-Final] {l}" for l in logs])
     
@@ -275,13 +274,19 @@ def render_intelligence_distribution(current_prob):
 def colored_progress_bar(label, percent, color):
     st.markdown(f"""<div style="margin-bottom: 10px;"><div style="display: flex; justify-content: space-between; margin-bottom: 3px;"><span style="font-size: 13px; font-weight: 600; color: #555;">{label}</span><span style="font-size: 13px; font-weight: 700; color: {color};">{round(percent * 100, 1)}%</span></div><div style="background-color: #eee; border-radius: 5px; height: 8px; width: 100%;"><div style="background-color: {color}; height: 8px; width: {percent * 100}%; border-radius: 5px;"></div></div></div>""", unsafe_allow_html=True)
 
+# [UI 업데이트] 점수표 의미 명확화
 def render_score_breakdown(data_list):
     style = """<style>table.score-table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; font-family: sans-serif; font-size: 14px; margin-top: 10px;} table.score-table th { background-color: #f8f9fa; color: #495057; font-weight: bold; padding: 12px 15px; text-align: left; border-bottom: 1px solid #e0e0e0; } table.score-table td { padding: 12px 15px; border-bottom: 1px solid #f0f0f0; color: #333; } table.score-table tr:last-child td { border-bottom: none; } .badge { padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 11px; display: inline-block; text-align: center; min-width: 45px; } .badge-danger { background-color: #ffebee; color: #d32f2f; } .badge-success { background-color: #e8f5e9; color: #2e7d32; } .badge-neutral { background-color: #f5f5f5; color: #757575; border: 1px solid #e0e0e0; }</style>"""
     rows = ""
     for item, score, note in data_list:
         try:
             score_num = int(score)
-            badge = f'<span class="badge badge-danger">+{score_num}</span>' if score_num > 0 else f'<span class="badge badge-success">{score_num}</span>' if score_num < 0 else f'<span class="badge badge-neutral">0</span>'
+            if score_num > 0:
+                badge = f'<span class="badge badge-danger">+{score_num} (가짜 의심)</span>'
+            elif score_num < 0:
+                badge = f'<span class="badge badge-success">{score_num} (진실 입증)</span>'
+            else:
+                badge = f'<span class="badge badge-neutral">0</span>'
         except: badge = f'<span class="badge badge-neutral">{score}</span>'
         rows += f"<tr><td>{item}<br><span style='color:#888; font-size:11px;'>{note}</span></td><td style='text-align: right;'>{badge}</td></tr>"
     st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Score Breakdown)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
@@ -550,11 +555,11 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️유튜브 가짜뉴스 판독기")
+st.title("⚖️ Fact-Check Center v94.0 (Logic Fixed)")
 
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **Engine A (Investigator)**: 정밀 키워드 추출 (Keyword Mining Mode)\n* **Engine B (Judge)**: 뉴스 본문 크롤링 및 정밀 대조 (Deep-Web Crawler)")
+    st.markdown("* **Engine A (Investigator)**: 정밀 키워드 추출 (Real Survivor Mode)\n* **Engine B (Judge)**: 뉴스 본문 크롤링 및 정밀 대조 (Deep-Web Crawler)")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
@@ -613,5 +618,3 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
                 st.rerun()
             else:
                 st.error("Access Denied")
-
-
