@@ -13,7 +13,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v63.0 (Hybrid)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v63.1 (Keyword Fix)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets 로드
 try:
@@ -32,50 +32,64 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- [2. Gemini 연결 설정 (키워드 추출용)] ---
+# --- [2. Gemini 연결 설정 (안전 필터 해제)] ---
 @st.cache_resource
 def init_gemini():
     try:
         genai.configure(api_key=GOOGLE_API_KEY)
-        # 안전한 모델 자동 선택
+        # 🚨 [핵심 수정] 정치/사회 이슈 회피 방지를 위한 안전 필터 해제
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
+        
         candidates = ['gemini-1.5-flash', 'gemini-pro', 'gemini-1.0-pro']
         for m in candidates:
             try:
                 model = genai.GenerativeModel(m)
-                if model.generate_content("test"): return model
+                # 테스트 호출 시에도 안전 설정 적용
+                if model.generate_content("test", safety_settings=safety_settings): 
+                    return model, safety_settings
             except: continue
-    except: return None
-    return None
+    except: return None, None
+    return None, None
 
-gemini_model = init_gemini()
+gemini_model, safety_config = init_gemini()
 
 def get_gemini_search_keywords(title, transcript):
     """
     Gemini를 사용하여 자막과 제목에서 '뉴스 검색용 최적 키워드'만 추출합니다.
     """
     if not gemini_model:
-        # Gemini 실패 시 기존 로직 백업
         return title
     
+    # 🚨 [핵심 수정] 프롬프트 강화: 제목 복사 금지 명령 추가
     prompt = f"""
-    You are a keyword extraction bot.
-    Analyze the video content and extract ONE best search query to verify the facts in Google News.
+    You are a professional search query optimizer.
+    Your task is to extract ONE concise search query to verify the facts in Google News.
     
-    [Rules]
-    1. Remove emotional words (Shocking, Crying, etc).
-    2. Focus on 'Who' + 'What Event'.
-    3. Output ONLY the query string. (e.g. 'Jay Lee Divorce Rumors')
-    
+    [Video Info]
     Title: {title}
     Transcript context: {transcript[:1000]}
+    
+    [Strict Rules]
+    1. DO NOT copy the title exactly. Rephrase it.
+    2. Remove emotional/clickbait words (e.g., Shocking, Truth, Real story).
+    3. Extract only core nouns: 'Person Name' + 'Event/Issue'.
+    4. Example: "Why Jay Lee is alone... sad story" -> "Jay Lee Divorce Reason"
+    5. Output ONLY the query string (Korean).
     """
     try:
-        response = gemini_model.generate_content(prompt)
+        # 안전 설정(safety_config)을 적용하여 정치적 내용도 답변하게 만듦
+        response = gemini_model.generate_content(prompt, safety_settings=safety_config)
         return response.text.strip()
     except:
+        # 그래도 실패하면 어쩔 수 없이 제목 사용 (하지만 이제 거의 없을 것임)
         return title
 
-# --- [3. 기존 v51.2 핵심 로직 복구] ---
+# --- [3. 기존 핵심 로직 (v63.0과 동일)] ---
 WEIGHT_NEWS_DEFAULT = 45; WEIGHT_VECTOR = 35; WEIGHT_CONTENT = 15; WEIGHT_SENTIMENT_DEFAULT = 10
 PENALTY_ABUSE = 20; PENALTY_MISMATCH = 30; PENALTY_NO_FACT = 25; PENALTY_SILENT_ECHO = 40
 
@@ -299,7 +313,7 @@ def extract_top_keywords_from_transcript(text, top_n=5):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v63.0...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v63.1...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -328,7 +342,7 @@ def run_forensic_main(url):
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
-            # 🚨 [수정됨] Gemini를 이용한 검색어 추출 (여기가 핵심 변경점)
+            # 🚨 [수정됨] Gemini 검색어 추출 (안전 필터 해제됨)
             query = get_gemini_search_keywords(title, full_text)
 
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
@@ -337,11 +351,9 @@ def run_forensic_main(url):
             summary = summarize_transcript(full_text, title)
             agitation = count_sensational_words(full_text + title)
             
-            # 기존 로직: 벡터 분석
             ts, fs = vector_engine.analyze_position(query + " " + title)
             t_impact = int(ts * w_vec) * -1; f_impact = int(fs * w_vec)
 
-            # 기존 로직: 뉴스 검색 및 점수 산정
             news_items = fetch_news_regex(query)
             news_ev = []; max_match = 0
             for item in news_items:
@@ -465,7 +477,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v63.0")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v63.1")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
