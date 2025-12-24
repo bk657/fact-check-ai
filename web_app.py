@@ -14,7 +14,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v66.2 (Stability)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v66.3 (Stable)", layout="wide", page_icon="⚖️")
 
 # 세션 상태 초기화
 if "is_admin" not in st.session_state:
@@ -83,53 +83,48 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (With Retry)] ---
-def get_gemini_model():
+# --- [4. Gemini Logic (Triple Fallback)] ---
+def get_gemini_response_robust(prompt):
+    """
+    🚨 3단계 모델 돌려막기 (Flash -> Pro -> 1.0)
+    """
     genai.configure(api_key=GOOGLE_API_KEY)
-    available_models = []
-    try:
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
-    except: pass
     
-    target_model = None
-    for m in available_models:
-        if 'flash' in m: target_model = m; break
-    if not target_model:
-        for m in available_models:
-            if 'pro' in m: target_model = m; break
-    if not target_model and available_models: target_model = available_models[0]
+    # 시도할 모델 순서 (가벼운 것 -> 무거운 것)
+    candidates = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
     
-    return genai.GenerativeModel(target_model) if target_model else None, target_model
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+    ]
 
-def generate_with_retry(model, prompt, safety_settings, retries=3):
-    """🚨 429 에러 발생 시 재시도하는 로직"""
-    for i in range(retries):
+    last_error = ""
+    
+    for model_name in candidates:
         try:
-            return model.generate_content(prompt, safety_settings=safety_settings)
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt, safety_settings=safety_settings)
+            if response.text:
+                return response.text.strip(), model_name
         except Exception as e:
-            if "429" in str(e):
-                time.sleep(2 * (i + 1)) # 2초, 4초, 6초 대기
-                continue
-            else:
-                raise e # 다른 에러는 즉시 발생
-    return None
+            last_error = str(e)
+            time.sleep(2) # 실패 시 2초 대기 후 다음 모델 시도
+            continue
+            
+    return None, last_error
 
 def get_gemini_search_keywords(title, transcript):
-    model, model_name = get_gemini_model()
-    if model:
-        try:
-            safety_settings = [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
-            full_context = transcript[:30000]
-            prompt = f"Analyze the video and extract ONE core search query for Google News verification. [Input] Title: {title} Transcript: {full_context} [Rules] 1. Extract ONLY nouns. 2. Output ONLY the query string (Korean)."
-            
-            # 재시도 적용
-            response = generate_with_retry(model, prompt, safety_settings)
-            if response and response.text: 
-                return response.text.strip(), f"✨ Gemini ({model_name.replace('models/','')})"
-        except: pass
-
+    full_context = transcript[:30000]
+    prompt = f"Analyze video. Extract ONE core search query (Nouns only) for Google News verification. Input Title: {title} Transcript: {full_context} Output: Query string only (Korean)."
+    
+    result, model_name = get_gemini_response_robust(prompt)
+    
+    if result:
+        return result, f"✨ Gemini ({model_name.replace('models/','')})"
+    
+    # 백업 로직
     tokens = re.findall(r'[가-힣]{2,}', title)
     cleaned = []
     for t in tokens:
@@ -138,9 +133,6 @@ def get_gemini_search_keywords(title, transcript):
     return " ".join(cleaned[:3]) if cleaned else title, "🤖 Backup Logic"
 
 def get_gemini_verdict(title, summary, news_items):
-    model, model_name = get_gemini_model()
-    if not model: return 50, "AI 모델 로드 실패"
-
     news_context = "\n".join([f"- {item['title']}" for item in news_items])
     if not news_context: news_context = "관련 뉴스 기사가 검색되지 않았습니다."
 
@@ -155,34 +147,29 @@ def get_gemini_verdict(title, summary, news_items):
     {news_context}
     
     [Task]
-    1. Does the news support the video's claim?
-    2. If News matches video -> Risk Score 0-20.
-    3. If News contradicts video -> Risk Score 80-100.
-    4. If No News / Unrelated -> Risk Score 60-80.
+    Compare video claims vs news.
+    If News matches video -> Risk 0-20.
+    If News contradicts -> Risk 80-100.
+    If No News / Unrelated -> Risk 60-80.
     
-    [Output]
-    Provide JSON format ONLY:
+    [Output JSON]
     {{
         "risk_score": (int 0-100),
         "reason": "(Korean) Explain why based on the evidence."
     }}
     """
     
-    try:
-        safety_settings = [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
-        
-        # 재시도 적용
-        response = generate_with_retry(model, prompt, safety_settings)
-        
-        if response:
-            txt = response.text.replace("```json", "").replace("```", "").strip()
+    result, model_name = get_gemini_response_robust(prompt)
+    
+    if result:
+        try:
+            txt = result.replace("```json", "").replace("```", "").strip()
             data = json.loads(txt)
-            return data.get("risk_score", 50), data.get("reason", "분석 결과 없음")
-        else:
-            return 50, "AI 응답 없음 (재시도 실패)"
-            
-    except Exception as e:
-        return 50, f"AI 판단 중 오류 발생 ({str(e)[:30]}...)"
+            return data.get("risk_score", 50), f"{data.get('reason', '분석 완료')} (by {model_name})"
+        except:
+            return 50, "AI 응답 파싱 실패"
+    
+    return 50, f"AI 서버 응답 없음 (모든 모델 실패)"
 
 # --- [5. 유틸리티 함수] ---
 def normalize_korean_word(word):
@@ -374,7 +361,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v66.2...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v66.3...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -402,11 +389,10 @@ def run_forensic_main(url):
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
-            # Gemini Call 1 (Keyword)
+            # Gemini Call 1
             query, source = get_gemini_search_keywords(title, full_text)
             
-            # Throttling (속도 조절)
-            time.sleep(1) 
+            time.sleep(2) # 🚨 Throttling 2s
 
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
             abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
@@ -432,8 +418,8 @@ def run_forensic_main(url):
                     "기사 링크": item['link']
                 })
             
-            # Gemini Call 2 (Judge)
-            time.sleep(1) # 안전 대기
+            # Gemini Call 2
+            time.sleep(2) # 🚨 Throttling 2s
             gemini_risk, gemini_reason = get_gemini_verdict(title, summary, news_items)
             
             if not news_ev:
