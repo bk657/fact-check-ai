@@ -13,7 +13,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v63.3 (Source Reveal)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v63.4 (Structure Fix)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets 로드
 try:
@@ -32,73 +32,7 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- [2. Gemini 연결 (안전 필터 해제 + 1.5 Flash)] ---
-@st.cache_resource
-def init_gemini():
-    try:
-        genai.configure(api_key=GOOGLE_API_KEY)
-        safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
-        return genai.GenerativeModel('gemini-1.5-flash'), safety_settings
-    except: return None, None
-
-gemini_model, safety_config = init_gemini()
-
-# --- [NLP 유틸리티 (백업용)] ---
-def normalize_korean_word(word):
-    word = re.sub(r'[^가-힣0-9]', '', word)
-    josa_list = ['은', '는', '이', '가', '을', '를', '의', '에', '에게', '로', '으로', '와', '과', '도', '만', '한테', '까지', '부터']
-    for josa in josa_list:
-        if word.endswith(josa) and len(word) > len(josa): return word[:-len(josa)]
-    return word
-
-def extract_meaningful_tokens(text):
-    raw_tokens = re.findall(r'[가-힣]{2,}', text)
-    noise = ['충격', '경악', '속보', '긴급', '오늘', '내일', '지금', '결국', '뉴스', '영상', '대부분', '이유', '왜', '있는', '없는', '하는', '것', '수', '등', '진짜', '정말', '너무', '그냥', '이제', '사실', '국민', '우리', '대한민국', '여러분', '실체', '비밀', '이게', '무슨', '어떤']
-    return [normalize_korean_word(w) for w in raw_tokens if normalize_korean_word(w) not in noise]
-
-# 🚨 [핵심 수정] 검색어와 '출처(Source)'를 함께 반환하도록 변경
-def get_gemini_search_keywords(title, transcript):
-    
-    # 1. Gemini 시도
-    if gemini_model:
-        prompt = f"""
-        Extract ONE concise Google News search query (Korean).
-        
-        [Input]
-        Title: {title}
-        Context: {transcript[:800]}
-        
-        [Rules]
-        1. OUTPUT NOUNS ONLY (e.g., 'Jay Lee Divorce' NOT 'Jay Lee is divorced').
-        2. Remove emotional/clickbait words.
-        3. Do not output the full title. Rephrase it using key entities.
-        4. Output only the query string.
-        """
-        try:
-            response = gemini_model.generate_content(prompt, safety_settings=safety_config)
-            candidate = response.text.strip()
-            
-            # Gemini가 정상적인 응답을 줬는지 검증
-            if candidate and len(candidate) < len(title) + 5:
-                return candidate, "✨ Gemini AI (1.5 Flash)" # 성공 라벨
-        except:
-            pass # 실패 시 백업으로 이동
-
-    # 2. 백업 로직 (Rule-Based)
-    tokens = extract_meaningful_tokens(title)
-    if tokens:
-        query = " ".join(tokens[:3])
-    else:
-        query = title
-        
-    return query, "🤖 Backup Logic (Rule-Based)" # 실패 라벨
-
-# --- [3. 기존 로직 유지] ---
+# --- [2. 상수 및 전역 변수 정의 (가장 먼저 정의)] ---
 WEIGHT_NEWS_DEFAULT = 45; WEIGHT_VECTOR = 35; WEIGHT_CONTENT = 15; WEIGHT_SENTIMENT_DEFAULT = 10
 PENALTY_ABUSE = 20; PENALTY_MISMATCH = 30; PENALTY_NO_FACT = 25; PENALTY_SILENT_ECHO = 40
 
@@ -106,6 +40,10 @@ VITAL_KEYWORDS = ['위독', '사망', '별세', '구속', '체포', '기소', '�
 CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
 OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
 
+STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
+STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
+
+# --- [3. VectorEngine 클래스 및 인스턴스 (함수보다 먼저 정의)] ---
 class VectorEngine:
     def __init__(self):
         self.vocab = set()
@@ -137,13 +75,65 @@ class VectorEngine:
         mf = max([self.cosine_similarity(qv, v) for v in self.fake_vectors] or [0])
         return mt, mf
 
+# 🚨 전역 인스턴스 생성 (NameError 방지)
 vector_engine = VectorEngine()
 
-def save_analysis(channel, title, prob, url, keywords):
-    try: supabase.table("analysis_history").insert({"channel_name": channel, "video_title": title, "fake_prob": prob, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "video_url": url, "keywords": keywords}).execute()
-    except: pass
+# --- [4. Gemini 연결 설정] ---
+@st.cache_resource
+def init_gemini():
+    try:
+        genai.configure(api_key=GOOGLE_API_KEY)
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
+        return genai.GenerativeModel('gemini-1.5-flash'), safety_settings
+    except: return None, None
+
+gemini_model, safety_config = init_gemini()
+
+# --- [5. 유틸리티 함수들] ---
+def normalize_korean_word(word):
+    word = re.sub(r'[^가-힣0-9]', '', word)
+    josa_list = ['은', '는', '이', '가', '을', '를', '의', '에', '에게', '로', '으로', '와', '과', '도', '만', '한테', '까지', '부터']
+    for josa in josa_list:
+        if word.endswith(josa) and len(word) > len(josa): return word[:-len(josa)]
+    return word
+
+def extract_meaningful_tokens(text):
+    raw_tokens = re.findall(r'[가-힣]{2,}', text)
+    noise = ['충격', '경악', '속보', '긴급', '오늘', '내일', '지금', '결국', '뉴스', '영상', '대부분', '이유', '왜', '있는', '없는', '하는', '것', '수', '등', '진짜', '정말', '너무', '그냥', '이제', '사실', '국민', '우리', '대한민국', '여러분', '실체', '비밀', '이게', '무슨', '어떤']
+    return [normalize_korean_word(w) for w in raw_tokens if normalize_korean_word(w) not in noise]
+
+def get_gemini_search_keywords(title, transcript):
+    # 1. Gemini 시도
+    if gemini_model:
+        prompt = f"""
+        Extract ONE concise Google News search query (Korean).
+        [Input] Title: {title} / Context: {transcript[:800]}
+        [Rules]
+        1. OUTPUT NOUNS ONLY (e.g., 'Jay Lee Divorce').
+        2. Remove emotional/clickbait words.
+        3. Do not output the full title.
+        4. Output only the query string.
+        """
+        try:
+            response = gemini_model.generate_content(prompt, safety_settings=safety_config)
+            candidate = response.text.strip()
+            if candidate and len(candidate) < len(title) + 5:
+                return candidate, "✨ Gemini AI (1.5 Flash)"
+        except: pass
+
+    # 2. 백업 로직
+    tokens = extract_meaningful_tokens(title)
+    if tokens: query = " ".join(tokens[:3])
+    else: query = title
+    return query, "🤖 Backup Logic"
 
 def train_dynamic_vector_engine():
+    # 🚨 NameError 방지를 위해 vector_engine이 위에서 정의되었는지 확인
     try:
         dt = [row['video_title'] for row in supabase.table("analysis_history").select("video_title").lt("fake_prob", 40).execute().data]
         df = [row['video_title'] for row in supabase.table("analysis_history").select("video_title").gt("fake_prob", 60).execute().data]
@@ -152,6 +142,10 @@ def train_dynamic_vector_engine():
     except: 
         vector_engine.train(STATIC_TRUTH_CORPUS, STATIC_FAKE_CORPUS)
         return 0, 0, 0
+
+def save_analysis(channel, title, prob, url, keywords):
+    try: supabase.table("analysis_history").insert({"channel_name": channel, "video_title": title, "fake_prob": prob, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "video_url": url, "keywords": keywords}).execute()
+    except: pass
 
 def render_intelligence_distribution(current_prob):
     try:
@@ -307,7 +301,7 @@ def extract_top_keywords_from_transcript(text, top_n=5):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v63.3...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v63.4...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -474,7 +468,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v63.3")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v63.4")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
