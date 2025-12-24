@@ -1,4 +1,24 @@
 import streamlit as st
+import sys
+import subprocess
+
+# --- [0. 라이브러리 버전 강제 확인 및 긴급 패치] ---
+try:
+    import google.generativeai as genai
+    lib_version = genai.__version__
+except ImportError:
+    lib_version = "Not Installed"
+
+st.set_page_config(page_title="Fact-Check v61.0 (Version Check)", layout="wide", page_icon="⚖️")
+
+# 🚨 [버전 검문소] 라이브러리가 구버전이면 아예 실행 차단
+if lib_version == "Not Installed" or lib_version < "0.7.0":
+    st.error(f"🚨 심각한 문제 발생: 구글 AI 라이브러리가 너무 오래되었습니다.")
+    st.error(f"현재 설치된 버전: **{lib_version}** (필요 버전: 0.7.2 이상)")
+    st.warning("👉 해결책: GitHub의 requirements.txt 내용을 지웠다가 다시 저장하여 '서버 재설치'를 유도하세요.")
+    st.stop() # 여기서 앱 정지
+
+# --- [정상 진입 시 코드 실행] ---
 import re
 import requests
 import time
@@ -7,11 +27,6 @@ import yt_dlp
 import pandas as pd
 import altair as alt
 from datetime import datetime
-import google.generativeai as genai
-import traceback
-
-# --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check v60.9 (Final Debug)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets 로드
 try:
@@ -24,59 +39,22 @@ except KeyError as e:
     st.error(f"❌ 필수 키 설정 누락: {e}")
     st.stop()
 
-# 🌟 서비스 초기화 (에러 추적 모드)
+# 🌟 서비스 초기화
 @st.cache_resource
-def init_services(api_key_sig):
-    sb = None
-    model = None
-    status_msg = "Starting..."
-    last_error = "No Error Captured"
-    
+def init_services():
     try:
-        # DB 연결
         from supabase import create_client
         sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-        
-        # Gemini 설정
-        genai.configure(api_key=api_key_sig)
-        
-        # 🚨 [핵심] 1.5 Flash 단일 모델 강제 연결 시도 (가장 확실함)
-        # 여러 개를 돌리면 에러가 묻히므로 하나만 확실하게 팹니다.
-        target_model = 'gemini-1.5-flash'
-        
-        try:
-            temp_model = genai.GenerativeModel(target_model)
-            # 연결 테스트
-            response = temp_model.generate_content("Hello")
-            if response:
-                model = temp_model
-                status_msg = f"Success: {target_model}"
-        except Exception as e:
-            # 실패하면 Pro 모델로 재시도
-            last_error = str(e)
-            try:
-                target_model = 'gemini-pro'
-                temp_model = genai.GenerativeModel(target_model)
-                response = temp_model.generate_content("Hello")
-                if response:
-                    model = temp_model
-                    status_msg = f"Success: {target_model}"
-            except Exception as e2:
-                last_error = f"1.5-Flash Error: {last_error} // Pro Error: {str(e2)}"
-                status_msg = "ALL_FAILED"
-
+        genai.configure(api_key=GOOGLE_API_KEY)
+        # 버전이 확인되었으므로 1.5-flash 사용 (가장 빠름)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        return sb, model
     except Exception as e:
-        return None, None, f"Critical Init Error: {str(e)}"
+        return None, None
 
-    if status_msg == "ALL_FAILED":
-        return sb, None, last_error # 에러 메시지 원본 리턴
-    
-    return sb, model, status_msg
+supabase, gemini_model = init_services()
 
-# 캐시 무시를 위해 현재 시간 주입
-supabase, gemini_model, conn_status = init_services(GOOGLE_API_KEY)
-
-# --- [2. Gemini AI 에이전트] ---
+# --- [Gemini AI 에이전트] ---
 class GeminiAgent:
     def __init__(self, model):
         self.model = model
@@ -91,15 +69,13 @@ class GeminiAgent:
 
     def analyze_content(self, title, channel, transcript, news_context, comments):
         if not self.model:
-            return {"fake_prob": 50, "verdict": "오류", "summary": "연결 실패", "clickbait_score": 0}
+            return {"fake_prob": 50, "verdict": "오류", "summary": "모델 로드 실패", "clickbait_score": 0}
 
         prompt = f"""
         Analyze logic. Respond JSON.
-        Title: {title}
-        News: {news_context}
-        Transcript: {transcript[:3000]}
+        Data: {title}, {news_context}, {transcript[:3000]}, {comments}
         
-        Format:
+        JSON Format:
         {{
             "summary": "Korean text",
             "fake_prob": 0-100,
@@ -118,7 +94,7 @@ class GeminiAgent:
 
 gemini_agent = GeminiAgent(gemini_model)
 
-# --- [3. 유틸리티 함수] ---
+# --- [유틸리티 함수] ---
 def fetch_youtube_info(url):
     ydl_opts = {'quiet': True, 'skip_download': True}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -176,35 +152,28 @@ def save_history(data):
         }).execute()
     except: pass
 
-# --- [4. UI 구성] ---
+# --- [UI 구성] ---
 with st.sidebar:
     st.header("🛡️ 관리자")
-    
-    # 🌟 [진단 결과 출력 창]
-    if "Success" in conn_status:
-        st.success(f"✅ {conn_status}")
-    else:
-        # 에러 메시지를 빨간색으로 통째로 보여줌
-        st.error("🚨 연결 실패 원인:")
-        st.code(conn_status, language="text")
-        st.warning("위 에러 코드를 확인하세요.")
+    # 🌟 버전 확인용 배지
+    st.success(f"Lib Version: {lib_version}")
     
     if not st.session_state.get("is_admin"):
         if st.button("Login"):
             st.session_state["is_admin"] = True
             st.rerun()
 
-st.title("⚖️ Fact-Check Center v60.9")
-st.caption("Final Debugging Mode")
+st.title("⚖️ Fact-Check Center v61.0")
+st.caption("Gemini Version Enforcer")
 
 with st.container(border=True):
     url_input = st.text_input("유튜브 URL 입력")
     if st.button("🚀 분석 시작", type="primary", use_container_width=True):
         if url_input:
             if not gemini_model:
-                st.error("⚠️ AI 모델이 연결되지 않았습니다. 사이드바의 에러 메시지를 확인해주세요.")
+                st.error("⚠️ AI 모델 로드 실패. (버전 문제는 해결됨, API 키 확인 필요)")
             else:
-                with st.status(f"🕵️ Gemini ({conn_status}) 분석 중...", expanded=True) as status:
+                with st.status(f"🕵️ Gemini (v{lib_version}) 가동 중...", expanded=True) as status:
                     
                     st.write("📥 영상 데이터 추출 중...")
                     v_info = fetch_youtube_info(url_input)
