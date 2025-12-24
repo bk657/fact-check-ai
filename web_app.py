@@ -14,7 +14,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v71.1 (Key A: 2.5-Flash)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v71.1 (Keyword Fix)", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -86,10 +86,9 @@ vector_engine = VectorEngine()
 
 # --- [4. Gemini Logic (Twin Engine)] ---
 
-# [Engine A] 수사관: 키워드 추출 전담 (수정됨: 2.5-Flash 사용)
+# [Engine A] 수사관: 키워드 추출 전담 (Ver 2.0 - Deep Dive)
 def get_gemini_search_keywords(title, transcript):
     genai.configure(api_key=GOOGLE_API_KEY_A)
-    # [변경] 기존 'gemini-2.0-flash' -> 'gemini-2.5-flash' 로 변경
     target_model = 'gemini-2.5-flash'
     
     full_context = transcript[:30000]
@@ -122,8 +121,7 @@ def get_gemini_search_keywords(title, transcript):
         model = genai.GenerativeModel(target_model)
         response = model.generate_content(prompt)
         if response.text:
-            # 성공 시 모델명 명시 (2.5 확인용)
-            return response.text.strip(), f"✨ Gemini Investigator (Key A / 2.5-Flash)"
+            return response.text.strip(), f"✨ Gemini Investigator (Key A / 2.0-Flash)"
     except Exception as e:
         pass
             
@@ -135,7 +133,7 @@ def get_gemini_search_keywords(title, transcript):
         if len(t) > 1: cleaned.append(t)
     return " ".join(cleaned[:3]) if cleaned else title, "🤖 Backup Logic"
 
-# [Engine B] 판사: 진위 여부 최종 추론 전담 (건드리지 않음)
+# [Engine B] 판사: 진위 여부 최종 추론 전담
 def get_gemini_verdict(title, transcript, news_items):
     genai.configure(api_key=GOOGLE_API_KEY_B)
     
@@ -568,47 +566,48 @@ def run_forensic_main(url):
 st.title("⚖️ Fact-Check Center v71.1 (Keyword Fix)")
 
 with st.container(border=True):
-    st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (2.0-Flash)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (2.0-Flash)")
-    agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
+    st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
+    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (2.0-Flash)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (2.0-Flash)")
+    agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
 if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not agree):
-    if url_input: run_forensic_main(url_input)
-    else: st.warning("URL을 입력해주세요.")
+    if url_input: run_forensic_main(url_input)
+    else: st.warning("URL을 입력해주세요.")
 
 st.divider()
 st.subheader("🗂️ 학습 데이터 관리 (Cloud Knowledge Base)")
 try:
-    response = supabase.table("analysis_history").select("*").order("id", desc=True).execute()
-    df = pd.DataFrame(response.data)
+    response = supabase.table("analysis_history").select("*").order("id", desc=True).execute()
+    df = pd.DataFrame(response.data)
 except: df = pd.DataFrame()
 
 if not df.empty:
-    if st.session_state["is_admin"]:
-        df['Delete'] = False
-        edited_df = st.data_editor(df[['Delete', 'id', 'analysis_date', 'video_title', 'fake_prob', 'keywords']], hide_index=True, use_container_width=True)
-        if st.button("🗑️ 선택 항목 삭제", type="primary"):
-            to_delete = edited_df[edited_df.Delete]
-            if not to_delete.empty:
-                for index, row in to_delete.iterrows(): supabase.table("analysis_history").delete().eq("id", row['id']).execute()
-                st.success("삭제 완료!"); time.sleep(1); st.rerun()
-    else:
-        st.dataframe(df[['analysis_date', 'video_title', 'fake_prob', 'keywords']], hide_index=True, use_container_width=True)
+    if st.session_state["is_admin"]:
+        df['Delete'] = False
+        edited_df = st.data_editor(df[['Delete', 'id', 'analysis_date', 'video_title', 'fake_prob', 'keywords']], hide_index=True, use_container_width=True)
+        if st.button("🗑️ 선택 항목 삭제", type="primary"):
+            to_delete = edited_df[edited_df.Delete]
+            if not to_delete.empty:
+                for index, row in to_delete.iterrows(): supabase.table("analysis_history").delete().eq("id", row['id']).execute()
+                st.success("삭제 완료!"); time.sleep(1); st.rerun()
+    else:
+        st.dataframe(df[['analysis_date', 'video_title', 'fake_prob', 'keywords']], hide_index=True, use_container_width=True)
 else: st.info("데이터가 없습니다.")
 
 st.write("")
 with st.expander("🔐 관리자 접속 (Admin Access)"):
-    if st.session_state["is_admin"]:
-        st.success("관리자 권한 활성화됨")
-        if st.button("로그아웃"):
-            st.session_state["is_admin"] = False
-            st.rerun()
-    else:
-        input_pwd = st.text_input("Admin Password", type="password")
-        if st.button("Login"):
-            if input_pwd == ADMIN_PASSWORD:
-                st.session_state["is_admin"] = True
-                st.rerun()
-            else:
-                st.error("Access Denied")
+    if st.session_state["is_admin"]:
+        st.success("관리자 권한 활성화됨")
+        if st.button("로그아웃"):
+            st.session_state["is_admin"] = False
+            st.rerun()
+    else:
+        input_pwd = st.text_input("Admin Password", type="password")
+        if st.button("Login"):
+            if input_pwd == ADMIN_PASSWORD:
+                st.session_state["is_admin"] = True
+                st.rerun()
+            else:
+                st.error("Access Denied")
+
