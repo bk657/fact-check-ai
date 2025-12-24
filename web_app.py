@@ -15,7 +15,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v83.0 (Optimized)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Fact-Check Center v84.0 (Korean Fixed)", layout="wide", page_icon="🇰🇷")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -39,7 +39,6 @@ def init_supabase():
 supabase = init_supabase()
 
 # --- [2. 모델 프리-체크 (Start-up Logic)] ---
-# 구글이 제공하는 주요 모델 리스트 (우선순위 순)
 CANDIDATE_MODELS = [
     "gemini-2.5-flash-lite", 
     "gemini-flash-lite-latest",
@@ -51,26 +50,20 @@ CANDIDATE_MODELS = [
 
 def find_best_model(api_key):
     genai.configure(api_key=api_key)
-    # 안전 설정 (테스트용)
     safety = {HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE}
-    
     for model_name in CANDIDATE_MODELS:
         try:
-            # 아주 가벼운 핑 테스트
             model = genai.GenerativeModel(model_name)
             response = model.generate_content("hi", safety_settings=safety)
-            if response.text:
-                return model_name # 성공하면 즉시 반환
-        except:
-            continue
-    return "gemini-2.0-flash" # 모두 실패시 기본값
+            if response.text: return model_name
+        except: continue
+    return "gemini-2.0-flash"
 
-# 앱 시작 시 최초 1회 실행하여 최적 모델 고정
 if "best_model_name" not in st.session_state:
-    with st.spinner("🚀 가용 가능한 최적의 Gemini 모델을 탐색 중입니다... (최초 1회)"):
+    with st.spinner("🚀 최적의 AI 모델을 탐색 중입니다..."):
         found_model = find_best_model(GOOGLE_API_KEY_A)
         st.session_state["best_model_name"] = found_model
-    st.toast(f"✅ 최적 모델 설정 완료: {found_model}", icon="⚡")
+    st.toast(f"✅ 모델 설정 완료: {found_model}", icon="⚡")
 
 # --- [3. 상수 정의] ---
 WEIGHT_ALGO = 0.6
@@ -128,12 +121,9 @@ safety_settings_none = {
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
 
-# [공통] 단순 호출 (이미 프리-체크 했으므로 재시도 로직 최소화)
 def call_gemini_fast(api_key, prompt, is_json=False):
     genai.configure(api_key=api_key)
-    # 프리-체크된 최적 모델 사용
     target_model = st.session_state.get("best_model_name", "gemini-2.0-flash")
-    
     generation_config = {"response_mime_type": "application/json"} if is_json else {}
     
     try:
@@ -141,7 +131,6 @@ def call_gemini_fast(api_key, prompt, is_json=False):
         response = model.generate_content(prompt, safety_settings=safety_settings_none)
         return response.text, target_model
     except Exception as e:
-        # 혹시라도 실패하면 예비용 2.0으로 한 번 더 시도
         try:
             fallback_model = "gemini-2.0-flash"
             model = genai.GenerativeModel(fallback_model, generation_config=generation_config)
@@ -150,38 +139,24 @@ def call_gemini_fast(api_key, prompt, is_json=False):
         except:
             return None, str(e)
 
-# [Engine A] 수사관: 제목 + 자막 10000자
+# [Engine A] 수사관
 def get_gemini_search_keywords(title, transcript):
     context_data = transcript[:10000]
-    
     prompt = f"""
     You are a Fact-Check Investigator.
-    
-    [Input Data]
-    - Title: {title}
-    - Transcript: {context_data}
-    
-    [Goal]
-    Create the best Google News search query to verify the claims in this video.
-    
-    [Instructions]
-    1. Do NOT output a single noun. Combine 'Subject' (Drug/Person) with 'Issue' (Side Effect/Death/Crime).
-    2. Example: "Phentermine side effects death" (나비약 펜터민 부작용 사망)
-    3. Output: ONLY the Korean search query string.
+    [Input] Title: {title}, Transcript: {context_data}
+    [Task] Create a Google News search query (2-4 words) combining Subject + Issue.
+    [Example] "Phentermine side effects death" (나비약 펜터민 부작용 사망)
+    [Output] ONLY the Korean search query string.
     """
-
     result_text, model_used = call_gemini_fast(GOOGLE_API_KEY_A, prompt)
-    
-    if result_text:
-        return result_text.strip(), f"✨ {model_used}"
-    else:
-        return title, "❌ API Failed"
+    return (result_text.strip(), f"✨ {model_used}") if result_text else (title, "❌ Error")
 
-# [Engine B] 판사: 제목 + 전체 자막
+# [Engine B] 판사: 한글 출력 강제 (Prompt Enhanced)
 def get_gemini_verdict(title, transcript, news_items):
     news_text = ""
     if not news_items:
-        news_text = "No related news articles found."
+        news_text = "관련 뉴스 없음."
     else:
         for idx, item in enumerate(news_items[:5]):
             safe_title = item.get('title', '제목 없음')
@@ -192,12 +167,28 @@ def get_gemini_verdict(title, transcript, news_items):
 
     prompt = f"""
     You are a professional Fact-Check AI Judge.
+    
+    [Task]
+    Compare the Video Transcript with the Search Results.
+    
+    [Video Info]
     Title: {title}
     Transcript Summary: {full_context[:2000]}...
-    News: {news_text}
     
-    Determine: TRUTH (0-30) or FAKE (80-100).
-    Format: JSON {{ "score": <int>, "reason": "<string>" }}
+    [Search Results]
+    {news_text}
+    
+    [Instruction]
+    1. Identify the core claim.
+    2. Check if the Search Results support or contradict the claim.
+    3. Determine 'fake_score' (0=Truth, 100=Fake).
+    4. Write the 'reason' MUST BE IN KOREAN (한국어).
+    
+    [Output Format - JSON Only]
+    {{
+        "score": <int>,
+        "reason": "<한글로 작성된 3문장 이내의 판결 사유>" 
+    }}
     """
     
     result_text, model_used = call_gemini_fast(GOOGLE_API_KEY_B, prompt, is_json=True)
@@ -208,7 +199,6 @@ def get_gemini_verdict(title, transcript, news_items):
             return data['score'], f"{data['reason']} (By {model_used})"
         except:
             return 50, f"JSON Error"
-            
     return 50, f"Judge Failed"
 
 # --- [6. 유틸리티 함수] ---
@@ -227,10 +217,8 @@ def train_dynamic_vector_engine():
     try:
         res_t = supabase.table("analysis_history").select("video_title").lt("fake_prob", 40).execute()
         res_f = supabase.table("analysis_history").select("video_title").gt("fake_prob", 60).execute()
-        
         dt = [row['video_title'] for row in res_t.data] if res_t.data else []
         df = [row['video_title'] for row in res_f.data] if res_f.data else []
-        
         vector_engine.train(STATIC_TRUTH_CORPUS + dt, STATIC_FAKE_CORPUS + df)
         return len(STATIC_TRUTH_CORPUS + dt) + len(STATIC_FAKE_CORPUS + df), len(dt), len(df)
     except: 
@@ -345,7 +333,6 @@ def fetch_comments_via_api(video_id):
     except: pass
     return [], "❌ API 통신 실패"
 
-# [수정됨] URL 추출 기능 추가
 def fetch_news_regex(query):
     news_res = []
     try:
@@ -355,8 +342,7 @@ def fetch_news_regex(query):
         for item in items[:10]:
             t = re.search(r'<title>(.*?)</title>', item)
             d = re.search(r'<description>(.*?)</description>', item)
-            # [추가] 링크 태그 추출
-            l = re.search(r'<link>(.*?)</link>', item)
+            l = re.search(r'<link>(.*?)</link>', item) # [링크 추출]
             
             nt = t.group(1).replace("<![CDATA[", "").replace("]]>", "") if t else "제목 없음"
             nd = clean_html_regex(d.group(1).replace("<![CDATA[", "").replace("]]>", "")) if d else "내용 없음"
@@ -407,7 +393,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v83.0...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v84.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -424,16 +410,13 @@ def run_forensic_main(url):
             title = info.get('title', ''); uploader = info.get('uploader', '')
             tags = info.get('tags', []); desc = info.get('description', '')
             
-            # [Step 1] 자막 수집
             trans, t_status = fetch_real_transcript(info)
             full_text = trans if trans else desc
             summary = summarize_transcript(full_text, title)
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
-            # [Step 2] Gemini Key A (수사관)
             query, source = get_gemini_search_keywords(title, full_text)
 
-            # [Step 3] 기본 알고리즘 분석
             is_official = check_is_official(uploader)
             is_ai, ai_msg = detect_ai_content(info)
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
@@ -445,7 +428,6 @@ def run_forensic_main(url):
             w_vec = 10 if is_ai else 35
             t_impact = int(ts * w_vec) * -1; f_impact = int(fs * w_vec)
 
-            # [Step 4] 뉴스 검색
             news_items = fetch_news_regex(query)
             news_ev = []; max_match = 0
             mismatch_count = 0
@@ -457,13 +439,12 @@ def run_forensic_main(url):
                 if final < 20: mismatch_count += 1
                 news_ev.append({
                     "뉴스 제목": safe_title,
-                    "뉴스 링크": item.get('link', ''), # [수정] 링크 추가
                     "제목 일치": f"{t_score}%",
                     "내용 유사": f"{c_score}%",
-                    "최종 점수": f"{final}%"
+                    "최종 점수": f"{final}%",
+                    "원문": item.get('link', '') # 링크를 맨 뒤로
                 })
             
-            # [Step 5] 알고리즘 점수
             if not news_ev:
                 news_score = 0
             else:
@@ -497,10 +478,8 @@ def run_forensic_main(url):
             algo_base_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
             algo_final_prob = max(5, min(99, algo_base_score))
             
-            # [Step 6] Gemini Key B (판사)
             ai_judge_score, ai_judge_reason = get_gemini_verdict(title, full_text, news_ev)
             
-            # [Step 7] 최종 합산
             final_prob = int((algo_final_prob * WEIGHT_ALGO) + (ai_judge_score * WEIGHT_AI))
             final_prob = max(1, min(99, final_prob))
             
@@ -535,7 +514,6 @@ def run_forensic_main(url):
                     st.write(summary)
                 
                 st.write("**[Score Breakdown]**")
-                # [수정됨] Rule-based Algo Score 항목 삭제 (중복 방지)
                 render_score_breakdown([
                     ["AI Judge Score (40%)", ai_judge_score, "Gemini 최종 추론 점수"],
                     ["진실 데이터 맥락", t_impact, "내부 DB 진실 데이터와 유사성"],
@@ -555,11 +533,10 @@ def run_forensic_main(url):
 
                 st.markdown(f"**[증거 1] 뉴스 교차 대조 (Dual-Layer)**")
                 if news_ev:
-                    # [수정됨] LinkColumn을 사용하여 URL을 클릭 가능하게 표시
                     st.dataframe(
                         pd.DataFrame(news_ev),
                         column_config={
-                            "뉴스 링크": st.column_config.LinkColumn("기사 바로가기")
+                            "원문": st.column_config.LinkColumn(label="링크", display_text="🔗 이동")
                         },
                         use_container_width=True,
                         hide_index=True
@@ -593,12 +570,11 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v83.0 (Optimized)")
+st.title("⚖️ Fact-Check Center v84.0 (Korean Fixed)")
 
-# [법적 고지 복구]
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (Smart Pre-Check)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (Full Context)")
+    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (Smart Pre-Check)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (Full Context, Korean)")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
