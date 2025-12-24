@@ -10,7 +10,7 @@ from datetime import datetime
 import google.generativeai as genai
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v60.4 (Stable)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v60.5 (Debug)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets 로드
 try:
@@ -30,8 +30,8 @@ def init_services():
         from supabase import create_client
         sb = create_client(SUPABASE_URL, SUPABASE_KEY)
         genai.configure(api_key=GOOGLE_API_KEY)
-        # 🚨 [수정] 1.5-flash 호환성 문제 해결 -> 가장 안정적인 'gemini-pro' 사용
-        model = genai.GenerativeModel('gemini-pro')
+        # 최신 라이브러리(0.7.2 이상)에서는 1.5-flash가 표준입니다.
+        model = genai.GenerativeModel('gemini-1.5-flash')
         return sb, model
     except Exception as e:
         return None, None
@@ -44,21 +44,11 @@ class GeminiAgent:
         self.model = model
 
     def extract_keywords(self, title, transcript):
-        """
-        1단계: 뉴스 검색용 키워드 추출
-        """
         if not self.model: return title
-        
         prompt = f"""
-        Extract the single most important search query to fact-check this video.
-        
-        [Rules]
-        1. Combine 'Main Person' + 'Key Event'.
-        2. Remove emotional words like 'Shocking'.
-        3. Output ONLY the keyword string. (e.g., "Jay Lee Divorce")
-
-        Title: {title}
-        Transcript: {transcript[:1000]}
+        Extract one specific search keyword to fact-check this video.
+        Input: {title} / {transcript[:500]}
+        Output: (Only Keyword)
         """
         try:
             response = self.model.generate_content(prompt)
@@ -67,35 +57,26 @@ class GeminiAgent:
             return title
 
     def analyze_content(self, title, channel, transcript, news_context, comments):
-        """
-        2단계: 팩트체크 분석 (JSON 출력)
-        """
         if not self.model:
-            return {"fake_prob": 50, "verdict": "오류", "summary": "AI 모델 로드 실패", "clickbait_score": 0}
+            return {"fake_prob": 50, "verdict": "오류", "summary": "모델 로드 실패", "clickbait_score": 0}
 
         prompt = f"""
-        Analyze this YouTube video for fake news. Respond in JSON format ONLY.
-
-        [Input Data]
+        Analyze this video for fake news. Respond in JSON.
+        
+        Data:
         - Title: {title}
-        - Transcript Summary: {transcript[:5000]}
-        - Google News Search Results: {news_context}
+        - News: {news_context}
+        - Transcript: {transcript[:5000]}
         - Comments: {comments}
 
-        [Tasks]
-        1. Compare the video's claims with the News Results.
-        2. If news confirms the claim -> Low fake_prob (0-30).
-        3. If news contradicts or no news found -> High fake_prob (70-100).
-        4. Translate all text values to Korean.
-
-        [JSON Format]
+        JSON Format:
         {{
-            "summary": "3 bullet points summary in Korean",
-            "fake_prob": Integer (0-100),
+            "summary": "Korean summary",
+            "fake_prob": 0-100,
             "verdict": "위험/주의/안전",
-            "reasoning": "Reasoning based on news comparison (Korean)",
-            "fact_check_status": "Verification status (Korean)",
-            "clickbait_score": Integer (0-100)
+            "reasoning": "Korean reasoning",
+            "fact_check_status": "Korean status",
+            "clickbait_score": 0-100
         }}
         """
         try:
@@ -104,10 +85,10 @@ class GeminiAgent:
             return json.loads(text)
         except Exception as e:
             return {
-                "summary": "분석 중 오류가 발생했습니다.",
+                "summary": "분석 실패",
                 "fake_prob": 50,
                 "verdict": "오류",
-                "reasoning": f"AI 응답 실패: {str(e)}",
+                "reasoning": f"에러: {str(e)}",
                 "fact_check_status": "분석 불가",
                 "clickbait_score": 0
             }
@@ -121,7 +102,7 @@ def fetch_youtube_info(url):
         try:
             info = ydl.extract_info(url, download=False)
             transcript = ""
-            # 자막 추출 우선순위: 수동 -> 자동
+            # 자막 추출 시도
             for sub_type in ['subtitles', 'automatic_captions']:
                 if sub_type in info and 'ko' in info[sub_type]:
                     url = next((x['url'] for x in info[sub_type]['ko'] if x['ext'] == 'vtt'), None)
@@ -176,20 +157,23 @@ def save_history(data):
 # --- [4. UI 구성] ---
 with st.sidebar:
     st.header("🛡️ 관리자")
+    # 🌟 버전 디버깅용 (문제가 해결되면 지우셔도 됩니다)
+    st.info(f"Gemini Lib Version: {genai.__version__}")
+    
     if not st.session_state.get("is_admin"):
         if st.button("Login"):
             st.session_state["is_admin"] = True
             st.rerun()
 
-st.title("⚖️ Fact-Check Center v60.4")
-st.caption("Gemini Pro Engine • Compatibility Fixed")
+st.title("⚖️ Fact-Check Center v60.5")
+st.caption(f"Gemini Engine (Lib v{genai.__version__})")
 
 with st.container(border=True):
     url_input = st.text_input("유튜브 URL 입력")
     if st.button("🚀 분석 시작", type="primary", use_container_width=True):
         if url_input:
             if not gemini_model:
-                st.error("⚠️ AI 모델 초기화 실패. 잠시 후 다시 시도하세요.")
+                st.error("⚠️ AI 모델 초기화 실패.")
             else:
                 with st.status("🕵️ Gemini AI 분석 중...", expanded=True) as status:
                     
