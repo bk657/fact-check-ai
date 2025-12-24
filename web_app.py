@@ -16,12 +16,11 @@ import json
 from bs4 import BeautifulSoup
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v93.0 (Restored)", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Fact-Check Center v93.1 (Final Fixed)", layout="wide", page_icon="🛡️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
 
-# 디버그 로그 저장을 위한 세션 초기화
 if "debug_logs" not in st.session_state:
     st.session_state["debug_logs"] = []
 
@@ -45,7 +44,6 @@ supabase = init_supabase()
 
 # --- [2. 유틸리티: JSON 파싱 헬퍼] ---
 def parse_gemini_json(text):
-    """Gemini가 마크다운이나 잡담을 섞어줘도 JSON만 추출"""
     try:
         return json.loads(text)
     except:
@@ -63,7 +61,6 @@ def get_all_available_models(api_key):
     genai.configure(api_key=api_key)
     try:
         models = [m.name.replace("models/", "") for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        # 우선순위 정렬
         models.sort(key=lambda x: 0 if 'lite' in x else 1 if 'flash' in x else 2)
         return models
     except:
@@ -80,7 +77,7 @@ OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
 STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
 
-# --- [5. VectorEngine (복구됨)] ---
+# --- [5. VectorEngine] ---
 class VectorEngine:
     def __init__(self):
         self.vocab = set()
@@ -115,7 +112,7 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [6. Gemini Logic (The Real Survivor)] ---
+# --- [6. Gemini Logic] ---
 safety_settings_none = {
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -126,7 +123,6 @@ safety_settings_none = {
 def call_gemini_survivor(api_key, prompt, is_json=False):
     genai.configure(api_key=api_key)
     generation_config = {"response_mime_type": "application/json"} if is_json else {}
-    
     all_models = get_all_available_models(api_key)
     logs = []
     
@@ -222,6 +218,12 @@ def extract_meaningful_tokens(text):
     noise = ['충격','속보','긴급','오늘','지금','결국','뉴스','영상']
     return [normalize_korean_word(w) for w in raw if w not in noise]
 
+# [복구됨] 누락되었던 함수 재정의
+def extract_top_keywords_from_transcript(text, top_n=5):
+    if not text: return []
+    tokens = extract_meaningful_tokens(text)
+    return Counter(tokens).most_common(top_n)
+
 def train_dynamic_vector_engine():
     try:
         res_t = supabase.table("analysis_history").select("video_title").lt("fake_prob", 40).execute()
@@ -241,7 +243,6 @@ def save_analysis(channel, title, prob, url, keywords):
     try: supabase.table("analysis_history").insert({"channel_name": channel, "video_title": title, "fake_prob": prob, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "video_url": url, "keywords": keywords}).execute()
     except: pass
 
-# [UI 복구] 그래프
 def render_intelligence_distribution(current_prob):
     try:
         res = supabase.table("analysis_history").select("fake_prob").execute()
@@ -252,11 +253,9 @@ def render_intelligence_distribution(current_prob):
         st.altair_chart(base + rule, use_container_width=True)
     except: pass
 
-# [UI 복구] 프로그레스 바
 def colored_progress_bar(label, percent, color):
     st.markdown(f"""<div style="margin-bottom: 10px;"><div style="display: flex; justify-content: space-between; margin-bottom: 3px;"><span style="font-size: 13px; font-weight: 600; color: #555;">{label}</span><span style="font-size: 13px; font-weight: 700; color: {color};">{round(percent * 100, 1)}%</span></div><div style="background-color: #eee; border-radius: 5px; height: 8px; width: 100%;"><div style="background-color: {color}; height: 8px; width: {percent * 100}%; border-radius: 5px;"></div></div></div>""", unsafe_allow_html=True)
 
-# [UI 복구] 점수표
 def render_score_breakdown(data_list):
     style = """<style>table.score-table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; font-family: sans-serif; font-size: 14px; margin-top: 10px;} table.score-table th { background-color: #f8f9fa; color: #495057; font-weight: bold; padding: 12px 15px; text-align: left; border-bottom: 1px solid #e0e0e0; } table.score-table td { padding: 12px 15px; border-bottom: 1px solid #f0f0f0; color: #333; } table.score-table tr:last-child td { border-bottom: none; } .badge { padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 11px; display: inline-block; text-align: center; min-width: 45px; } .badge-danger { background-color: #ffebee; color: #d32f2f; } .badge-success { background-color: #e8f5e9; color: #2e7d32; } .badge-neutral { background-color: #f5f5f5; color: #757575; border: 1px solid #e0e0e0; }</style>"""
     rows = ""
@@ -293,15 +292,12 @@ def check_tag_abuse(title, hashtags, channel_name):
     if not hashtags: return 0, "해시태그 없음"
     return 0, "양호"
 
-# [Hotfix: Safe Fetch]
 def fetch_real_transcript(info_dict):
     try:
         url = None
-        # 안전한 접근을 위해 .get() 사용
         subs = info_dict.get('subtitles') or {}
         auto = info_dict.get('automatic_captions') or {}
         merged = {**subs, **auto}
-        
         if 'ko' in merged:
             for fmt in merged['ko']:
                 if fmt['ext'] == 'vtt': url = fmt['url']; break
@@ -315,7 +311,7 @@ def fetch_real_transcript(info_dict):
 
 def fetch_comments_via_api(video_id):
     try:
-        url = "[https://www.googleapis.com/youtube/v3/commentThreads](https://www.googleapis.com/youtube/v3/commentThreads)"
+        url = "https://www.googleapis.com/youtube/v3/commentThreads"
         res = requests.get(url, params={'part': 'snippet', 'videoId': video_id, 'key': YOUTUBE_API_KEY, 'maxResults': 50})
         if res.status_code == 200:
             data = res.json()
@@ -330,14 +326,13 @@ def fetch_comments_via_api(video_id):
 def fetch_news_regex(query):
     news_res = []
     try:
-        rss = f"[https://news.google.com/rss/search?q=](https://news.google.com/rss/search?q=){requests.utils.quote(query)}&hl=ko&gl=KR"
+        rss = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
         raw = requests.get(rss, timeout=5).text
         items = re.findall(r'<item>(.*?)</item>', raw, re.DOTALL)
         for item in items[:10]:
             t = re.search(r'<title>(.*?)</title>', item)
             d = re.search(r'<description>(.*?)</description>', item)
             l = re.search(r'<link>(.*?)</link>', item)
-            
             if t and l:
                 nt = t.group(1).replace("<![CDATA[", "").replace("]]>", "")
                 nl = l.group(1).strip()
@@ -346,12 +341,25 @@ def fetch_news_regex(query):
     except: pass
     return news_res
 
+def analyze_comment_relevance(comments, context_text):
+    if not comments: return [], 0, "분석 불가"
+    cn = extract_meaningful_tokens(" ".join(comments))
+    top = Counter(cn).most_common(5)
+    ctx = set(extract_meaningful_tokens(context_text))
+    match = sum(1 for w,c in top if w in ctx)
+    score = int(match/len(top)*100) if top else 0
+    msg = "✅ 주제 집중" if score >= 60 else "⚠️ 일부 관련" if score >= 20 else "❌ 무관"
+    return [f"{w}({c})" for w, c in top], score, msg
+
+def check_red_flags(comments):
+    detected = [k for c in comments for k in ['가짜뉴스', '주작', '사기', '거짓말', '허위', '선동'] if k in c]
+    return len(detected), list(set(detected))
+
 def run_forensic_main(url):
     st.session_state["debug_logs"] = []
     progress_text = "분석 시작 중..."
     my_bar = st.progress(0, text=progress_text)
     
-    # DB Stats & Vector Engine Train
     db_count, db_truth, db_fake = train_dynamic_vector_engine()
     
     my_bar.progress(10, text="1단계: 영상 자막 및 댓글 수집 중...")
@@ -385,7 +393,6 @@ def run_forensic_main(url):
             news_items = fetch_news_regex(query)
             news_ev = []; max_match = 0
             
-            # [Deep Verify]
             my_bar.progress(70, text="4단계: 뉴스 본문 정밀 대조 중...")
             for idx, item in enumerate(news_items[:3]):
                 ai_s, ai_r, source_type, evidence_text, real_url = deep_verify_news(summary, item['link'], item['desc'])
@@ -435,7 +442,6 @@ def run_forensic_main(url):
             save_analysis(uploader, title, final_prob, url, query)
             my_bar.empty()
 
-            # [UI 출력 - v91 스타일 복구]
             st.subheader("🕵️ Dual-Engine Analysis Result")
             col_a, col_b, col_c = st.columns(3)
             with col_a: 
