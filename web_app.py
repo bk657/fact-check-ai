@@ -14,7 +14,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v66.0 (Gemini Judge)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v66.1 (HyperLink)", layout="wide", page_icon="⚖️")
 
 # 세션 상태 초기화
 if "is_admin" not in st.session_state:
@@ -83,9 +83,8 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (Auto-Discovery + Judge)] ---
+# --- [4. Gemini Logic] ---
 def get_gemini_model():
-    """Gemini 모델 인스턴스 반환"""
     genai.configure(api_key=GOOGLE_API_KEY)
     available_models = []
     try:
@@ -105,7 +104,6 @@ def get_gemini_model():
     return genai.GenerativeModel(target_model) if target_model else None, target_model
 
 def get_gemini_search_keywords(title, transcript):
-    """검색어 추출"""
     model, model_name = get_gemini_model()
     if model:
         try:
@@ -124,13 +122,9 @@ def get_gemini_search_keywords(title, transcript):
     return " ".join(cleaned[:3]) if cleaned else title, "🤖 Backup Logic"
 
 def get_gemini_verdict(title, summary, news_items):
-    """
-    🚨 [신규] Gemini가 영상 내용과 뉴스 기사들을 비교하여 최종 판결을 내림
-    """
     model, model_name = get_gemini_model()
     if not model: return 50, "AI 모델 로드 실패"
 
-    # 뉴스 텍스트 구조화
     news_context = "\n".join([f"- {item['title']}" for item in news_items])
     if not news_context: news_context = "관련 뉴스 기사가 검색되지 않았습니다."
 
@@ -161,12 +155,9 @@ def get_gemini_verdict(title, summary, news_items):
     try:
         safety_settings = [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
         response = model.generate_content(prompt, safety_settings=safety_settings)
-        
-        # JSON 파싱
         txt = response.text.replace("```json", "").replace("```", "").strip()
         data = json.loads(txt)
         return data.get("risk_score", 50), data.get("reason", "분석 결과 없음")
-        
     except Exception as e:
         return 50, f"AI 판단 중 오류 발생 ({str(e)[:30]}...)"
 
@@ -300,6 +291,7 @@ def fetch_comments_via_api(video_id):
     except: pass
     return [], "❌ API 통신 실패"
 
+# 🚨 [뉴스 링크 추출 기능 추가]
 def fetch_news_regex(query):
     news_res = []
     try:
@@ -309,9 +301,13 @@ def fetch_news_regex(query):
         for item in items[:10]:
             t = re.search(r'<title>(.*?)</title>', item)
             d = re.search(r'<description>(.*?)</description>', item)
+            l = re.search(r'<link>(.*?)</link>', item) # 링크 추출
+            
             nt = t.group(1).replace("<![CDATA[", "").replace("]]>", "") if t else ""
             nd = clean_html_regex(d.group(1).replace("<![CDATA[", "").replace("]]>", "")) if d else ""
-            news_res.append({'title': nt, 'desc': nd})
+            nl = l.group(1) if l else "#"
+            
+            news_res.append({'title': nt, 'desc': nd, 'link': nl})
     except: pass
     return news_res
 
@@ -356,7 +352,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v66.0...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v66.1...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -401,17 +397,18 @@ def run_forensic_main(url):
                 t_score, c_score, final = calculate_dual_match(item, extract_meaningful_tokens(query), summary)
                 if final > max_match: max_match = final
                 if final < 20: mismatch_count += 1
+                
+                # 🚨 [UI 변경] 데이터프레임용 데이터 구성
                 news_ev.append({
                     "뉴스 제목": item['title'],
                     "제목 일치": f"{t_score}%",
                     "내용 유사": f"{c_score}%",
-                    "최종 점수": f"{final}%"
+                    "최종 점수": f"{final}%",
+                    "기사 링크": item['link']
                 })
             
-            # 🚨 [New] Gemini 판결 요청 (Step 5)
             gemini_risk, gemini_reason = get_gemini_verdict(title, summary, news_items)
             
-            # 뉴스 점수 계산 (내부 알고리즘)
             if not news_ev:
                 news_score = 0
             else:
@@ -454,16 +451,9 @@ def run_forensic_main(url):
                 
             clickbait = 10 if any(w in title for w in ['충격','경악','폭로']) else -5
             
-            # 🚨 [New] 최종 점수 합산 (하이브리드: 내부 70% + Gemini 30%)
-            # 1. 내부 알고리즘 점수
             algo_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
             algo_score = max(0, min(100, algo_score))
-            
-            # 2. Gemini 점수 (Risk Score) 보정 (중립 50점 기준)
-            # Gemini가 80점(위험)을 주면 +30점 효과, 20점(안전)을 주면 -30점 효과
             gemini_impact = (gemini_risk - 50) 
-            
-            # 3. 가중치 적용 합산
             final_prob = int((algo_score * 0.7) + (gemini_risk * 0.3))
             final_prob = max(5, min(99, final_prob))
             
@@ -500,8 +490,10 @@ def run_forensic_main(url):
                 st.write("**[Score Breakdown]**")
                 silence_label = "미검증 주장" if is_gray_zone else "침묵의 메아리 (No News)"
                 
+                # 🚨 Score Breakdown에 AI Impact 추가
                 render_score_breakdown([
                     ["기본 위험도", 50, "Base Score"],
+                    ["Gemini AI 심층 판정", gemini_impact, "AI 판단 가중치 적용"],
                     ["진실 맥락 보너스", t_impact, ""], 
                     ["가짜 패턴 가점", f_impact, ""],
                     ["뉴스 교차 대조 (Penalty/Bonus)", news_score, "60% 이상 일치 시 안전, 불일치 많으면 위험"], 
@@ -518,9 +510,22 @@ def run_forensic_main(url):
                 colored_progress_bar("🚨 거짓 영역 근접도", fs, "#e74c3c")
                 st.write("---")
                 
+                # 🚨 [증거 1] 뉴스 교차 대조 (아웃링크 적용)
                 st.markdown(f"**[증거 1] 뉴스 교차 대조 (Dual-Layer)**")
                 st.caption(f"📡 수집: **{len(news_ev)}건** (불일치 기사가 많을수록 위험도 급증)")
-                if news_ev: st.dataframe(pd.DataFrame(news_ev), use_container_width=True, hide_index=True)
+                if news_ev:
+                    # 링크 컬럼 설정
+                    df_news = pd.DataFrame(news_ev)
+                    st.dataframe(
+                        df_news,
+                        column_config={
+                            "기사 링크": st.column_config.LinkColumn(
+                                "바로가기", display_text="🔗 기사보기"
+                            )
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
                 else: st.warning("🔍 관련 뉴스를 찾을 수 없습니다. (Silent Echo Risk)")
                     
                 st.markdown("**[증거 2] 시청자 여론 심층 분석**")
@@ -531,8 +536,8 @@ def run_forensic_main(url):
                 top_kw_str = ", ".join([f"{w}({c})" for w, c in top_transcript_keywords])
                 st.table(pd.DataFrame([["영상 최다 언급 키워드", top_kw_str], ["제목 낚시어", "있음" if clickbait > 0 else "없음"], ["선동성 지수", f"{agitation}회"], ["기사-영상 일치도", f"{max_match}%"]], columns=["분석 항목", "판정 결과"]))
                 
-                # 🚨 [증거 5] Gemini 심층 판정
-                st.markdown("**[증거 5] Gemini AI 심층 판정 (Judge)**")
+                # 🚨 [증거 4] Gemini AI 심층 판정 (Judge)
+                st.markdown("**[증거 4] Gemini AI 심층 판정 (Judge)**")
                 st.info(f"🤖 **AI 위험도 평가: {gemini_risk}점**")
                 st.caption(f"💡 판단 근거: {gemini_reason}")
                 
@@ -559,7 +564,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ 유튜브 가짜뉴스 판독기")
+st.title("⚖️유튜브 가짜뉴스 판독기")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
