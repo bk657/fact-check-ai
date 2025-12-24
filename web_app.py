@@ -6,6 +6,7 @@ import time
 import random
 import math
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from datetime import datetime
 from collections import Counter
 import yt_dlp
@@ -14,22 +15,21 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v71.1 (Key A: 2.5 Fixed)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v77.1 (No Backup Algo)", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
 
-# 🌟 Secrets 로드 (Twin Key 적용)
+# 🌟 Secrets 로드
 try:
     YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
     ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
-    # Twin Gemini Keys
-    GOOGLE_API_KEY_A = st.secrets["GOOGLE_API_KEY_A"] # 수사관 (키워드 추출)
-    GOOGLE_API_KEY_B = st.secrets["GOOGLE_API_KEY_B"] # 판사 (최종 추론)
+    GOOGLE_API_KEY_A = st.secrets["GOOGLE_API_KEY_A"]
+    GOOGLE_API_KEY_B = st.secrets["GOOGLE_API_KEY_B"]
 except:
-    st.error("❌ 필수 키(API Keys)가 설정되지 않았습니다. secrets.toml에 GOOGLE_API_KEY_A와 B를 모두 설정해주세요.")
+    st.error("❌ 필수 키(API Keys)가 설정되지 않았습니다.")
     st.stop()
 
 @st.cache_resource
@@ -84,65 +84,50 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (Twin Engine)] ---
+# --- [4. Gemini Logic] ---
 
-# [Engine A] 수사관: 키워드 추출 전담 (Ver 2.5 - Fixed)
-def get_gemini_search_keywords(title, transcript):
+# 🚨 안전 설정: 필터링 완전 해제
+safety_settings_none = {
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+}
+
+# [Engine A] 수사관: 알고리즘 완전 삭제 + 제목/URL만 사용
+def get_gemini_search_keywords(title, url):
     genai.configure(api_key=GOOGLE_API_KEY_A)
-    # [수정됨] 2.0 -> 2.5로 확실히 변경
+    # [모델] 2.5-flash 사용 (사용자 지시)
     target_model = 'gemini-2.5-flash'
     
-    full_context = transcript[:30000]
-    
-    # [프롬프트] 원본 유지
+    # [입력] 제목 + URL (사용자 지시)
     prompt = f"""
-    You are an expert investigative journalist. 
-    Your task is to extract ONE precise search query for Google News to verify the facts in this video.
+    Role: Investigative Journalist
+    Task: Analyze the inputs and extract ONE Korean search keyword.
     
-    [Input Data]
-    - Video Title: {title} (WARNING: Titles are often clickbait/exaggerated. Do NOT trust the title blindly.)
-    - Transcript: {full_context}
+    Input Title: {title}
+    Input URL: {url}
     
-    [Critical Extraction Rules]
-    1. **IGNORE** generic YouTubers' names (e.g., '입짧은 햇님', '쯔양') unless they are the criminal suspect.
-    2. **IGNORE** vlog-style phrases (e.g., '운동으로 뺐다더니', '먹방', '일상').
-    3. **PRIORITIZE** specific Proper Nouns found in the Transcript:
-       - Medicine/Drug names (e.g., '나비약', '펜터민', '디에타민').
-       - Legal/Crime terms (e.g., '마약류 관리법', '검찰 송치').
-       - Official Event/Policy names.
-    4. **Logic:** If the title says "Diet Secret" but the transcript talks about "Phentermine Side Effects", the query MUST be "펜터민 부작용" (Phentermine Side Effects).
-    5. Output Format: Just the Korean query string. No explanations.
-    
-    [Target Query Example]
-    - Bad: "입짧은 햇님 다이어트 비결" (Too soft)
-    - Good: "나비약 펜터민 부작용 사망 사례" (Specific & Verifiable)
+    Rules:
+    1. Ignore clickbait.
+    2. Output ONLY the keyword.
     """
 
     try:
         model = genai.GenerativeModel(target_model)
-        response = model.generate_content(prompt)
-        if response.text:
-            return response.text.strip(), f"✨ Gemini Investigator (Key A / 2.5-Flash)"
-    except Exception as e:
-        pass
+        response = model.generate_content(prompt, safety_settings=safety_settings_none)
+        
+        # [성공] 결과 반환
+        return response.text.strip(), f"✨ Gemini 2.5 (Title+URL)"
             
-    # 백업 로직
-    tokens = re.findall(r'[가-힣]{2,}', title)
-    cleaned = []
-    for t in tokens:
-        t = re.sub(r'(은|는|이|가|을|를|의)$', '', t)
-        if len(t) > 1: cleaned.append(t)
-    return " ".join(cleaned[:3]) if cleaned else title, "🤖 Backup Logic"
+    except Exception as e:
+        # [실패] 백업 알고리즘 삭제! 에러 메시지를 그대로 반환하여 원인 파악
+        return f"🚨 Error: {str(e)}", "❌ API Call Failed"
 
-# [Engine B] 판사: 진위 여부 최종 추론 전담 (건드리지 않음)
+# [Engine B] 판사: 기존 유지 (2.0-Flash + 전체 자막)
 def get_gemini_verdict(title, transcript, news_items):
     genai.configure(api_key=GOOGLE_API_KEY_B)
-    
-    model_candidates = [
-        'gemini-2.0-flash', 
-        'gemini-2.5-flash',
-        'gemini-flash-latest'
-    ]
+    target_model = 'gemini-2.0-flash' # 기존 유지
     
     news_text = ""
     if not news_items:
@@ -159,41 +144,33 @@ def get_gemini_verdict(title, transcript, news_items):
     You are a professional Fact-Check AI Judge.
     
     [Task]
-    Compare the Video Transcript with the Search Results to determine if the video is 'Fake News/Clickbait' or 'Fact'.
+    Compare the Video Transcript with the Search Results.
     
     [Video Info]
     Title: {title}
-    Transcript Summary: {full_context[:2000]}... (truncated)
+    Transcript Summary: {full_context[:2000]}...
     
-    [Search Results (Evidence)]
+    [Search Results]
     {news_text}
     
     [Instruction]
-    1. Identify the core claim of the video.
-    2. Check if the Search Results support or contradict the claim.
-    3. If the video warns about dangers (e.g., drug side effects) and news confirms those dangers, it is TRUTH (Score 0-30).
-    4. If 'No related news found' BUT the content is a known medical/science fact (like 'Smoking is bad'), assume it is plausible.
-    5. Provide a 'fake_score' from 0 (Truth) to 100 (Fake).
-       - 0~30: Trustworthy / Fact / Beneficial Warning.
-       - 70~100: False claim / Scam / Unfounded conspiracy.
-    6. Write a short 'reason' in Korean (1 sentence).
+    1. Identify the core claim.
+    2. If the video warns about 'Drug Side Effects' and news confirms it -> TRUTH (Score 0-30).
+    3. If the video makes 'Unfounded Conspiracy Claims' -> FAKE (Score 80-100).
+    4. Provide a 'fake_score' (0=Truth, 100=Fake) and a short 'reason'.
 
     [Output Format - JSON Only]
     {{"score": <int>, "reason": "<string>"}}
     """
     
-    last_error = ""
-    for m_name in model_candidates:
-        try:
-            model = genai.GenerativeModel(m_name, generation_config={"response_mime_type": "application/json"})
-            response = model.generate_content(prompt)
-            result = json.loads(response.text)
-            return result['score'], result['reason']
-        except Exception as e:
-            last_error = str(e)
-            continue
-
-    return 50, f"AI 추론 실패 (모델: {model_candidates[0]} 등): {last_error}"
+    try:
+        # Key B는 여전히 재시도 로직을 가볍게 둠
+        model = genai.GenerativeModel(target_model, generation_config={"response_mime_type": "application/json"})
+        response = model.generate_content(prompt, safety_settings=safety_settings_none)
+        res_json = json.loads(response.text)
+        return res_json['score'], res_json['reason']
+    except Exception as e:
+        return 50, f"AI 추론 실패: {str(e)}"
 
 # --- [5. 유틸리티 함수] ---
 def normalize_korean_word(word):
@@ -225,7 +202,6 @@ def save_analysis(channel, title, prob, url, keywords):
     try: supabase.table("analysis_history").insert({"channel_name": channel, "video_title": title, "fake_prob": prob, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "video_url": url, "keywords": keywords}).execute()
     except: pass
 
-# [차트]
 def render_intelligence_distribution(current_prob):
     try:
         res = supabase.table("analysis_history").select("fake_prob").execute()
@@ -236,11 +212,9 @@ def render_intelligence_distribution(current_prob):
         st.altair_chart(base + rule, use_container_width=True)
     except: pass
 
-# [벡터 바]
 def colored_progress_bar(label, percent, color):
     st.markdown(f"""<div style="margin-bottom: 10px;"><div style="display: flex; justify-content: space-between; margin-bottom: 3px;"><span style="font-size: 13px; font-weight: 600; color: #555;">{label}</span><span style="font-size: 13px; font-weight: 700; color: {color};">{round(percent * 100, 1)}%</span></div><div style="background-color: #eee; border-radius: 5px; height: 8px; width: 100%;"><div style="background-color: {color}; height: 8px; width: {percent * 100}%; border-radius: 5px;"></div></div></div>""", unsafe_allow_html=True)
 
-# [점수표]
 def render_score_breakdown(data_list):
     style = """<style>table.score-table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; font-family: sans-serif; font-size: 14px; margin-top: 10px;} table.score-table th { background-color: #f8f9fa; color: #495057; font-weight: bold; padding: 12px 15px; text-align: left; border-bottom: 1px solid #e0e0e0; } table.score-table td { padding: 12px 15px; border-bottom: 1px solid #f0f0f0; color: #333; } table.score-table tr:last-child td { border-bottom: none; } .badge { padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 11px; display: inline-block; text-align: center; min-width: 45px; } .badge-danger { background-color: #ffebee; color: #d32f2f; } .badge-success { background-color: #e8f5e9; color: #2e7d32; } .badge-neutral { background-color: #f5f5f5; color: #757575; border: 1px solid #e0e0e0; }</style>"""
     rows = ""
@@ -333,6 +307,9 @@ def fetch_comments_via_api(video_id):
     return [], "❌ API 통신 실패"
 
 def fetch_news_regex(query):
+    # 에러 메시지가 쿼리일 경우 검색 안함
+    if "Error" in query or "API Call Failed" in query: return []
+    
     news_res = []
     try:
         rss = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
@@ -388,7 +365,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v71.1...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v77.1...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -411,8 +388,8 @@ def run_forensic_main(url):
             summary = summarize_transcript(full_text, title)
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
-            # [Step 2] Gemini Key A (수사관)
-            query, source = get_gemini_search_keywords(title, full_text)
+            # [Step 2] Gemini Key A (수사관) - Title + URL (Algo Removed)
+            query, source = get_gemini_search_keywords(title, url)
 
             # [Step 3] 기본 알고리즘 분석
             is_official = check_is_official(uploader)
@@ -549,6 +526,7 @@ def run_forensic_main(url):
                     st.write(f"⚖️ **판결:** {ai_judge_reason}")
                     st.caption(f"* Gemini 독립 추론 점수: {ai_judge_score}점 (Key B)")
 
+                # 결과 해석 리포트
                 reasons = []
                 if final_prob >= 60:
                     reasons.append("🚨 **위험 감지**: AI 판사와 알고리즘 모두 이 영상의 주장을 의심하고 있습니다.")
@@ -564,11 +542,12 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v71.1 (Keyword Fix)")
+st.title("⚖️ Fact-Check Center v77.1 (No Backup Algo)")
 
+# [법적 고지 복구]
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (2.0-Flash)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (2.0-Flash)")
+    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (Title+URL, Pure)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (Full Context)")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
