@@ -15,7 +15,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v82.1 (Smart Query)", layout="wide", page_icon="🔍")
+st.set_page_config(page_title="Fact-Check Center v83.0 (Optimized)", layout="wide", page_icon="⚡")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -38,7 +38,41 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- [2. 상수 정의] ---
+# --- [2. 모델 프리-체크 (Start-up Logic)] ---
+# 구글이 제공하는 주요 모델 리스트 (우선순위 순)
+CANDIDATE_MODELS = [
+    "gemini-2.5-flash-lite", 
+    "gemini-flash-lite-latest",
+    "gemini-2.5-flash", 
+    "gemini-2.0-flash", 
+    "gemini-1.5-flash",
+    "gemini-flash-latest"
+]
+
+def find_best_model(api_key):
+    genai.configure(api_key=api_key)
+    # 안전 설정 (테스트용)
+    safety = {HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE}
+    
+    for model_name in CANDIDATE_MODELS:
+        try:
+            # 아주 가벼운 핑 테스트
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content("hi", safety_settings=safety)
+            if response.text:
+                return model_name # 성공하면 즉시 반환
+        except:
+            continue
+    return "gemini-2.0-flash" # 모두 실패시 기본값
+
+# 앱 시작 시 최초 1회 실행하여 최적 모델 고정
+if "best_model_name" not in st.session_state:
+    with st.spinner("🚀 가용 가능한 최적의 Gemini 모델을 탐색 중입니다... (최초 1회)"):
+        found_model = find_best_model(GOOGLE_API_KEY_A)
+        st.session_state["best_model_name"] = found_model
+    st.toast(f"✅ 최적 모델 설정 완료: {found_model}", icon="⚡")
+
+# --- [3. 상수 정의] ---
 WEIGHT_ALGO = 0.6
 WEIGHT_AI = 0.4
 
@@ -49,7 +83,7 @@ OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
 STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
 
-# --- [3. VectorEngine] ---
+# --- [4. VectorEngine] ---
 class VectorEngine:
     def __init__(self):
         self.vocab = set()
@@ -84,7 +118,7 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (All-Model Survivor)] ---
+# --- [5. Gemini Logic] ---
 
 # 🚨 안전 설정
 safety_settings_none = {
@@ -94,85 +128,65 @@ safety_settings_none = {
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
 
-# 🧬 가용 가능한 모든 모델 리스트 가져오기 (캐싱)
-@st.cache_data
-def get_all_gemini_models():
-    genai.configure(api_key=GOOGLE_API_KEY_A)
-    models = []
-    try:
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods and 'gemini' in m.name:
-                models.append(m.name)
-    except:
-        models = ["models/gemini-2.5-flash-lite", "models/gemini-flash-lite-latest", "models/gemini-1.5-flash", "models/gemini-2.0-flash"]
-    
-    # Lite/Flash 모델을 우선순위로 정렬
-    models.sort(key=lambda x: 'lite' not in x) 
-    return models
-
-# ⚔️ 무적의 호출 함수 (전수 조사)
-def call_gemini_survivor(api_key, prompt, is_json=False):
+# [공통] 단순 호출 (이미 프리-체크 했으므로 재시도 로직 최소화)
+def call_gemini_fast(api_key, prompt, is_json=False):
     genai.configure(api_key=api_key)
+    # 프리-체크된 최적 모델 사용
+    target_model = st.session_state.get("best_model_name", "gemini-2.0-flash")
+    
     generation_config = {"response_mime_type": "application/json"} if is_json else {}
     
-    all_models = get_all_gemini_models()
-    last_error = ""
-    
-    for model_name in all_models:
+    try:
+        model = genai.GenerativeModel(target_model, generation_config=generation_config)
+        response = model.generate_content(prompt, safety_settings=safety_settings_none)
+        return response.text, target_model
+    except Exception as e:
+        # 혹시라도 실패하면 예비용 2.0으로 한 번 더 시도
         try:
-            clean_name = model_name.replace("models/", "")
-            model = genai.GenerativeModel(clean_name, generation_config=generation_config)
+            fallback_model = "gemini-2.0-flash"
+            model = genai.GenerativeModel(fallback_model, generation_config=generation_config)
             response = model.generate_content(prompt, safety_settings=safety_settings_none)
-            
-            if response.text:
-                return response.text, clean_name 
-                
-        except Exception as e:
-            last_error = str(e)
-            time.sleep(0.2)
-            continue
-            
-    return None, f"All Models Failed. Last: {last_error}"
+            return response.text, fallback_model
+        except:
+            return None, str(e)
 
-# [Engine A] 수사관: (프롬프트 개선) 단어 1개가 아닌 구체적 검색어 조합 요청
+# [Engine A] 수사관: 제목 + 자막 10000자
 def get_gemini_search_keywords(title, transcript):
-    # [데이터] 사용자 요청대로 전체 자막 사용 (Key B와 동일하게 30,000자 제한)
-    full_context = transcript[:30000]
+    context_data = transcript[:10000]
     
     prompt = f"""
     You are a Fact-Check Investigator.
     
     [Input Data]
     - Title: {title}
-    - Transcript: {full_context}
+    - Transcript: {context_data}
     
     [Goal]
     Create the best Google News search query to verify the claims in this video.
     
     [Instructions]
-    1. Do NOT output a single noun (e.g., 'Drug'). That is too broad.
-    2. Combine the 'Subject' (Drug/Person) with the 'Issue' (Side Effect/Death/Crime).
-    3. Example:
-       - Bad: "Phentermine"
-       - Good: "Phentermine side effects death" (나비약 펜터민 부작용 사망)
-    4. Output: ONLY the Korean search query string (2-4 words).
+    1. Do NOT output a single noun. Combine 'Subject' (Drug/Person) with 'Issue' (Side Effect/Death/Crime).
+    2. Example: "Phentermine side effects death" (나비약 펜터민 부작용 사망)
+    3. Output: ONLY the Korean search query string.
     """
 
-    result_text, model_used = call_gemini_survivor(GOOGLE_API_KEY_A, prompt)
+    result_text, model_used = call_gemini_fast(GOOGLE_API_KEY_A, prompt)
     
     if result_text:
-        return result_text.strip(), f"✨ {model_used} (Smart Query)"
+        return result_text.strip(), f"✨ {model_used}"
     else:
-        return f"Error", "❌ All Models Died"
+        return title, "❌ API Failed"
 
-# [Engine B] 판사: 전체 자막 (기존 유지)
+# [Engine B] 판사: 제목 + 전체 자막
 def get_gemini_verdict(title, transcript, news_items):
     news_text = ""
     if not news_items:
         news_text = "No related news articles found."
     else:
         for idx, item in enumerate(news_items[:5]):
-            news_text += f"{idx+1}. {item.get('title', '')} : {item.get('desc', '')}\n"
+            safe_title = item.get('title', '제목 없음')
+            safe_desc = item.get('desc', '내용 없음')
+            news_text += f"{idx+1}. {safe_title} : {safe_desc}\n"
             
     full_context = transcript[:30000]
 
@@ -186,18 +200,18 @@ def get_gemini_verdict(title, transcript, news_items):
     Format: JSON {{ "score": <int>, "reason": "<string>" }}
     """
     
-    result_text, model_used = call_gemini_survivor(GOOGLE_API_KEY_B, prompt, is_json=True)
+    result_text, model_used = call_gemini_fast(GOOGLE_API_KEY_B, prompt, is_json=True)
     
     if result_text:
         try:
             data = json.loads(result_text)
             return data['score'], f"{data['reason']} (By {model_used})"
         except:
-            return 50, f"JSON Error (By {model_used})"
+            return 50, f"JSON Error"
             
     return 50, f"Judge Failed"
 
-# --- [5. 유틸리티 함수] ---
+# --- [6. 유틸리티 함수] ---
 def normalize_korean_word(word):
     word = re.sub(r'[^가-힣0-9]', '', word)
     for j in ['은','는','이','가','을','를','의','에','에게','로','으로']:
@@ -331,6 +345,7 @@ def fetch_comments_via_api(video_id):
     except: pass
     return [], "❌ API 통신 실패"
 
+# [수정됨] URL 추출 기능 추가
 def fetch_news_regex(query):
     news_res = []
     try:
@@ -340,9 +355,14 @@ def fetch_news_regex(query):
         for item in items[:10]:
             t = re.search(r'<title>(.*?)</title>', item)
             d = re.search(r'<description>(.*?)</description>', item)
+            # [추가] 링크 태그 추출
+            l = re.search(r'<link>(.*?)</link>', item)
+            
             nt = t.group(1).replace("<![CDATA[", "").replace("]]>", "") if t else "제목 없음"
             nd = clean_html_regex(d.group(1).replace("<![CDATA[", "").replace("]]>", "")) if d else "내용 없음"
-            news_res.append({'title': nt, 'desc': nd})
+            nl = l.group(1).strip() if l else ""
+            
+            news_res.append({'title': nt, 'desc': nd, 'link': nl})
     except: pass
     return news_res
 
@@ -387,7 +407,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v82.1...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v83.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -410,7 +430,7 @@ def run_forensic_main(url):
             summary = summarize_transcript(full_text, title)
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
-            # [Step 2] Gemini Key A (수사관) - Smart Query Extraction (All-Model Failover)
+            # [Step 2] Gemini Key A (수사관)
             query, source = get_gemini_search_keywords(title, full_text)
 
             # [Step 3] 기본 알고리즘 분석
@@ -437,6 +457,7 @@ def run_forensic_main(url):
                 if final < 20: mismatch_count += 1
                 news_ev.append({
                     "뉴스 제목": safe_title,
+                    "뉴스 링크": item.get('link', ''), # [수정] 링크 추가
                     "제목 일치": f"{t_score}%",
                     "내용 유사": f"{c_score}%",
                     "최종 점수": f"{final}%"
@@ -514,8 +535,8 @@ def run_forensic_main(url):
                     st.write(summary)
                 
                 st.write("**[Score Breakdown]**")
+                # [수정됨] Rule-based Algo Score 항목 삭제 (중복 방지)
                 render_score_breakdown([
-                    ["Rule-based Algo Score (60%)", algo_final_prob, "기존 패턴/뉴스 매칭 점수"],
                     ["AI Judge Score (40%)", ai_judge_score, "Gemini 최종 추론 점수"],
                     ["진실 데이터 맥락", t_impact, "내부 DB 진실 데이터와 유사성"],
                     ["가짜 패턴 맥락", f_impact, "내부 DB 가짜 데이터와 유사성"],
@@ -533,7 +554,16 @@ def run_forensic_main(url):
                 st.write("---")
 
                 st.markdown(f"**[증거 1] 뉴스 교차 대조 (Dual-Layer)**")
-                if news_ev: st.dataframe(pd.DataFrame(news_ev), use_container_width=True, hide_index=True)
+                if news_ev:
+                    # [수정됨] LinkColumn을 사용하여 URL을 클릭 가능하게 표시
+                    st.dataframe(
+                        pd.DataFrame(news_ev),
+                        column_config={
+                            "뉴스 링크": st.column_config.LinkColumn("기사 바로가기")
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
                 else: st.warning("🔍 관련 뉴스를 찾을 수 없습니다. (Silent Echo Risk)")
                     
                 st.markdown("**[증거 2] 시청자 여론 심층 분석**")
@@ -548,7 +578,6 @@ def run_forensic_main(url):
                     st.write(f"⚖️ **판결:** {ai_judge_reason}")
                     st.caption(f"* Gemini 독립 추론 점수: {ai_judge_score}점 (Key B)")
 
-                # 결과 해석 리포트
                 reasons = []
                 if final_prob >= 60:
                     reasons.append("🚨 **위험 감지**: AI 판사와 알고리즘 모두 이 영상의 주장을 의심하고 있습니다.")
@@ -564,12 +593,12 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v82.1 (Smart Query)")
+st.title("⚖️ Fact-Check Center v83.0 (Optimized)")
 
 # [법적 고지 복구]
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (Smart Query, All-Model Failover)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (Full-Context, All-Model Failover)")
+    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (Smart Pre-Check)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (Full Context)")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
