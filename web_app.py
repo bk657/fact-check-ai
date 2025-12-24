@@ -13,7 +13,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v63.5 (Force Debug)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v63.6 (Syntax Fix)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets 로드
 try:
@@ -184,7 +184,9 @@ def fetch_real_transcript(info):
         url = None
         for k in ['subtitles', 'automatic_captions']:
             if k in info and 'ko' in info[k]:
-                url = info[k]['ko'][0]['url']; break
+                for fmt in info[k]['ko']:
+                    if fmt['ext'] == 'vtt': url = fmt['url']; break
+            if url: break
         if url: return requests.get(url).text
     except: pass
     return info.get('description', '')
@@ -203,15 +205,16 @@ def fetch_news_regex(query):
         rss = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=ko&gl=KR"
         raw = requests.get(rss, timeout=3).text
         items = re.findall(r'<title>(.*?)</title>', raw)
-        return [{'title':t.replace("<![CDATA[","").replace("]]>","")} for t in items[1:6]]
+        # HTML 태그 제거
+        clean_items = []
+        for t in items[1:6]:
+            clean = t.replace("<![CDATA[", "").replace("]]>", "")
+            clean_items.append({'title': clean})
+        return clean_items
     except: return []
 
-def calculate_dual_match(news, query_nouns, full_text, query):
-    if not news: return 0
-    return 0 # Placeholder
-
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v63.5")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v63.6")
 with st.container(border=True):
     agree = st.checkbox("동의합니다.")
 
@@ -223,24 +226,23 @@ if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not
             title = info['title']
             transcript = fetch_real_transcript(info)
             
-            # 🚨 여기가 핵심: 결과 확인
+            # 🚨 Gemini 결과 및 에러 확인
             query, source = get_gemini_search_keywords(title, transcript)
             
-            # 뉴스 검색 및 로직 수행 (간소화)
+            # 뉴스 검색
             news_items = fetch_news_regex(query)
             
             st.success("분석 완료")
             st.divider()
             
-            # 결과 출력
+            # 🔍 [여기가 핵심입니다]
             st.info(f"🎯 **추출 검색어**: {query}")
             
-
-[Image of magnifying glass over data]
-
             if "Error" in source:
+                # 에러 발생 시 빨간색으로 원인 표시
                 st.error(f"⚠️ **Gemini 실패 원인**: {source}")
             else:
+                # 성공 시 초록색 표시
                 st.success(f"✅ **성공 출처**: {source}")
                 
             st.write(f"뉴스 검색 결과: {len(news_items)}건")
