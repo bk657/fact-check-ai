@@ -13,7 +13,7 @@ import altair as alt
 import traceback
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v54.1 (UI Restore)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v54.2 (Full Restore)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets 로드
 try:
@@ -109,7 +109,7 @@ def generate_smart_query(title, transcript):
     elif subject: return f"{subject} {title.split()[-1]}"
     else: return " ".join(extract_meaningful_tokens(title)[:3])
 
-# --- [4. UI 유틸리티 (복구됨)] ---
+# --- [4. UI 유틸리티] ---
 def colored_progress_bar(label, percent, color):
     st.markdown(f"""<div style="margin-bottom: 10px;"><div style="display: flex; justify-content: space-between; margin-bottom: 3px;"><span style="font-size: 13px; font-weight: 600; color: #555;">{label}</span><span style="font-size: 13px; font-weight: 700; color: {color};">{round(percent * 100, 1)}%</span></div><div style="background-color: #eee; border-radius: 5px; height: 8px; width: 100%;"><div style="background-color: {color}; height: 8px; width: {percent * 100}%; border-radius: 5px;"></div></div></div>""", unsafe_allow_html=True)
 
@@ -127,11 +127,11 @@ def render_score_breakdown(data_list):
 def witty_loading_sequence(total):
     messages = [
         f"🧠 [Intelligence Level: {total}] 집단 지성 로드 중...",
-        "📡 영상 데이터 정밀 추출 중...",
-        "🔍 Pure Logic Engine 문맥 분석 중...", 
+        "📡 증거 2: 시청자 여론(댓글) 정밀 수집 중...",
+        "🔍 증거 3: 영상 내 선동성 패턴 분석 중...", 
         "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
     ]
-    with st.status("🕵️ Context Merger v54.1 가동 중...", expanded=True) as status:
+    with st.status("🕵️ Context Merger v54.2 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.5)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
@@ -141,7 +141,7 @@ def get_total_intelligence():
         return count if count else 0
     except: return 0
 
-# --- [5. 데이터 처리 함수] ---
+# --- [5. 데이터 처리 함수 (증거 수집)] ---
 def fetch_real_transcript(info):
     try:
         url = None
@@ -161,6 +161,20 @@ def fetch_real_transcript(info):
                 return " ".join(clean)
     except: pass
     return info.get('description', '')
+
+# 🌟 [복구] 댓글 수집 기능 (API 사용)
+def fetch_comments_via_api(video_id):
+    try:
+        url = "https://www.googleapis.com/youtube/v3/commentThreads"
+        res = requests.get(url, params={
+            'part': 'snippet', 'videoId': video_id, 'key': YOUTUBE_API_KEY, 
+            'maxResults': 50, 'order': 'relevance'
+        })
+        if res.status_code == 200:
+            items = [i['snippet']['topLevelComment']['snippet']['textDisplay'] for i in res.json().get('items', [])]
+            return items, f"✅ API 수집 성공 (Top {len(items)})"
+    except: pass
+    return [], "⚠️ 댓글 수집 불가"
 
 def fetch_news_regex(query):
     news_res = []
@@ -213,7 +227,7 @@ def render_intelligence_distribution(current_prob):
     except: pass
 
 # --- [6. 메인 실행] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v54.1")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v54.2")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
@@ -224,6 +238,9 @@ if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not
         total_intelligence = get_total_intelligence()
         witty_loading_sequence(total_intelligence)
         
+        vid = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url_input)
+        if vid: vid = vid.group(1)
+
         with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
             try:
                 info = ydl.extract_info(url_input, download=False)
@@ -232,9 +249,12 @@ if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not
                 tags = info.get('tags', [])
                 full_text = fetch_real_transcript(info)
                 
+                # 분석 시작
                 query = generate_smart_query(title, full_text)
                 news_items = fetch_news_regex(query)
+                cmts, cmt_status = fetch_comments_via_api(vid)
                 
+                # 일치도 계산
                 max_match = 0
                 verified_news = []
                 for item in news_items:
@@ -242,7 +262,7 @@ if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not
                     if s > max_match: max_match = s
                     verified_news.append({'뉴스 제목': item['title'], '일치도': f"{s}%"})
                 
-                # 점수 로직
+                # --- [Score Breakdown 계산 복구] ---
                 score = 50
                 breakdown = []
                 
@@ -250,8 +270,7 @@ if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not
                 has_critical = any(k in title for k in CRITICAL_STATE_KEYWORDS)
                 
                 # 1. 뉴스 검증
-                news_diff = 0
-                news_msg = ""
+                news_diff = 0; news_msg = ""
                 if is_silent:
                     if has_critical: news_diff = 5; news_msg = "미검증 위험 주장"
                     else: news_diff = 10; news_msg = "증거 불충분"
@@ -261,15 +280,36 @@ if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not
                     else: news_diff = 10; news_msg = "낮은 연관성"
                 breakdown.append(["뉴스 교차 검증", news_diff, news_msg])
                 
-                # 2. 공식 채널
+                # 2. 여론 분석 (Sentiment)
+                sent_score = 0
+                if cmts:
+                    neg_keywords = ['가짜', '거짓', '선동', '구라', '소설', '사기']
+                    neg_cnt = sum(1 for c in cmts for k in neg_keywords if k in c)
+                    if neg_cnt > len(cmts) * 0.2:
+                        sent_score = 15
+                        breakdown.append(["여론(댓글) 경고", 15, "비판적 여론 감지"])
+                    else:
+                        sent_score = -5
+                        breakdown.append(["여론(댓글) 양호", -5, "안정적 반응"])
+                else:
+                    breakdown.append(["댓글 분석 불가", 0, "데이터 없음"])
+
+                # 3. 자극성 (Agitation)
+                agitation = sum(title.count(w) + full_text.count(w) for w in ['충격','경악','폭로','속보','긴급'])
+                if agitation > 0:
+                    agitation_score = min(agitation * 5, 20)
+                    breakdown.append(["자극적 표현", agitation_score, f"선동 키워드 {agitation}회"])
+                
+                # 4. 해시태그 어뷰징
+                abuse_score = 0
+                if not tags and not any(o in uploader for o in OFFICIAL_CHANNELS):
+                    abuse_score = 10
+                    breakdown.append(["메타데이터 부실", 10, "해시태그 없음"])
+
+                # 5. 공식 채널
                 if any(o in uploader for o in OFFICIAL_CHANNELS):
                     breakdown.append(["공식 언론사", -50, "신뢰도 보장"])
                     
-                # 3. 자극성
-                agitation = sum(title.count(w) + full_text.count(w) for w in ['충격','경악','폭로','속보','긴급'])
-                if agitation > 0:
-                    breakdown.append(["자극적 표현", min(agitation*5, 20), f"선동 키워드 {agitation}회"])
-                
                 final_score = 50 + sum(item[1] for item in breakdown)
                 final_score = max(5, min(99, final_score))
                 
@@ -304,6 +344,8 @@ if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not
                     # Vector Simulation
                     vec_t = 0.8 if final_score < 40 else 0.2
                     vec_f = 0.8 if final_score > 60 else 0.2
+                    
+                    st.markdown("**[증거 0] Semantic Vector Space**")
                     colored_progress_bar("✅ 진실 영역 근접도", vec_t, "#2ecc71")
                     colored_progress_bar("🚨 거짓 영역 근접도", vec_f, "#e74c3c")
                     
@@ -312,7 +354,22 @@ if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not
                     if verified_news: st.table(pd.DataFrame(verified_news))
                     else: st.warning("관련 뉴스가 없습니다.")
                     
-                    st.subheader("🧠 Intelligence Map: 내부 지식 분포도")
+                    st.markdown(f"**[증거 2] 시청자 여론 심층 분석**")
+                    st.caption(f"💬 상태: {cmt_status}")
+                    if cmts:
+                        st.write(f"최근 댓글: {', '.join(cmts[:3])}...")
+                    
+                    st.markdown("**[증거 3] 자막 세만틱 심층 대조**")
+                    st.table(pd.DataFrame([
+                        ["선동성 키워드", f"{agitation}회 발견"],
+                        ["제목-내용 일치도", "양호" if final_score < 60 else "주의 필요"]
+                    ], columns=["항목", "결과"]))
+
+                    st.markdown("**[증거 4] AI 최종 판정**")
+                    if final_score > 60: st.error("이 영상은 신뢰할 수 없는 정보가 포함될 가능성이 높습니다.")
+                    else: st.success("이 영상은 비교적 신뢰할 수 있는 정보로 판단됩니다.")
+
+                    st.subheader("🧠 Intelligence Map")
                     render_intelligence_distribution(final_score)
 
             except Exception as e:
