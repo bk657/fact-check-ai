@@ -8,9 +8,10 @@ import pandas as pd
 import altair as alt
 from datetime import datetime
 import google.generativeai as genai
+import traceback
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check v60.8 (Cache Fix)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check v60.9 (Final Debug)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets 로드
 try:
@@ -23,38 +24,57 @@ except KeyError as e:
     st.error(f"❌ 필수 키 설정 누락: {e}")
     st.stop()
 
-# 🌟 서비스 초기화 (캐시 버그 수정: API Key가 바뀌면 재실행)
+# 🌟 서비스 초기화 (에러 추적 모드)
 @st.cache_resource
-def init_services(api_key_signature): # 매개변수 추가로 캐시 리셋 유도
+def init_services(api_key_sig):
     sb = None
     model = None
-    model_name = "None"
+    status_msg = "Starting..."
+    last_error = "No Error Captured"
     
     try:
+        # DB 연결
         from supabase import create_client
         sb = create_client(SUPABASE_URL, SUPABASE_KEY)
         
-        genai.configure(api_key=api_key_signature) # 입력받은 키 사용
+        # Gemini 설정
+        genai.configure(api_key=api_key_sig)
         
-        # 연결 가능한 모델 자동 탐색
-        candidates = ['gemini-1.5-flash', 'gemini-pro', 'gemini-1.0-pro']
-        for m in candidates:
+        # 🚨 [핵심] 1.5 Flash 단일 모델 강제 연결 시도 (가장 확실함)
+        # 여러 개를 돌리면 에러가 묻히므로 하나만 확실하게 팹니다.
+        target_model = 'gemini-1.5-flash'
+        
+        try:
+            temp_model = genai.GenerativeModel(target_model)
+            # 연결 테스트
+            response = temp_model.generate_content("Hello")
+            if response:
+                model = temp_model
+                status_msg = f"Success: {target_model}"
+        except Exception as e:
+            # 실패하면 Pro 모델로 재시도
+            last_error = str(e)
             try:
-                temp_model = genai.GenerativeModel(m)
-                # 실제 통신 테스트
-                if temp_model.generate_content("test"):
+                target_model = 'gemini-pro'
+                temp_model = genai.GenerativeModel(target_model)
+                response = temp_model.generate_content("Hello")
+                if response:
                     model = temp_model
-                    model_name = m
-                    break
-            except: continue
-            
+                    status_msg = f"Success: {target_model}"
+            except Exception as e2:
+                last_error = f"1.5-Flash Error: {last_error} // Pro Error: {str(e2)}"
+                status_msg = "ALL_FAILED"
+
     except Exception as e:
-        return None, None, str(e)
+        return None, None, f"Critical Init Error: {str(e)}"
 
-    return sb, model, model_name
+    if status_msg == "ALL_FAILED":
+        return sb, None, last_error # 에러 메시지 원본 리턴
+    
+    return sb, model, status_msg
 
-# 🚨 핵심: 키를 인자로 넘겨서 캐시를 갱신시킴
-supabase, gemini_model, connected_model = init_services(GOOGLE_API_KEY)
+# 캐시 무시를 위해 현재 시간 주입
+supabase, gemini_model, conn_status = init_services(GOOGLE_API_KEY)
 
 # --- [2. Gemini AI 에이전트] ---
 class GeminiAgent:
@@ -63,11 +83,7 @@ class GeminiAgent:
 
     def extract_keywords(self, title, transcript):
         if not self.model: return title
-        prompt = f"""
-        Extract ONE search keyword for fact-checking.
-        Input: {title}
-        Output: (Keyword Only)
-        """
+        prompt = f"Extract ONE search keyword for: {title}"
         try:
             response = self.model.generate_content(prompt)
             return response.text.strip()
@@ -75,24 +91,21 @@ class GeminiAgent:
 
     def analyze_content(self, title, channel, transcript, news_context, comments):
         if not self.model:
-            return {"fake_prob": 50, "verdict": "오류", "summary": "AI 연결 실패", "clickbait_score": 0}
+            return {"fake_prob": 50, "verdict": "오류", "summary": "연결 실패", "clickbait_score": 0}
 
         prompt = f"""
-        Analyze video claims vs news facts. Respond in JSON.
-
-        [Data]
-        - Title: {title}
-        - Transcript: {transcript[:4000]}
-        - News: {news_context}
-        - Comments: {comments}
-
-        [JSON Output]
+        Analyze logic. Respond JSON.
+        Title: {title}
+        News: {news_context}
+        Transcript: {transcript[:3000]}
+        
+        Format:
         {{
-            "summary": "Korean summary",
+            "summary": "Korean text",
             "fake_prob": 0-100,
-            "verdict": "위험/주의/안전",
-            "reasoning": "Korean reasoning",
-            "fact_check_status": "Status",
+            "verdict": "Text",
+            "reasoning": "Korean text",
+            "fact_check_status": "Korean text",
             "clickbait_score": 0-100
         }}
         """
@@ -101,14 +114,7 @@ class GeminiAgent:
             text = response.text.replace("```json", "").replace("```", "").strip()
             return json.loads(text)
         except Exception as e:
-            return {
-                "summary": "분석 실패",
-                "fake_prob": 50,
-                "verdict": "오류",
-                "reasoning": f"에러: {str(e)}",
-                "fact_check_status": "분석 불가",
-                "clickbait_score": 0
-            }
+            return {"summary": "Error", "fake_prob": 50, "verdict": "Error", "reasoning": str(e), "fact_check_status": "Error", "clickbait_score": 0}
 
 gemini_agent = GeminiAgent(gemini_model)
 
@@ -173,28 +179,32 @@ def save_history(data):
 # --- [4. UI 구성] ---
 with st.sidebar:
     st.header("🛡️ 관리자")
-    # 🌟 연결 상태 확인
-    if connected_model and connected_model != "None":
-        st.success(f"✅ AI Connected: {connected_model}")
+    
+    # 🌟 [진단 결과 출력 창]
+    if "Success" in conn_status:
+        st.success(f"✅ {conn_status}")
     else:
-        st.error(f"❌ Connection Failed: {connected_model}")
+        # 에러 메시지를 빨간색으로 통째로 보여줌
+        st.error("🚨 연결 실패 원인:")
+        st.code(conn_status, language="text")
+        st.warning("위 에러 코드를 확인하세요.")
     
     if not st.session_state.get("is_admin"):
         if st.button("Login"):
             st.session_state["is_admin"] = True
             st.rerun()
 
-st.title("⚖️ Fact-Check Center v60.8")
-st.caption("Gemini Cache-Fix Engine")
+st.title("⚖️ Fact-Check Center v60.9")
+st.caption("Final Debugging Mode")
 
 with st.container(border=True):
     url_input = st.text_input("유튜브 URL 입력")
     if st.button("🚀 분석 시작", type="primary", use_container_width=True):
         if url_input:
             if not gemini_model:
-                st.error("⚠️ AI 모델 연결에 실패했습니다. (캐시 리셋 시도됨)")
+                st.error("⚠️ AI 모델이 연결되지 않았습니다. 사이드바의 에러 메시지를 확인해주세요.")
             else:
-                with st.status(f"🕵️ Gemini ({connected_model}) 분석 중...", expanded=True) as status:
+                with st.status(f"🕵️ Gemini ({conn_status}) 분석 중...", expanded=True) as status:
                     
                     st.write("📥 영상 데이터 추출 중...")
                     v_info = fetch_youtube_info(url_input)
