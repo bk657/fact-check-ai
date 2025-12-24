@@ -14,7 +14,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v70.0 (Twin Engine)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v70.1 (Stable)", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -133,13 +133,16 @@ def get_gemini_verdict(title, transcript, news_items):
     
     target_model = 'gemini-1.5-flash'
     
-    # 뉴스 데이터를 텍스트로 변환
+    # [수정됨] 뉴스 데이터 텍스트 변환 시 안전장치 추가 (KeyError 방지)
     news_text = ""
     if not news_items:
         news_text = "No related news articles found."
     else:
         for idx, item in enumerate(news_items[:5]):
-            news_text += f"{idx+1}. {item['title']} : {item['desc']}\n"
+            # 여기서 .get()을 사용하여 'title' 키가 없어도 에러가 나지 않게 함
+            safe_title = item.get('title', '제목 없음')
+            safe_desc = item.get('desc', '내용 없음')
+            news_text += f"{idx+1}. {safe_title} : {safe_desc}\n"
             
     full_context = transcript[:30000]
 
@@ -191,8 +194,13 @@ def extract_meaningful_tokens(text):
 
 def train_dynamic_vector_engine():
     try:
-        dt = [row['video_title'] for row in supabase.table("analysis_history").select("video_title").lt("fake_prob", 40).execute().data]
-        df = [row['video_title'] for row in supabase.table("analysis_history").select("video_title").gt("fake_prob", 60).execute().data]
+        # DB에서 데이터 가져올 때 안전하게 처리
+        res_t = supabase.table("analysis_history").select("video_title").lt("fake_prob", 40).execute()
+        res_f = supabase.table("analysis_history").select("video_title").gt("fake_prob", 60).execute()
+        
+        dt = [row['video_title'] for row in res_t.data] if res_t.data else []
+        df = [row['video_title'] for row in res_f.data] if res_f.data else []
+        
         vector_engine.train(STATIC_TRUTH_CORPUS + dt, STATIC_FAKE_CORPUS + df)
         return len(STATIC_TRUTH_CORPUS + dt) + len(STATIC_FAKE_CORPUS + df), len(dt), len(df)
     except: 
@@ -307,6 +315,7 @@ def fetch_comments_via_api(video_id):
     except: pass
     return [], "❌ API 통신 실패"
 
+# [수정됨] 뉴스 검색 시 제목/내용이 비어있을 경우 안전 처리 추가
 def fetch_news_regex(query):
     news_res = []
     try:
@@ -316,8 +325,11 @@ def fetch_news_regex(query):
         for item in items[:10]:
             t = re.search(r'<title>(.*?)</title>', item)
             d = re.search(r'<description>(.*?)</description>', item)
-            nt = t.group(1).replace("<![CDATA[", "").replace("]]>", "") if t else ""
-            nd = clean_html_regex(d.group(1).replace("<![CDATA[", "").replace("]]>", "")) if d else ""
+            
+            # 여기서 비어있을 경우 기본값 할당
+            nt = t.group(1).replace("<![CDATA[", "").replace("]]>", "") if t else "제목 없음"
+            nd = clean_html_regex(d.group(1).replace("<![CDATA[", "").replace("]]>", "")) if d else "내용 없음"
+            
             news_res.append({'title': nt, 'desc': nd})
     except: pass
     return news_res
@@ -328,6 +340,7 @@ def extract_top_keywords_from_transcript(text, top_n=5):
     return Counter(tokens).most_common(top_n)
 
 def calculate_dual_match(news_item, query_nouns, video_summary):
+    # .get()을 사용하여 안전하게 접근
     news_title_tokens = set(extract_meaningful_tokens(news_item.get('title', '')))
     qn = set(query_nouns)
     title_match_score = 0
@@ -363,7 +376,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v70.0...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v70.1...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -407,12 +420,14 @@ def run_forensic_main(url):
             news_ev = []; max_match = 0
             mismatch_count = 0
             
+            # [수정됨] 뉴스 처리 루프 안전장치 강화
             for item in news_items:
+                safe_title = item.get('title', '') # 여기서 안전하게 제목 가져옴
                 t_score, c_score, final = calculate_dual_match(item, extract_meaningful_tokens(query), summary)
                 if final > max_match: max_match = final
                 if final < 20: mismatch_count += 1
                 news_ev.append({
-                    "뉴스 제목": item['title'],
+                    "뉴스 제목": safe_title,
                     "제목 일치": f"{t_score}%",
                     "내용 유사": f"{c_score}%",
                     "최종 점수": f"{final}%"
@@ -527,7 +542,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v70.0 (Twin Gemini Engine)")
+st.title("⚖️ Fact-Check Center v70.1 (Twin Gemini Engine)")
 with st.container(border=True):
     st.markdown("### 🛡️ Twin-Engine Architecture 적용됨\n* **Engine A (Investigator)**: 문맥 최적화 검색어 추출\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론\n* **Hybrid Scoring**: Rule-based (60%) + LLM Inference (40%)")
     agree = st.checkbox("위 내용을 확인하였으며, 분석 결과에 동의합니다.")
