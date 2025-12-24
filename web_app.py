@@ -15,7 +15,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v72.0 (Smart Retry)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v72.1 (Lightweight)", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -84,7 +84,7 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (Smart Retry)] ---
+# --- [4. Gemini Logic (Data Diet Version)] ---
 
 # 🚨 안전 설정: 필터링 완전 해제
 safety_settings_none = {
@@ -94,7 +94,7 @@ safety_settings_none = {
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
 
-# [공통 함수] 오뚜기 호출 로직 (에러나면 5초 쉬고 재도전)
+# [공통 함수] 오뚜기 호출 로직
 def call_gemini_with_retry(api_key, model_name, prompt, retries=3):
     genai.configure(api_key=api_key)
     
@@ -113,24 +113,22 @@ def call_gemini_with_retry(api_key, model_name, prompt, retries=3):
             
         except Exception as e:
             err_msg = str(e)
-            # 429 (Too Many Requests) 에러일 경우
             if "429" in err_msg or "Quota" in err_msg:
-                wait_time = 5 * (attempt + 1) # 5초, 10초, 15초 점진적 대기
-                st.toast(f"🚦 사용량 초과! {wait_time}초 대기 후 재시도 중... ({attempt+1}/{retries})", icon="⏳")
+                wait_time = 5 * (attempt + 1)
+                st.toast(f"🚦 사용량 초과! {wait_time}초 대기 후 재시도... ({attempt+1}/{retries})", icon="⏳")
                 time.sleep(wait_time)
-            # 404 (Model Not Found) 에러일 경우 -> 즉시 중단 (재시도 의미 없음)
             elif "404" in err_msg:
-                return f"ERROR_404: 모델({model_name})을 찾을 수 없습니다."
+                return f"ERROR_404: 모델({model_name}) 없음"
             else:
                 time.sleep(2)
                 
     return f"ERROR_FINAL: {retries}회 재시도 실패. ({err_msg})"
 
-# [Engine A] 수사관: 키워드 추출
+# [Engine A] 수사관: 키워드 추출 (데이터 8000자로 축소)
 def get_gemini_search_keywords(title, transcript):
-    # [FIX] 진단 결과 '사용 가능'했던 2.0-flash 사용
     target_model = 'gemini-2.0-flash' 
-    full_context = transcript[:30000]
+    # [수정] 30,000자 -> 8,000자로 축소 (토큰 절약)
+    full_context = transcript[:8000]
     
     prompt = f"""
     [TASK] Extract ONE core Korean search query to verify this video's factuality.
@@ -144,14 +142,12 @@ def get_gemini_search_keywords(title, transcript):
     result = call_gemini_with_retry(GOOGLE_API_KEY_A, target_model, prompt)
     
     if "ERROR" in result:
-        # 실패 시 멍청한 백업 대신 에러 메시지 반환 (원인 파악용)
         return result, "❌ AI 호출 실패"
     else:
         return result.strip(), f"✨ Gemini Investigator (Key A / {target_model})"
 
-# [Engine B] 판사: 진위 여부 추론
+# [Engine B] 판사: 진위 여부 추론 (데이터 8000자로 축소)
 def get_gemini_verdict(title, transcript, news_items):
-    # [FIX] Key B도 2.0-flash 사용 (성능 최적)
     target_model = 'gemini-2.0-flash'
     
     news_text = ""
@@ -163,7 +159,8 @@ def get_gemini_verdict(title, transcript, news_items):
             safe_desc = item.get('desc', '내용 없음')
             news_text += f"{idx+1}. {safe_title} : {safe_desc}\n"
             
-    full_context = transcript[:30000]
+    # [수정] 30,000자 -> 8,000자로 축소 (토큰 절약)
+    full_context = transcript[:8000]
 
     prompt = f"""
     You are a professional Fact-Check AI Judge.
@@ -389,7 +386,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v72.0...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v72.1...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -529,7 +526,6 @@ def run_forensic_main(url):
             with col2:
                 st.subheader("📊 5대 정밀 분석 증거")
                 
-                # [복구] 증거 0
                 st.markdown("**[증거 0] Semantic Vector Space (Internal DB)**")
                 colored_progress_bar("✅ 진실 영역 근접도", ts, "#2ecc71")
                 colored_progress_bar("🚨 거짓 영역 근접도", fs, "#e74c3c")
@@ -567,7 +563,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v72.0 (Smart Retry)")
+st.title("⚖️ Fact-Check Center v72.1 (Lightweight)")
 
 # [법적 고지 복구]
 with st.container(border=True):
