@@ -4,3 +4,5 @@ yt-dlp
 pandas
 beautifulsoup4
 altair
+openai
+google-generativeai
