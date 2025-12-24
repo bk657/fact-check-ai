@@ -14,7 +14,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v67.0 (Token Saver)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v68.0 (Stable)", layout="wide", page_icon="⚖️")
 
 # 세션 상태 초기화
 if "is_admin" not in st.session_state:
@@ -83,20 +83,18 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (Token Saver)] ---
-def get_gemini_response_efficient(prompt_template, input_text, is_summary_mode=False):
+# --- [4. Gemini Logic (Stable & Transparent)] ---
+def get_gemini_response_stable(prompt_template, input_text):
     """
-    🚨 모델 검색(List Models)을 생략하고 바로 호출하여 API 횟수 절약
+    🚨 안정성 강화: 대기 시간 증가 + 상세 에러 리포팅
     """
     genai.configure(api_key=GOOGLE_API_KEY)
     
-    # 하드코딩된 모델 리스트 (API 호출 절약)
-    # 최신 순서대로 배치
+    # 안정적인 모델만 선정
     candidates = [
-        ('gemini-1.5-flash', 30000),      # 최신, 빠름, 대용량
-        ('gemini-1.5-flash-latest', 30000),
-        ('gemini-1.5-pro', 20000),        # 고성능
-        ('gemini-1.0-pro', 5000)          # 구형 백업
+        ('gemini-1.5-flash', 30000), 
+        ('gemini-1.5-pro', 20000), 
+        ('gemini-pro', 5000)
     ]
     
     safety_settings = [
@@ -106,11 +104,10 @@ def get_gemini_response_efficient(prompt_template, input_text, is_summary_mode=F
         {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
     ]
 
-    last_error = ""
+    error_logs = [] # 에러 기록용
     
     for i, (model_name, char_limit) in enumerate(candidates):
         try:
-            # 입력 길이 조절
             current_context = input_text[:char_limit]
             formatted_prompt = prompt_template.replace("{INPUT}", current_context)
             
@@ -118,24 +115,26 @@ def get_gemini_response_efficient(prompt_template, input_text, is_summary_mode=F
             response = model.generate_content(formatted_prompt, safety_settings=safety_settings)
             
             if response.text:
-                return response.text.strip(), model_name
+                return response.text.strip(), model_name, error_logs
                 
         except Exception as e:
-            last_error = str(e)
-            # 🚨 기하급수적 대기 (Exponential Backoff): 2초, 4초, 8초...
-            sleep_time = 2 ** (i + 1)
-            time.sleep(sleep_time) 
+            err_msg = str(e)
+            error_logs.append(f"{model_name}: {err_msg[:50]}...")
+            
+            # 🚨 429 에러(속도제한)면 길게 대기 (5초, 10초)
+            sleep_time = 5 * (i + 1)
+            time.sleep(sleep_time)
             continue
             
-    return None, last_error
+    return None, "Fail", error_logs
 
 def get_gemini_search_keywords(title, transcript):
-    prompt_template = f"Analyze video. Extract ONE core search query (Nouns only) for Google News verification. Input Title: {title} Transcript: {{INPUT}} Output: Query string only (Korean)."
+    prompt_template = f"Extract ONE core search query (Nouns only). Input: {title} Transcript: {{INPUT}} Output: Query string only (Korean)."
     
-    result, model_name = get_gemini_response_efficient(prompt_template, transcript)
+    result, model_name, errors = get_gemini_response_stable(prompt_template, transcript)
     
     if result:
-        return result, f"✨ Gemini ({model_name})"
+        return result, f"✨ Gemini ({model_name.replace('models/','')})"
     
     # 백업 로직
     tokens = re.findall(r'[가-힣]{2,}', title)
@@ -143,24 +142,25 @@ def get_gemini_search_keywords(title, transcript):
     for t in tokens:
         t = re.sub(r'(은|는|이|가|을|를|의)$', '', t)
         if len(t) > 1: cleaned.append(t)
-    return " ".join(cleaned[:3]) if cleaned else title, "🤖 Backup Logic"
+    
+    # 에러 원인 요약
+    err_summary = " / ".join(errors) if errors else "Unknown"
+    return " ".join(cleaned[:3]) if cleaned else title, f"🤖 Backup (Err: {err_summary[:30]}...)"
 
 def get_gemini_verdict(title, summary, news_items, fallback_score):
     news_context = "\n".join([f"- {item['title']}" for item in news_items])
     if not news_context: news_context = "관련 뉴스 기사가 검색되지 않았습니다."
 
     prompt_template = f"""
-    You are a Fact-Check AI Judge.
-    [Video] Title: {title}
+    Fact-Check Judge.
+    [Video] {title}
     [News] {news_context}
     [Summary] {{INPUT}}
-    
-    Task: Compare video claims vs news facts.
-    Output JSON ONLY:
-    {{ "risk_score": (0-100), "reason": "(Korean) explain why." }}
+    Task: Compare video vs news.
+    Output JSON: {{ "risk_score": (0-100), "reason": "(Korean) explain." }}
     """
     
-    result, model_name = get_gemini_response_efficient(prompt_template, summary)
+    result, model_name, errors = get_gemini_response_stable(prompt_template, summary)
     
     if result:
         try:
@@ -171,11 +171,12 @@ def get_gemini_verdict(title, summary, news_items, fallback_score):
             pass
     
     # Fail-Safe Mode
-    reason = "AI 응답 지연으로 인해 뉴스 교차 검증 데이터를 기반으로 판정했습니다."
+    err_summary = " / ".join(errors) if errors else "Timeout"
+    reason = f"AI 서버 응답 실패({err_summary[:30]}...)로 인해 뉴스 데이터 기반 판정."
     safe_score = 50 + fallback_score 
     safe_score = max(10, min(90, safe_score))
     
-    return safe_score, f"{reason} (Fail-Safe Mode)"
+    return safe_score, f"{reason} (Fail-Safe)"
 
 # --- [5. 유틸리티 함수] ---
 def normalize_korean_word(word):
@@ -367,7 +368,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v67.0...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v68.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -570,7 +571,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v67.0")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v68.0")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
