@@ -14,7 +14,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v70.0 (Smart Backup)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v71.0 (Hybrid NLP)", layout="wide", page_icon="⚖️")
 
 # 세션 상태 초기화
 if "is_admin" not in st.session_state:
@@ -37,7 +37,7 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- [2. 상수 정의 (Stop Words 추가)] ---
+# --- [2. 상수 정의 & NLP 필터 데이터] ---
 WEIGHT_NEWS_DEFAULT = 45; WEIGHT_VECTOR = 35; WEIGHT_CONTENT = 15; WEIGHT_SENTIMENT_DEFAULT = 10
 PENALTY_ABUSE = 20; PENALTY_MISMATCH = 30; PENALTY_NO_FACT = 25; PENALTY_SILENT_ECHO = 40
 
@@ -45,8 +45,14 @@ VITAL_KEYWORDS = ['위독', '사망', '별세', '구속', '체포', '기소', '�
 CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
 OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
 
-# 🚨 [New] 무의미한 단어 필터링 목록
-STOP_WORDS = ['충격', '경악', '속보', '긴급', '단독', '결국', '영상', '현장', '실제', '상황', '이거', '그냥', '진짜', '오늘', '지금', '공개', '내용', '이유', '직후', '소름', '난리', '실체', '근황', '포착']
+# 🚨 [Heuristic NLP] 불용어 및 어미 제거 리스트
+STOP_WORDS = [
+    '충격', '경악', '속보', '긴급', '단독', '결국', '영상', '현장', '실제', '상황', 
+    '이거', '그냥', '진짜', '오늘', '지금', '공개', '내용', '이유', '직후', '소름', 
+    '난리', '실체', '근황', '포착', '논란', '화제', '반응', '결말', '모습', '그날', 
+    '저거', '그것', '무엇', '어떻게', '왜', '언제', '누구', '뉴스', '티비', '채널'
+]
+VERB_ENDINGS = ['합니다', '했습니다', '입니다', '입니까', '한다', '했다', '된다', '됐다', '이다', '있다', '없다', '하는', '있는', '없는', '된', '한']
 
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
 STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
@@ -86,23 +92,47 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (Pro First + Smart Backup)] ---
+# --- [4. Gemini Logic + Heuristic Backup] ---
+def refine_korean_token(token):
+    """🚨 한국어 어미 제거 및 정제 (Stemming Lite)"""
+    # 1. 조사 제거 (은/는/이/가 등)
+    token = re.sub(r'(은|는|이|가|을|를|의|에|에게|로|으로|와|과)$', '', token)
+    # 2. 용언 어미 제거
+    for end in VERB_ENDINGS:
+        if token.endswith(end) and len(token) > len(end):
+            return token[:-len(end)]
+    return token
+
+def get_backup_keywords(title):
+    """🚨 AI 실패 시 작동하는 강력한 규칙 기반 추출기"""
+    # 특수문자 제거
+    clean_title = re.sub(r'[^\w\s가-힣]', ' ', title)
+    tokens = clean_title.split()
+    
+    meaningful = []
+    for t in tokens:
+        # 한글만 남김
+        korean_only = re.sub(r'[^가-힣]', '', t)
+        if len(korean_only) < 2: continue
+        
+        refined = refine_korean_token(korean_only)
+        
+        if refined not in STOP_WORDS and len(refined) >= 2:
+            meaningful.append(refined)
+            
+    # 명사일 확률이 높은 앞쪽 3개 단어 조합
+    return " ".join(meaningful[:3])
+
 def get_gemini_response_stable(prompt_template, input_text):
     genai.configure(api_key=GOOGLE_API_KEY)
     
-    # 🚨 [변경] 구형 모델(gemini-pro)을 1순위로 배치 (호환성 최우선)
     candidates = [
-        ('gemini-pro', 5000),          # 호환성 King
-        ('gemini-1.5-flash', 30000),   # 최신 (없으면 에러)
-        ('gemini-1.5-pro', 20000)      # 고성능 (없으면 에러)
+        ('gemini-pro', 5000),          
+        ('gemini-1.5-flash', 30000),   
+        ('gemini-1.5-pro', 20000)      
     ]
     
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-    ]
+    safety_settings = [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}, {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"}, {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"}, {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
 
     error_logs = []
     
@@ -110,15 +140,12 @@ def get_gemini_response_stable(prompt_template, input_text):
         try:
             current_context = input_text[:char_limit]
             formatted_prompt = prompt_template.replace("{INPUT}", current_context)
-            
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(formatted_prompt, safety_settings=safety_settings)
-            
             if response.text:
                 return response.text.strip(), model_name, error_logs
-                
         except Exception as e:
-            error_logs.append(f"{model_name} Fail")
+            error_logs.append(f"{model_name}: {str(e)}")
             time.sleep(1)
             continue
             
@@ -132,22 +159,11 @@ def get_gemini_search_keywords(title, transcript):
     if result:
         return result, f"✨ Gemini ({model_name.replace('models/','')})"
     
-    # 🚨 [Smart Backup] 파이썬 로직 개선
-    # 1. 제목에서 명사 추출
-    tokens = re.findall(r'[가-힣]{2,}', title)
-    cleaned = []
-    for t in tokens:
-        # 조사가 붙은 단어 정제
-        word = re.sub(r'(은|는|이|가|을|를|의)$', '', t)
-        # 2. Stop Words 필터링
-        if word not in STOP_WORDS and len(word) > 1:
-            cleaned.append(word)
-            
-    # 3. 앞에서부터 3개 단어 조합
-    backup_query = " ".join(cleaned[:3]) if cleaned else title
+    # 🚨 AI 실패 -> 강력해진 백업 로직 가동
+    backup_query = get_backup_keywords(title)
+    if not backup_query: backup_query = title # 정제 실패 시 원본 사용
     
-    err_summary = " / ".join(errors) if errors else "Connect Error"
-    return backup_query, f"🤖 Backup ({err_summary})"
+    return backup_query, f"🤖 Smart Backup (AI Failed)"
 
 def get_gemini_verdict(title, summary, news_items, fallback_score):
     news_context = "\n".join([f"- {item['title']}" for item in news_items])
@@ -169,26 +185,19 @@ def get_gemini_verdict(title, summary, news_items, fallback_score):
             txt = result.replace("```json", "").replace("```", "").strip()
             data = json.loads(txt)
             return data.get("risk_score", 50), f"{data.get('reason', '분석 완료')} (by {model_name})"
-        except:
-            pass
+        except: pass
     
-    # Fail-Safe Mode
     safe_score = 50 + fallback_score 
     safe_score = max(10, min(90, safe_score))
-    
-    return safe_score, f"AI 연결 불안정으로 뉴스 기반 자동 판정 (Fail-Safe)"
+    return safe_score, f"AI 연결 불안정으로 뉴스 데이터 기반 자동 판정 (Fail-Safe)"
 
 # --- [5. 유틸리티 함수] ---
-def normalize_korean_word(word):
-    word = re.sub(r'[^가-힣0-9]', '', word)
-    for j in ['은','는','이','가','을','를','의','에','에게','로','으로']:
-        if word.endswith(j): return word[:-len(j)]
-    return word
-
 def extract_meaningful_tokens(text):
     raw = re.findall(r'[가-힣]{2,}', text)
-    # Stop Words 필터 적용
     return [normalize_korean_word(w) for w in raw if w not in STOP_WORDS]
+
+def normalize_korean_word(word): # (위 백업 로직과 별도로 벡터 엔진용)
+    return re.sub(r'[^가-힣0-9]', '', word)
 
 def train_dynamic_vector_engine():
     try:
@@ -368,7 +377,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v70.0...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v71.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -549,6 +558,14 @@ def run_forensic_main(url):
                 st.info(f"🤖 **AI 위험도 평가: {gemini_risk}점**")
                 st.caption(f"💡 판단 근거: {gemini_reason}")
                 
+                # 🚨 [Debug] 에러 로그 출력 (문제 해결용)
+                if "Fail" in source or "Fail" in gemini_reason:
+                    with st.expander("🛠️ DEBUG: AI Error Logs (개발자용)"):
+                        # 'get_gemini_search_keywords' 내부 변수 'errors'는 
+                        # 함수 외부로 전달되지 않으므로, 여기서는 source 문자열을 파싱
+                        st.code(source)
+                        st.code(gemini_reason)
+
                 st.markdown("**[최종 결론] AI 종합 분석 판단**")
                 
                 reasons = []
@@ -571,7 +588,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v70.0")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v71.0")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
