@@ -14,7 +14,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v66.4 (Fail-Safe)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v67.0 (Token Saver)", layout="wide", page_icon="⚖️")
 
 # 세션 상태 초기화
 if "is_admin" not in st.session_state:
@@ -83,18 +83,20 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (Smart Context & Fail-Safe)] ---
-def get_gemini_response_robust(prompt_template, transcript):
+# --- [4. Gemini Logic (Token Saver)] ---
+def get_gemini_response_efficient(prompt_template, input_text, is_summary_mode=False):
     """
-    🚨 지능형 모델 스위칭 및 용량 조절 로직
+    🚨 모델 검색(List Models)을 생략하고 바로 호출하여 API 횟수 절약
     """
     genai.configure(api_key=GOOGLE_API_KEY)
     
-    # 1.5 Flash (대용량), 1.5 Pro (정밀), 1.0 Pro (백업-소용량)
+    # 하드코딩된 모델 리스트 (API 호출 절약)
+    # 최신 순서대로 배치
     candidates = [
-        ('gemini-1.5-flash', 30000), 
-        ('gemini-1.5-pro', 20000), 
-        ('gemini-pro', 5000) # 구형 모델은 입력을 줄여줌
+        ('gemini-1.5-flash', 30000),      # 최신, 빠름, 대용량
+        ('gemini-1.5-flash-latest', 30000),
+        ('gemini-1.5-pro', 20000),        # 고성능
+        ('gemini-1.0-pro', 5000)          # 구형 백업
     ]
     
     safety_settings = [
@@ -106,11 +108,11 @@ def get_gemini_response_robust(prompt_template, transcript):
 
     last_error = ""
     
-    for model_name, char_limit in candidates:
+    for i, (model_name, char_limit) in enumerate(candidates):
         try:
-            # 모델별 허용량에 맞춰 자막 자르기
-            current_context = transcript[:char_limit]
-            formatted_prompt = prompt_template.replace("{TRANSCRIPT}", current_context)
+            # 입력 길이 조절
+            current_context = input_text[:char_limit]
+            formatted_prompt = prompt_template.replace("{INPUT}", current_context)
             
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(formatted_prompt, safety_settings=safety_settings)
@@ -120,18 +122,20 @@ def get_gemini_response_robust(prompt_template, transcript):
                 
         except Exception as e:
             last_error = str(e)
-            time.sleep(1) # 잠시 대기 후 다음 모델
+            # 🚨 기하급수적 대기 (Exponential Backoff): 2초, 4초, 8초...
+            sleep_time = 2 ** (i + 1)
+            time.sleep(sleep_time) 
             continue
             
     return None, last_error
 
 def get_gemini_search_keywords(title, transcript):
-    prompt_template = f"Analyze video. Extract ONE core search query (Nouns only) for Google News verification. Input Title: {title} Transcript: {{TRANSCRIPT}} Output: Query string only (Korean)."
+    prompt_template = f"Analyze video. Extract ONE core search query (Nouns only) for Google News verification. Input Title: {title} Transcript: {{INPUT}} Output: Query string only (Korean)."
     
-    result, model_name = get_gemini_response_robust(prompt_template, transcript)
+    result, model_name = get_gemini_response_efficient(prompt_template, transcript)
     
     if result:
-        return result, f"✨ Gemini ({model_name.replace('models/','')})"
+        return result, f"✨ Gemini ({model_name})"
     
     # 백업 로직
     tokens = re.findall(r'[가-힣]{2,}', title)
@@ -142,25 +146,21 @@ def get_gemini_search_keywords(title, transcript):
     return " ".join(cleaned[:3]) if cleaned else title, "🤖 Backup Logic"
 
 def get_gemini_verdict(title, summary, news_items, fallback_score):
-    """
-    🚨 AI 실패 시, fallback_score(알고리즘 점수)를 사용하여 결과를 위조(Fail-Safe)
-    """
     news_context = "\n".join([f"- {item['title']}" for item in news_items])
     if not news_context: news_context = "관련 뉴스 기사가 검색되지 않았습니다."
 
     prompt_template = f"""
     You are a Fact-Check AI Judge.
-    [Video] Title: {title} / Summary: {summary}
+    [Video] Title: {title}
     [News] {news_context}
-    [Transcript Context] {{TRANSCRIPT}}
+    [Summary] {{INPUT}}
     
     Task: Compare video claims vs news facts.
     Output JSON ONLY:
     {{ "risk_score": (0-100), "reason": "(Korean) explain why." }}
     """
     
-    # 요약본을 트랜스크립트 대신 사용 (비용 절감)
-    result, model_name = get_gemini_response_robust(prompt_template, summary)
+    result, model_name = get_gemini_response_efficient(prompt_template, summary)
     
     if result:
         try:
@@ -170,10 +170,8 @@ def get_gemini_verdict(title, summary, news_items, fallback_score):
         except:
             pass
     
-    # 🚨 Fail-Safe: AI가 죽었으면 내부 알고리즘 점수로 대체
+    # Fail-Safe Mode
     reason = "AI 응답 지연으로 인해 뉴스 교차 검증 데이터를 기반으로 판정했습니다."
-    
-    # 뉴스 점수가 양수(위험)면 AI 점수도 높게, 음수(안전)면 낮게 설정
     safe_score = 50 + fallback_score 
     safe_score = max(10, min(90, safe_score))
     
@@ -369,7 +367,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v66.4...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v67.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -426,7 +424,7 @@ def run_forensic_main(url):
                     "기사 링크": item['link']
                 })
             
-            # 뉴스 점수 계산 (내부 알고리즘)
+            # 뉴스 점수 계산
             if not news_ev:
                 news_score = 0
             else:
@@ -436,7 +434,7 @@ def run_forensic_main(url):
                     else: news_score = 0
 
             # Gemini Call 2 (Judge with Fail-Safe)
-            time.sleep(1) # Throttling
+            time.sleep(1) 
             gemini_risk, gemini_reason = get_gemini_verdict(title, summary, news_items, news_score)
 
             cmts, c_status = fetch_comments_via_api(vid)
@@ -572,7 +570,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️유튜브 가짜뉴스 판독기")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v67.0")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
