@@ -14,7 +14,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v70.3 (Ultimate Restore)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v70.4 (Final Fix)", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -89,31 +89,34 @@ vector_engine = VectorEngine()
 # [Engine A] 수사관: 키워드 추출 전담
 def get_gemini_search_keywords(title, transcript):
     genai.configure(api_key=GOOGLE_API_KEY_A)
-    target_model = 'gemini-1.5-flash'
-    try:
-        model = genai.GenerativeModel(target_model)
-        full_context = transcript[:30000]
-        
-        prompt = f"""
-        Analyze the following video transcript and extract ONE core search query for Google News verification.
-        
-        [Input]
-        Title: {title}
-        Transcript: {full_context}
-        
-        [Rules]
-        1. Read the ENTIRE transcript to find the main claim.
-        2. Ignore introductions, ads, and side stories.
-        3. Extract ONLY nouns: 'Person Name' + 'Key Event/Issue'.
-        4. Example: 'Jay Lee Divorce Reason' (Not 'Why is Jay Lee alone?')
-        5. Output ONLY the query string (Korean).
-        """
-        response = model.generate_content(prompt)
-        if response.text:
-            return response.text.strip(), f"✨ Gemini Investigator (Key A)"
-    except Exception as e:
-        pass
+    # 모델 후보군 (Key A용)
+    candidates = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.0-pro', 'gemini-pro']
+    
+    full_context = transcript[:30000]
+    prompt = f"""
+    Analyze the following video transcript and extract ONE core search query for Google News verification.
+    
+    [Input]
+    Title: {title}
+    Transcript: {full_context}
+    
+    [Rules]
+    1. Read the ENTIRE transcript to find the main claim.
+    2. Ignore introductions, ads, and side stories.
+    3. Extract ONLY nouns: 'Person Name' + 'Key Event/Issue'.
+    4. Example: 'Jay Lee Divorce Reason' (Not 'Why is Jay Lee alone?')
+    5. Output ONLY the query string (Korean).
+    """
 
+    for model_name in candidates:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            if response.text:
+                return response.text.strip(), f"✨ Gemini Investigator (Key A / {model_name})"
+        except:
+            continue
+            
     # 백업 로직
     tokens = re.findall(r'[가-힣]{2,}', title)
     cleaned = []
@@ -126,8 +129,14 @@ def get_gemini_search_keywords(title, transcript):
 def get_gemini_verdict(title, transcript, news_items):
     genai.configure(api_key=GOOGLE_API_KEY_B)
     
-    # 모델 Fallback 설정
-    model_candidates = ['gemini-1.5-flash', 'gemini-pro']
+    # [수정] 모델 후보군 대폭 확대 (에러 방지)
+    model_candidates = [
+        'gemini-1.5-flash', 
+        'gemini-1.5-flash-latest',
+        'gemini-1.5-pro',
+        'gemini-1.0-pro', 
+        'gemini-pro'
+    ]
     
     news_text = ""
     if not news_items:
@@ -371,7 +380,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v70.3...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v70.4...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -549,7 +558,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v70.3 (Ultimate)")
+st.title("⚖️ Fact-Check Center v70.4 (Final Fix)")
 
 # [법적 고지 복구]
 with st.container(border=True):
