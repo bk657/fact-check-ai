@@ -14,7 +14,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v69.0 (Single Shot)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v70.0 (Smart Backup)", layout="wide", page_icon="⚖️")
 
 # 세션 상태 초기화
 if "is_admin" not in st.session_state:
@@ -37,13 +37,16 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- [2. 상수 정의] ---
+# --- [2. 상수 정의 (Stop Words 추가)] ---
 WEIGHT_NEWS_DEFAULT = 45; WEIGHT_VECTOR = 35; WEIGHT_CONTENT = 15; WEIGHT_SENTIMENT_DEFAULT = 10
 PENALTY_ABUSE = 20; PENALTY_MISMATCH = 30; PENALTY_NO_FACT = 25; PENALTY_SILENT_ECHO = 40
 
 VITAL_KEYWORDS = ['위독', '사망', '별세', '구속', '체포', '기소', '실형', '응급실', '이혼', '불화', '파경', '충격', '경악', '속보', '긴급', '폭로', '양성', '확진', '심정지', '뇌사', '중태', '압수수색', '소환', '퇴진', '탄핵', '내란', '간첩']
 CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
 OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
+
+# 🚨 [New] 무의미한 단어 필터링 목록
+STOP_WORDS = ['충격', '경악', '속보', '긴급', '단독', '결국', '영상', '현장', '실제', '상황', '이거', '그냥', '진짜', '오늘', '지금', '공개', '내용', '이유', '직후', '소름', '난리', '실체', '근황', '포착']
 
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
 STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
@@ -83,15 +86,15 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (Single Shot)] ---
+# --- [4. Gemini Logic (Pro First + Smart Backup)] ---
 def get_gemini_response_stable(prompt_template, input_text):
     genai.configure(api_key=GOOGLE_API_KEY)
     
-    # 🚨 모델 순서: Flash -> Pro -> Legacy
+    # 🚨 [변경] 구형 모델(gemini-pro)을 1순위로 배치 (호환성 최우선)
     candidates = [
-        ('gemini-1.5-flash', 30000), 
-        ('gemini-1.5-pro', 20000), 
-        ('gemini-pro', 5000)
+        ('gemini-pro', 5000),          # 호환성 King
+        ('gemini-1.5-flash', 30000),   # 최신 (없으면 에러)
+        ('gemini-1.5-pro', 20000)      # 고성능 (없으면 에러)
     ]
     
     safety_settings = [
@@ -115,15 +118,13 @@ def get_gemini_response_stable(prompt_template, input_text):
                 return response.text.strip(), model_name, error_logs
                 
         except Exception as e:
-            err_msg = str(e)
-            error_logs.append(f"{model_name}: {err_msg[:20]}...")
-            time.sleep(2) # 2초 대기 후 다음 모델
+            error_logs.append(f"{model_name} Fail")
+            time.sleep(1)
             continue
             
     return None, "Fail", error_logs
 
 def get_gemini_search_keywords(title, transcript):
-    # 🚨 검색어 추출만 수행 (이것이 유일한 AI 호출)
     prompt_template = f"Extract ONE core search query (Nouns only). Input: {title} Transcript: {{INPUT}} Output: Query string only (Korean)."
     
     result, model_name, errors = get_gemini_response_stable(prompt_template, transcript)
@@ -131,15 +132,51 @@ def get_gemini_search_keywords(title, transcript):
     if result:
         return result, f"✨ Gemini ({model_name.replace('models/','')})"
     
-    # 백업 로직
+    # 🚨 [Smart Backup] 파이썬 로직 개선
+    # 1. 제목에서 명사 추출
     tokens = re.findall(r'[가-힣]{2,}', title)
     cleaned = []
     for t in tokens:
-        t = re.sub(r'(은|는|이|가|을|를|의)$', '', t)
-        if len(t) > 1: cleaned.append(t)
+        # 조사가 붙은 단어 정제
+        word = re.sub(r'(은|는|이|가|을|를|의)$', '', t)
+        # 2. Stop Words 필터링
+        if word not in STOP_WORDS and len(word) > 1:
+            cleaned.append(word)
+            
+    # 3. 앞에서부터 3개 단어 조합
+    backup_query = " ".join(cleaned[:3]) if cleaned else title
     
-    err_summary = " / ".join(errors) if errors else "Unknown"
-    return " ".join(cleaned[:3]) if cleaned else title, f"🤖 Backup (Err: {err_summary[:30]}...)"
+    err_summary = " / ".join(errors) if errors else "Connect Error"
+    return backup_query, f"🤖 Backup ({err_summary})"
+
+def get_gemini_verdict(title, summary, news_items, fallback_score):
+    news_context = "\n".join([f"- {item['title']}" for item in news_items])
+    if not news_context: news_context = "관련 뉴스 기사가 검색되지 않았습니다."
+
+    prompt_template = f"""
+    Fact-Check Judge.
+    [Video] {title}
+    [News] {news_context}
+    [Summary] {{INPUT}}
+    Task: Compare video vs news.
+    Output JSON: {{ "risk_score": (0-100), "reason": "(Korean) explain." }}
+    """
+    
+    result, model_name, error = get_gemini_response_stable(prompt_template, summary)
+    
+    if result:
+        try:
+            txt = result.replace("```json", "").replace("```", "").strip()
+            data = json.loads(txt)
+            return data.get("risk_score", 50), f"{data.get('reason', '분석 완료')} (by {model_name})"
+        except:
+            pass
+    
+    # Fail-Safe Mode
+    safe_score = 50 + fallback_score 
+    safe_score = max(10, min(90, safe_score))
+    
+    return safe_score, f"AI 연결 불안정으로 뉴스 기반 자동 판정 (Fail-Safe)"
 
 # --- [5. 유틸리티 함수] ---
 def normalize_korean_word(word):
@@ -150,8 +187,8 @@ def normalize_korean_word(word):
 
 def extract_meaningful_tokens(text):
     raw = re.findall(r'[가-힣]{2,}', text)
-    noise = ['충격','속보','긴급','오늘','지금','결국','뉴스','영상']
-    return [normalize_korean_word(w) for w in raw if w not in noise]
+    # Stop Words 필터 적용
+    return [normalize_korean_word(w) for w in raw if w not in STOP_WORDS]
 
 def train_dynamic_vector_engine():
     try:
@@ -331,7 +368,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v69.0...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v70.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -359,9 +396,11 @@ def run_forensic_main(url):
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
-            # Gemini Call 1 (Single Shot)
+            # Gemini Call 1 (Single Shot + Legacy First)
             query, source = get_gemini_search_keywords(title, full_text)
             
+            time.sleep(1)
+
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
             abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
             agitation = count_sensational_words(full_text + title)
@@ -394,6 +433,10 @@ def run_forensic_main(url):
                 else:
                     if mismatch_count >= len(news_ev) * 0.5: news_score = 20
                     else: news_score = 0
+
+            # Gemini Call 2 (Legacy First + Fail-Safe)
+            time.sleep(1)
+            gemini_risk, gemini_reason = get_gemini_verdict(title, summary, news_items, news_score)
 
             cmts, c_status = fetch_comments_via_api(vid)
             top_kw, rel_score, rel_msg = analyze_comment_relevance(cmts, title + " " + full_text)
@@ -430,7 +473,10 @@ def run_forensic_main(url):
             clickbait = 10 if any(w in title for w in ['충격','경악','폭로']) else -5
             
             algo_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
-            final_prob = max(5, min(99, algo_score)) # Pure Algo Score
+            algo_score = max(0, min(100, algo_score))
+            gemini_impact = (gemini_risk - 50) 
+            final_prob = int((algo_score * 0.7) + (gemini_risk * 0.3))
+            final_prob = max(5, min(99, final_prob))
             
             save_analysis(uploader, title, final_prob, url, query)
 
@@ -467,6 +513,7 @@ def run_forensic_main(url):
                 
                 render_score_breakdown([
                     ["기본 위험도", 50, "Base Score"],
+                    ["Gemini AI 심층 판정", gemini_impact, "AI 판단 가중치 적용"],
                     ["진실 맥락 보너스", t_impact, ""], 
                     ["가짜 패턴 가점", f_impact, ""],
                     ["뉴스 교차 대조 (Penalty/Bonus)", news_score, "60% 이상 일치 시 안전, 불일치 많으면 위험"], 
@@ -498,6 +545,10 @@ def run_forensic_main(url):
                 top_kw_str = ", ".join([f"{w}({c})" for w, c in top_transcript_keywords])
                 st.table(pd.DataFrame([["영상 최다 언급 키워드", top_kw_str], ["제목 낚시어", "있음" if clickbait > 0 else "없음"], ["선동성 지수", f"{agitation}회"], ["기사-영상 일치도", f"{max_match}%"]], columns=["분석 항목", "판정 결과"]))
                 
+                st.markdown("**[증거 4] Gemini AI 심층 판정 (Judge)**")
+                st.info(f"🤖 **AI 위험도 평가: {gemini_risk}점**")
+                st.caption(f"💡 판단 근거: {gemini_reason}")
+                
                 st.markdown("**[최종 결론] AI 종합 분석 판단**")
                 
                 reasons = []
@@ -506,6 +557,9 @@ def run_forensic_main(url):
                 
                 if mismatch_penalty > 0: reasons.append("🚨 **내용 모순 감지**: 검색된 팩트와 영상 내용이 정면으로 배치됩니다.")
                 if silent_penalty > 0: reasons.append("🔇 **침묵의 메아리**: 자극적인 주장이지만 이를 뒷받침할 기사가 없습니다.")
+                
+                if gemini_risk > 70: reasons.append(f"🤖 **Gemini 경고**: AI가 뉴스 대조 결과 '거짓/오해의 소지'가 있다고 판단했습니다.")
+                elif gemini_risk < 30: reasons.append(f"🤖 **Gemini 승인**: AI가 뉴스 대조 결과 '사실 부합'으로 판단했습니다.")
                 
                 if not reasons: reasons.append("🔍 특이한 위험 요인이 발견되지 않아 중립적인 점수가 산출되었습니다.")
                 
@@ -517,7 +571,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v69.0")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v70.0")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
