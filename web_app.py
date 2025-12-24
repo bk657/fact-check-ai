@@ -159,8 +159,10 @@ def call_triple_survivor(prompt, is_json=False):
     return None, "All Failed (Mistral + Key A + Key B)", logs
 
 # --- [5. 상수 및 데이터] ---
-WEIGHT_ALGO = 0.6
-WEIGHT_AI = 0.4
+# 밸런스: Algo 85% : AI 15%
+WEIGHT_ALGO = 0.85
+WEIGHT_AI = 0.15
+
 OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
 CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
 
@@ -458,6 +460,7 @@ def run_forensic_main(url):
                     "원문": real_url
                 })
             
+            # [수정됨] 뉴스 점수 로직
             if not news_ev: news_score = 0
             else:
                 if max_match >= 70: news_score = -30 
@@ -483,8 +486,16 @@ def run_forensic_main(url):
             my_bar.progress(90, text="5단계: AI 판사(Triple) 최종 판결 중...")
             ai_judge_score, ai_judge_reason = get_hybrid_verdict_final(title, full_text, news_ev)
             
+            # [핵심 수정: Silent Echo Neutralizer]
+            # 증거가 없는 상태(Silent)에서는, 아무리 AI가 확신해도 강제로 50점(중립) 방향으로 당겨버림
+            # t_impact(진실DB), f_impact(거짓DB), news_ev(뉴스) 셋 다 없을 경우 발동
+            neutralizer_applied = False
             if t_impact == 0 and f_impact == 0 and is_silent:
+                neutralizer_applied = True
+                # AI 점수와 50점 사이의 중간값으로 희석 (ex: 90 -> 70, 10 -> 30)
                 ai_judge_score = int((ai_judge_score + 50) / 2)
+                # 알고리즘 점수도 강제 중립화
+                algo_base_score = int((algo_base_score + 50) / 2)
             
             final_prob = int((algo_base_score * WEIGHT_ALGO) + (ai_judge_score * WEIGHT_AI))
             final_prob = max(1, min(99, final_prob))
@@ -499,6 +510,7 @@ def run_forensic_main(url):
             with col_b:
                 icon = "🟢" if final_prob < 30 else "🔴" if final_prob > 60 else "🟠"
                 verdict = "안전 (Verified)" if final_prob < 30 else "위험 (Fake/Bias)" if final_prob > 60 else "주의 (Caution)"
+                if neutralizer_applied: verdict += " (증거 부족으로 보정됨)"
                 st.metric("종합 AI 판정", f"{icon} {verdict}")
             with col_c: 
                 st.metric("AI Intelligence Level", f"{db_count} Nodes", delta="Triple Active")
@@ -509,6 +521,8 @@ def run_forensic_main(url):
 
             if is_ai: st.warning(f"🤖 **AI 생성 콘텐츠 감지됨**: {ai_msg}")
             if is_official: st.success(f"🛡️ **공식 언론사 채널({uploader})입니다.**")
+            if neutralizer_applied:
+                st.info("💡 **Silent Echo 감지**: 뉴스 기사와 DB 데이터가 발견되지 않아, AI 판단 점수를 '중립(50점)' 방향으로 강제 보정했습니다.")
 
             st.divider()
             col1, col2 = st.columns([1, 1.4])
@@ -527,8 +541,9 @@ def run_forensic_main(url):
                     ["가짜 패턴 맥락", f_impact, "내부 DB 가짜 데이터와 유사성"],
                     ["뉴스 매칭 상태", news_score, "Deep-Crawler 정밀 대조 결과"],
                     ["여론/제목/태그 가감", sent_score + clickbait + abuse_score, ""],
+                    ["* 증거 부족 보정", "적용됨" if neutralizer_applied else "미적용", "데이터 없을 시 강제 중립화"],
                     ["-----------------", "", ""],
-                    ["⚖️ AI Judge Score (40%)", ai_judge_score, "Triple 종합 추론"]
+                    ["⚖️ AI Judge Score (15%)", ai_judge_score, "Triple 종합 추론 (참고용)"]
                 ])
 
             with col2:
