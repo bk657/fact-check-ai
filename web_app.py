@@ -13,7 +13,7 @@ import pandas as pd
 import altair as alt
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v63.1 (Keyword Fix)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v63.2 (Keyword Force)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets 로드
 try:
@@ -32,64 +32,78 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- [2. Gemini 연결 설정 (안전 필터 해제)] ---
+# --- [2. Gemini 연결 (안전 필터 해제 + 1.5 Flash 우선)] ---
 @st.cache_resource
 def init_gemini():
     try:
         genai.configure(api_key=GOOGLE_API_KEY)
-        # 🚨 [핵심 수정] 정치/사회 이슈 회피 방지를 위한 안전 필터 해제
+        # 정치적 이슈 회피 방지: 안전 필터 ALL OPEN
         safety_settings = [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
         ]
-        
-        candidates = ['gemini-1.5-flash', 'gemini-pro', 'gemini-1.0-pro']
-        for m in candidates:
-            try:
-                model = genai.GenerativeModel(m)
-                # 테스트 호출 시에도 안전 설정 적용
-                if model.generate_content("test", safety_settings=safety_settings): 
-                    return model, safety_settings
-            except: continue
+        # 1.5-flash가 지시 이행력이 더 좋습니다.
+        return genai.GenerativeModel('gemini-1.5-flash'), safety_settings
     except: return None, None
-    return None, None
 
 gemini_model, safety_config = init_gemini()
 
-def get_gemini_search_keywords(title, transcript):
-    """
-    Gemini를 사용하여 자막과 제목에서 '뉴스 검색용 최적 키워드'만 추출합니다.
-    """
-    if not gemini_model:
-        return title
-    
-    # 🚨 [핵심 수정] 프롬프트 강화: 제목 복사 금지 명령 추가
-    prompt = f"""
-    You are a professional search query optimizer.
-    Your task is to extract ONE concise search query to verify the facts in Google News.
-    
-    [Video Info]
-    Title: {title}
-    Transcript context: {transcript[:1000]}
-    
-    [Strict Rules]
-    1. DO NOT copy the title exactly. Rephrase it.
-    2. Remove emotional/clickbait words (e.g., Shocking, Truth, Real story).
-    3. Extract only core nouns: 'Person Name' + 'Event/Issue'.
-    4. Example: "Why Jay Lee is alone... sad story" -> "Jay Lee Divorce Reason"
-    5. Output ONLY the query string (Korean).
-    """
-    try:
-        # 안전 설정(safety_config)을 적용하여 정치적 내용도 답변하게 만듦
-        response = gemini_model.generate_content(prompt, safety_settings=safety_config)
-        return response.text.strip()
-    except:
-        # 그래도 실패하면 어쩔 수 없이 제목 사용 (하지만 이제 거의 없을 것임)
-        return title
+# --- [NLP 유틸리티 (백업용)] ---
+def normalize_korean_word(word):
+    word = re.sub(r'[^가-힣0-9]', '', word)
+    josa_list = ['은', '는', '이', '가', '을', '를', '의', '에', '에게', '로', '으로', '와', '과', '도', '만', '한테', '까지', '부터']
+    for josa in josa_list:
+        if word.endswith(josa) and len(word) > len(josa): return word[:-len(josa)]
+    return word
 
-# --- [3. 기존 핵심 로직 (v63.0과 동일)] ---
+def extract_meaningful_tokens(text):
+    raw_tokens = re.findall(r'[가-힣]{2,}', text)
+    noise = ['충격', '경악', '속보', '긴급', '오늘', '내일', '지금', '결국', '뉴스', '영상', '대부분', '이유', '왜', '있는', '없는', '하는', '것', '수', '등', '진짜', '정말', '너무', '그냥', '이제', '사실', '국민', '우리', '대한민국', '여러분', '실체', '비밀', '이게', '무슨', '어떤']
+    return [normalize_korean_word(w) for w in raw_tokens if normalize_korean_word(w) not in noise]
+
+# 🚨 [핵심 수정] Gemini 키워드 추출 함수 (강제성 부여)
+def get_gemini_search_keywords(title, transcript):
+    
+    # 1. Gemini 시도
+    if gemini_model:
+        prompt = f"""
+        Extract a refined Google News search query from this video.
+        
+        [Input]
+        Title: {title}
+        Context: {transcript[:800]}
+        
+        [Rules]
+        1. IGNORE adjectives (Shocking, Truth, etc).
+        2. EXTRACT ONLY 2-3 core nouns: 'Person' + 'Event'.
+        3. DO NOT output the full title.
+        4. If the title is "Yoo Rhyu-simin's words on Lee Jae-myung's rating", output "Lee Jae-myung Approval Rating".
+        5. Output ONLY the query string.
+        """
+        try:
+            response = gemini_model.generate_content(prompt, safety_settings=safety_config)
+            candidate = response.text.strip()
+            
+            # Gemini가 제목을 그대로 뱉었거나, 너무 길면(20자 이상) 실패로 간주
+            if candidate != title and len(candidate) < len(title):
+                return candidate
+        except:
+            pass # 실패 시 아래 백업 로직으로 이동
+
+    # 2. 백업 로직 (Gemini 실패 시 제목 그대로 반환 X -> 강제 명사 추출)
+    # 제목에서 쓸모없는 조사를 다 떼고 명사만 남깁니다.
+    tokens = extract_meaningful_tokens(title)
+    
+    # 명사가 있으면 앞 3개만 조합 (예: 유시민 이재명 지지율)
+    if tokens:
+        return " ".join(tokens[:3])
+    
+    # 명사조차 없으면 어쩔 수 없이 제목 반환
+    return title
+
+# --- [3. 기존 v51.2 로직 유지] ---
 WEIGHT_NEWS_DEFAULT = 45; WEIGHT_VECTOR = 35; WEIGHT_CONTENT = 15; WEIGHT_SENTIMENT_DEFAULT = 10
 PENALTY_ABUSE = 20; PENALTY_MISMATCH = 30; PENALTY_NO_FACT = 25; PENALTY_SILENT_ECHO = 40
 
@@ -170,18 +184,6 @@ def render_score_breakdown(data_list):
         except: badge = f'<span class="badge badge-neutral">{score}</span>'
         rows += f"<tr><td>{item}<br><span style='color:#888; font-size:11px;'>{note}</span></td><td style='text-align: right;'>{badge}</td></tr>"
     st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Silent Echo Protocol)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
-
-def normalize_korean_word(word):
-    word = re.sub(r'[^가-힣0-9]', '', word)
-    josa_list = ['은', '는', '이', '가', '을', '를', '의', '에', '에게', '로', '으로', '와', '과', '도', '만', '한테', '까지', '부터']
-    for josa in josa_list:
-        if word.endswith(josa) and len(word) > len(josa): return word[:-len(josa)]
-    return word
-
-def extract_meaningful_tokens(text):
-    raw_tokens = re.findall(r'[가-힣]{2,}', text)
-    noise = ['충격', '경악', '속보', '긴급', '오늘', '내일', '지금', '결국', '뉴스', '영상', '대부분', '이유', '왜', '있는', '없는', '하는', '것', '수', '등', '진짜', '정말', '너무', '그냥', '이제', '사실', '국민', '우리', '대한민국', '여러분']
-    return [normalize_korean_word(w) for w in raw_tokens if normalize_korean_word(w) not in noise]
 
 def summarize_transcript(text, title, max_sentences=3):
     if not text or len(text) < 50: return "⚠️ 요약할 자막 내용이 충분하지 않습니다."
@@ -313,7 +315,7 @@ def extract_top_keywords_from_transcript(text, top_n=5):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"📚 학습된 진실/거짓 데이터 로드 완료", "🚀 정밀 분석 엔진 가동"]
-    with st.status("🕵️ Hybrid Fact-Check Engine v63.1...", expanded=True) as status:
+    with st.status("🕵️ Hybrid Fact-Check Engine v63.2...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -342,7 +344,7 @@ def run_forensic_main(url):
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
-            # 🚨 [수정됨] Gemini 검색어 추출 (안전 필터 해제됨)
+            # 🚨 [수정됨] Gemini 검색어 추출 (강제 명사 변환 백업 적용)
             query = get_gemini_search_keywords(title, full_text)
 
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
@@ -477,7 +479,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v63.1")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v63.2")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
