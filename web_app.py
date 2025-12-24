@@ -15,7 +15,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v71.3 (Safety Unlocked)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v71.5 (A:1.5 / B:2.0)", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -84,7 +84,7 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# --- [4. Gemini Logic (Twin Engine)] ---
+# --- [4. Gemini Logic (Twin Engine: A=1.5, B=2.0)] ---
 
 # 🚨 안전 설정 해제 (마약/범죄 관련 내용 필터링 방지)
 safety_settings = {
@@ -94,12 +94,10 @@ safety_settings = {
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
 }
 
-# [Engine A] 수사관: 키워드 추출 전담
+# [Engine A] 수사관: 키워드 추출 전담 (1.5 Flash 사용)
 def get_gemini_search_keywords(title, transcript):
     genai.configure(api_key=GOOGLE_API_KEY_A)
-    
-    # [수정] Key A가 쓸 수 있는 모든 모델 순회 (1.5 -> 2.0)
-    candidates = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-pro']
+    target_model = 'gemini-1.5-flash' # [사용자 지정] Key A = 1.5
     
     full_context = transcript[:30000]
     
@@ -120,25 +118,23 @@ def get_gemini_search_keywords(title, transcript):
     4. Return ONLY the Korean query string.
     """
 
-    for model_name in candidates:
-        try:
-            model = genai.GenerativeModel(model_name)
-            # 안전 설정 적용하여 호출
-            response = model.generate_content(prompt, safety_settings=safety_settings)
-            if response.text:
-                return response.text.strip(), f"✨ Gemini (Key A / {model_name})"
-        except Exception as e:
-            # 에러 발생 시 다음 모델 시도
-            continue
+    try:
+        model = genai.GenerativeModel(target_model)
+        # 안전 설정 적용
+        response = model.generate_content(prompt, safety_settings=safety_settings)
+        if response.text:
+            return response.text.strip(), f"✨ Gemini (Key A / 1.5-Flash)"
+    except Exception as e:
+        return f"Error: {str(e)}", "❌ Key A Error"
             
-    # [중요] 모든 AI가 실패하면 에러 메시지 리턴 (절대 멍청한 백업 사용 안 함)
-    return "검색어 추출 실패", "❌ All Models Failed on Key A"
+    # 백업
+    tokens = re.findall(r'[가-힣]{2,}', title)
+    return " ".join(tokens[:3]), "🤖 Backup Logic"
 
-# [Engine B] 판사: 진위 여부 최종 추론 전담
+# [Engine B] 판사: 진위 여부 최종 추론 전담 (2.0 Flash 사용)
 def get_gemini_verdict(title, transcript, news_items):
     genai.configure(api_key=GOOGLE_API_KEY_B)
-    
-    candidates = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-pro']
+    target_model = 'gemini-2.0-flash' # [사용자 지정] Key B = 2.0
     
     news_text = ""
     if not news_items:
@@ -174,16 +170,13 @@ def get_gemini_verdict(title, transcript, news_items):
     {{"score": <int>, "reason": "<string>"}}
     """
     
-    for m_name in candidates:
-        try:
-            model = genai.GenerativeModel(m_name, generation_config={"response_mime_type": "application/json"})
-            response = model.generate_content(prompt, safety_settings=safety_settings)
-            result = json.loads(response.text)
-            return result['score'], result['reason']
-        except:
-            continue
-
-    return 50, "AI 추론 실패 (모델 연결 오류)"
+    try:
+        model = genai.GenerativeModel(target_model, generation_config={"response_mime_type": "application/json"})
+        response = model.generate_content(prompt, safety_settings=safety_settings)
+        result = json.loads(response.text)
+        return result['score'], result['reason']
+    except Exception as e:
+        return 50, f"AI 추론 실패 (Key B - 2.0 Error: {str(e)})"
 
 # --- [5. 유틸리티 함수] ---
 def normalize_korean_word(word):
@@ -375,7 +368,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v71.3...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v71.5...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -551,11 +544,11 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v71.3 (Safety Unlocked)")
+st.title("⚖️ Fact-Check Center v71.5 (A:1.5 / B:2.0)")
 
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (Auto-Loop)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (Auto-Loop)")
+    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (1.5-Flash)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (2.0-Flash)")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
