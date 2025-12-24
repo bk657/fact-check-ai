@@ -15,7 +15,7 @@ import altair as alt
 import json
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v76.1 (Model Split)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v77.0 (Full Context Restored)", layout="wide", page_icon="⚖️")
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -111,34 +111,37 @@ def call_gemini_with_retry(api_key, model_name, prompt, is_json=False):
             
     return None
 
-# [Engine A] 수사관: 2.5-Flash 사용 + 제목만 입력
-def get_gemini_search_keywords(title):
-    # [전략] Key A는 2.5 버전을 사용 (2.0은 과부하 상태이므로 피함)
+# [Engine A] 수사관: 제목 + 자막(10,000자) 사용
+def get_gemini_search_keywords(title, transcript):
+    # [모델] 2.5-flash (2.0은 쿼터 초과 이슈로 제외)
     target_model = 'gemini-2.5-flash'
     
-    # [입력] 오직 제목만 사용 (토큰 최소화)
+    # [데이터] 자막 10,000자 사용 (충분한 문맥 확보 + 쿼터 안전)
+    context_data = transcript[:10000]
+    
     prompt = f"""
     Role: Investigative Journalist.
     Input Title: {title}
+    Input Transcript: {context_data}
     
-    Task: Extract ONE core keyword from the title to verify the facts on Google News.
+    Task: Extract ONE core keyword from the text to verify the facts on Google News.
     Rules:
     1. Ignore clickbait (e.g., 'Shocking', 'Urgent').
-    2. Identify the main Subject (Person, Drug, Event).
+    2. Identify the main Subject (Person, Drug Name, Event, Legal Issue) from the TRANSCRIPT.
     3. Output ONLY the Korean keyword string. No explanations.
     """
 
     result = call_gemini_with_retry(GOOGLE_API_KEY_A, target_model, prompt)
     
     if result:
-        return result.strip(), f"✨ Gemini 2.5 (Title Only)"
+        return result.strip(), f"✨ Gemini 2.5 (Title + Transcript)"
     else:
-        # 백업: 모델 호출 실패 시 제목 반환 (에러 메시지 대신)
+        # 실패 시 제목 반환 (안전장치)
         return title, "⚠️ Gemini Retry Failed (Fallback)"
 
-# [Engine B] 판사: 기존 유지 (2.0-Flash + 전체 자막)
+# [Engine B] 판사: 제목 + 전체 자막 (기존 유지)
 def get_gemini_verdict(title, transcript, news_items):
-    # [유지] Key B는 건드리지 않음
+    # [모델] 2.0-flash (기존에 잘 되던 모델 유지)
     target_model = 'gemini-2.0-flash'
     
     news_text = ""
@@ -376,7 +379,7 @@ def check_red_flags(comments):
 
 def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [f"🧠 [Intelligence: {total}] 집단 지성 로드 중...", f"🔑 Twin-Gemini Protocol 활성화...", "🚀 수사관(Investigator) 및 판사(Judge) 엔진 가동"]
-    with st.status("🕵️ Dual-Engine Fact-Check v76.1...", expanded=True) as status:
+    with st.status("🕵️ Dual-Engine Fact-Check v77.0...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.3)
         status.update(label="분석 준비 완료", state="complete", expanded=False)
 
@@ -399,8 +402,8 @@ def run_forensic_main(url):
             summary = summarize_transcript(full_text, title)
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
-            # [Step 2] Gemini Key A (수사관) - 제목만 사용
-            query, source = get_gemini_search_keywords(title)
+            # [Step 2] Gemini Key A (수사관) - 제목 + 자막 10,000자 사용
+            query, source = get_gemini_search_keywords(title, full_text)
 
             # [Step 3] 기본 알고리즘 분석
             is_official = check_is_official(uploader)
@@ -465,7 +468,7 @@ def run_forensic_main(url):
             algo_base_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + mismatch_penalty + silent_penalty
             algo_final_prob = max(5, min(99, algo_base_score))
             
-            # [Step 6] Gemini Key B (판사) - 기존 유지
+            # [Step 6] Gemini Key B (판사)
             ai_judge_score, ai_judge_reason = get_gemini_verdict(title, full_text, news_ev)
             
             # [Step 7] 최종 합산
@@ -552,11 +555,11 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Fact-Check Center v76.1 (Model Split)")
+st.title("⚖️ Fact-Check Center v77.0 (Full Context Restored)")
 
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (Title Only)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (Full Context)")
+    st.markdown("* **Engine A (Investigator)**: 문맥 최적화 검색어 추출 (2.5-Flash / 10k Limit)\n* **Engine B (Judge)**: 뉴스 대조 및 최종 진실 추론 (2.0-Flash / Full)")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
