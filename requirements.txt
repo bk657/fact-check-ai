@@ -4,4 +4,4 @@ yt-dlp
 pandas
 beautifulsoup4
 altair
-google-generativeai==0.7.2
+google-generativeai>=0.5.0
