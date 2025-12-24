@@ -1,6 +1,9 @@
+keybert
+sentence-transformers
 streamlit
-pandas
-yt-dlp
-beautifulsoup4
-requests
 supabase
+yt-dlp
+pandas
+beautifulsoup4
+altair
+openai
