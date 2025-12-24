@@ -12,11 +12,9 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 import altair as alt
-import spacy
-import sys
 
 # --- [1. 시스템 설정] ---
-st.set_page_config(page_title="Fact-Check Center v53.5 (Lite AI)", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Fact-Check Center v53.6 (Pure Logic)", layout="wide", page_icon="⚖️")
 
 # 🌟 Secrets
 try:
@@ -34,35 +32,13 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# 🌟 [v53.5 Fix] 초경량 AI 로더 (SpaCy Only)
-# 무거운 KeyBERT/Torch 제거 -> 서버 다운 원천 차단
-@st.cache_resource
-def load_ai_model():
-    ai_status_msg = ""
-    nlp_model = None
-    
-    try:
-        # requirements.txt에서 설치된 모델 로드
-        if not spacy.util.is_package("ko_core_news_sm"):
-            spacy.cli.download("ko_core_news_sm")
-        
-        nlp_model = spacy.load("ko_core_news_sm")
-        ai_status_msg = "✅ Lite AI Active (SpaCy NER+POS)"
-    except Exception as e:
-        ai_status_msg = f"⚠️ AI Load Error: {e}"
-        
-    return nlp_model, ai_status_msg
-
-# AI 로딩
-nlp_model, ai_status = load_ai_model()
-
 # --- [관리자 인증] ---
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
 
 with st.sidebar:
     st.header("🛡️ 관리자 메뉴")
-    st.caption(ai_status)
+    st.caption("⚡ Pure Logic Engine (Fast & Safe)")
     with st.form("login_form"):
         password_input = st.text_input("관리자 비밀번호", type="password")
         submit_button = st.form_submit_button("로그인")
@@ -85,7 +61,8 @@ PENALTY_ABUSE = 20; PENALTY_MISMATCH = 30; PENALTY_NO_FACT = 25; PENALTY_SILENT_
 
 CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
 OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
-VIP_ENTITIES = ['윤석열', '대통령', '이재명', '한동훈', '김건희', '문재인', '박근혜', '이명박', '트럼프', '바이든', '푸틴', '젤렌스키', '시진핑', '정은', '이준석', '조국', '추미애', '홍준표', '유승민', '안철수', '손흥민', '이강인', '김민재', '류현진', '재용', '정의선', '최태원', '류중일', '감독', '조세호', '유재석', '장동민', '유호정', '이재룡']
+# Fallback용 VIP 리스트
+VIP_ENTITIES = ['윤석열', '대통령', '이재명', '한동훈', '김건희', '문재인', '박근혜', '이명박', '트럼프', '바이든', '푸틴', '젤렌스키', '시진핑', '정은', '이준석', '조국', '추미애', '홍준표', '유승민', '안철수', '손흥민', '이강인', '김민재', '류현진', '재용', '정의선', '최태원', '류중일', '감독', '조세호', '유재석', '장동민', '유호정', '이재룡', '임세령']
 
 STATIC_TRUTH_CORPUS = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "대전 충남 통합", "선거 출마 선언"]
 STATIC_FAKE_CORPUS = ["충격 폭로 경악", "긴급 속보 소름", "충격 발언 논란", "구속 영장 발부", "영상 유출", "계시 예언", "사형 집행", "위독설"]
@@ -169,19 +146,20 @@ def witty_loading_sequence(total, t_cnt, f_cnt):
     messages = [
         f"🧠 [Intelligence Level: {total}] 집단 지성 로드 중...",
         f"📚 학습된 진실 데이터: {t_cnt}건 | 거짓 데이터: {f_cnt}건",
-        "🤖 Lite AI (SpaCy) 문맥 분석 중...", 
+        "⚡ Pure Logic (Regex NLP) 가동 중...", 
         "🚀 위성이 유튜브 본사 상공을 지나가는 중..."
     ]
-    with st.status("🕵️ Context Merger v53.5 가동 중...", expanded=True) as status:
+    with st.status("🕵️ Context Merger v53.6 가동 중...", expanded=True) as status:
         for msg in messages: st.write(msg); time.sleep(0.4)
         st.write("✅ 분석 준비 완료!"); status.update(label="분석 완료!", state="complete", expanded=False)
 
-# --- [Advanced NLP Logic] ---
+# --- [Pure Python NLP Logic] ---
 def normalize_korean_word(word):
-    josa_list = ['은', '는', '이', '가', '을', '를', '의', '에', '에게', '로', '으로', '도', '만', '에서', '하고', '이랑', '까지', '부터', '와', '과']
-    for josa in josa_list:
-        if word.endswith(josa) and len(word) > len(josa) + 1: 
-            return word[:-len(josa)]
+    # 정교한 조사 제거 로직 (Regex 사용)
+    # 은/는/이/가/을/를/의/에/에서/로/으로/와/과/도/만/한테/에게 ...
+    josa_pattern = r'(은|는|이|가|을|를|의|에|에서|로|으로|와|과|도|만|한테|에게|이랑|까지|부터|조차|마저)$'
+    if len(word) >= 2:
+        return re.sub(josa_pattern, '', word)
     return word
 
 def extract_meaningful_tokens(text):
@@ -189,66 +167,60 @@ def extract_meaningful_tokens(text):
     noise = ['충격', '경악', '속보', '긴급', '오늘', '내일', '지금', '결국', '뉴스', '영상', '대부분', '이유', '왜', '있는', '없는', '하는', '것', '수', '등', '진짜', '정말', '너무', '그냥', '이제', '사실', '국민', '우리', '대한민국', '여러분', '그리고', '그래서', '그러나', '하지만', '때문에', '해서', '근데', '솔직히', '무슨', '어떤', '이런', '저런']
     return [normalize_korean_word(w) for w in raw_tokens if normalize_korean_word(w) not in noise]
 
-# 🌟 [v53.5] SpaCy 기반 Entity 추출 (경량화)
-def extract_ner_entities(text):
-    if nlp_model is None: return []
-    try:
-        doc = nlp_model(text)
-        entities = []
-        for ent in doc.ents:
-            # 주요 개체명만 추출
-            if ent.label_ in ["PERSON", "ORG", "CIVILIZATION", "PS", "OG"]:
-                entities.append(ent.text)
-        return list(dict.fromkeys(entities))
-    except: return []
+# 🌟 [v53.6 New] 순수 로직 기반 VIP/주어 탐지기
+def detect_subject_pure_logic(title, text):
+    tokens = extract_meaningful_tokens(title)
+    
+    # 1. VIP 리스트 매칭
+    for vip in VIP_ENTITIES:
+        if vip in title:
+            return vip
+            
+    # 2. 호칭(Honorifics) 기반 추론
+    # "~~~ 회장", "~~~ 의원", "~~~ 씨" 앞에 있는 단어는 주어일 확률 99%
+    honorifics = ['회장', '의원', '대표', '대통령', '장관', '박사', '교수', '감독', '선수', '씨']
+    words = title.split()
+    for i, word in enumerate(words):
+        for hon in honorifics:
+            if hon in word and i > 0: # 호칭 발견 시 바로 앞 단어 리턴
+                return normalize_korean_word(words[i-1])
+                
+    return ""
 
-# 🌟 [v53.5] SpaCy 기반 주요 명사 추출 (KeyBERT 대체)
-def extract_key_nouns_spacy(text):
-    if nlp_model is None: return None
-    try:
-        doc = nlp_model(text)
-        # 명사(NOUN)이면서 길이가 2 이상인 것들의 빈도수 계산
-        nouns = [token.text for token in doc if token.pos_ == "NOUN" and len(token.text) > 1]
-        
-        # 불용어 필터링
-        noise = ['사람', '생각', '자신', '정도', '때문', '경우', '사실', '이유', '그거', '저거', '진짜', '정말']
-        nouns = [n for n in nouns if n not in noise]
-        
-        if not nouns: return None
-        
-        # 가장 많이 등장한 명사 리턴
-        most_common = Counter(nouns).most_common(1)
-        return most_common[0][0] if most_common else None
-    except: return None
+def extract_action_pure_logic(title, transcript):
+    # 제목과 자막에 공통적으로 많이 등장하는 2글자 이상 명사 추출
+    t_tokens = set(extract_meaningful_tokens(title))
+    tr_tokens = extract_meaningful_tokens(transcript[:1000]) # 앞부분만
+    
+    # 교집합 (제목에도 있고 내용에도 있는 단어)
+    common = t_tokens.intersection(tr_tokens)
+    
+    # VIP 이름 제외
+    common = [w for w in common if w not in VIP_ENTITIES]
+    
+    if common:
+        return max(common, key=len) # 가장 긴 단어 (구체적일 확률 높음)
+    return ""
 
-# 🌟 [v53.5] Smart Query (SpaCy NER + POS)
+# 🌟 [v53.6] Logic-based Smart Query
 def generate_smart_query(title, transcript):
-    # 1. NER로 주어(Entity) 찾기
-    entities = extract_ner_entities(title)
-    main_subject = entities[0] if entities else ""
+    # 1. 주어 찾기 (Logic)
+    subject = detect_subject_pure_logic(title, transcript)
     
-    # Fallback: NER 실패 시 VIP 리스트 사용
-    if not main_subject:
-        title_tokens = extract_meaningful_tokens(title)
-        vip_found = [w for w in title_tokens if w in VIP_ENTITIES]
-        if vip_found: main_subject = vip_found[0]
-
-    # 2. SpaCy POS Tagging으로 핵심 명사(사건) 찾기
-    # 제목 + 자막 앞부분으로 문맥 파악
-    context = f"{title}. {transcript[:500]}"
-    action_keyword = extract_key_nouns_spacy(context) 
+    # 2. 행위/사건 찾기 (Logic)
+    action = extract_action_pure_logic(title, transcript)
     
-    # 3. 조합
-    final_query = ""
-    if main_subject:
-        if action_keyword:
-            if main_subject in action_keyword: final_query = action_keyword
-            else: final_query = f"{main_subject} {action_keyword}"
-        else:
-            final_query = f"{main_subject} {title.split()[-1]}"
-    else:
-        # AI가 없거나 키워드 추출 실패 시
-        final_query = action_keyword if action_keyword else " ".join(extract_meaningful_tokens(title)[:3])
+    # 3. Fallback: 주어를 못 찾았으면 제목의 첫 명사 사용
+    if not subject:
+        tokens = extract_meaningful_tokens(title)
+        subject = tokens[0] if tokens else ""
+        
+    # 4. 조합
+    final_query = f"{subject} {action}".strip()
+    
+    # 5. 너무 짧으면 제목의 명사 3개 사용
+    if len(final_query) < 3:
+        final_query = " ".join(extract_meaningful_tokens(title)[:3])
         
     return final_query
 
@@ -409,7 +381,7 @@ def run_forensic_main(url):
             w_news = 70 if is_ai else WEIGHT_NEWS_DEFAULT
             w_vec = 10 if is_ai else WEIGHT_VECTOR
             
-            # 🌟 [v53.5] Lite Smart Query (SpaCy Only)
+            # 🌟 [v53.6] Smart Query (Pure Logic)
             query = generate_smart_query(title, full_text)
 
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
@@ -502,7 +474,7 @@ def run_forensic_main(url):
             with col1:
                 st.write("**[영상 상세 정보]**")
                 st.table(pd.DataFrame({"항목": ["영상 제목", "채널명", "조회수", "해시태그"], "내용": [title, uploader, f"{info.get('view_count',0):,}회", hashtag_display]}))
-                st.info(f"🎯 **AI 스마트 검색어 (Lite Mode)**: {query}")
+                st.info(f"🎯 **AI 스마트 검색어 (Pure Logic)**: {query}")
                 with st.container(border=True):
                     st.markdown("📝 **영상 내용 요약 (AI Abstract)**")
                     st.caption("자막 데이터를 분석하여 핵심 문장 3개를 추출한 결과입니다.")
@@ -554,7 +526,7 @@ def run_forensic_main(url):
         except Exception as e: st.error(f"오류: {e}")
 
 # --- [UI Layout] ---
-st.title("⚖️ Triple-Evidence Intelligence Forensic v53.5")
+st.title("⚖️ Triple-Evidence Intelligence Forensic v53.6")
 with st.container(border=True):
     st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다.\n* **최종 판단의 주체:** 정보의 진위 여부에 대한 최종적인 판단과 그에 따른 책임은 **사용자 본인**에게 있습니다.")
     agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
