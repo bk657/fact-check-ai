@@ -690,6 +690,7 @@ st.write("")
 with st.expander("🔐 관리자 접속 (Admin Access)"):
     if st.session_state["is_admin"]:
         st.success("관리자 권한 활성화됨")
+       
         st.divider()
         st.subheader("🏢 B2B 브랜드 세이프티 리포트 (Business Intelligence)")
         if st.button("📊 리포트 생성 및 분석"):
@@ -712,7 +713,6 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
                 else:
                     st.info("분석할 데이터가 충분하지 않습니다.")
             except Exception as e: st.error(f"리포트 생성 실패: {e}")
-        # ---------------------------------------------
         
         st.divider()
         st.subheader("🛠️ 시스템 상태 및 디버그 로그")
@@ -750,5 +750,6 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
                 st.rerun()
             else:
                 st.error("Access Denied")
+
 
 
