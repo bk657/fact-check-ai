@@ -187,7 +187,6 @@ class VectorEngine:
         mag = math.sqrt(sum(a*a for a in v1)) * math.sqrt(sum(b*b for b in v2))
         return dot/mag if mag>0 else 0
     def analyze_position(self, query):
-        if not self.vocab: return 0, 0
         qv = self.text_to_vector(query)
         mt = max([self.cosine_similarity(qv, v) for v in self.truth_vectors] or [0])
         mf = max([self.cosine_similarity(qv, v) for v in self.fake_vectors] or [0])
@@ -263,58 +262,7 @@ def get_hybrid_verdict_final(title, transcript, verified_news_list):
     if res: return res.get('score', 50), f"{res.get('reason')} (By {model_used})"
     return 50, "Judge Failed"
 
-# --- [B2B 리포트 생성 엔진 (에러 수정됨)] ---
-def generate_b2b_report_logic(df_history):
-    if df_history.empty: return pd.DataFrame()
-    
-    # 1. 데이터 강제 형변환 (NaN은 0으로) -> 'avg_risk' 에러 해결의 핵심
-    df_history['fake_prob'] = pd.to_numeric(df_history['fake_prob'], errors='coerce').fillna(0)
-    
-    # 2. 안전한 GroupBy (직접 계산 방식)
-    grouped = df_history.groupby('channel_name')
-    
-    # 3. 컬럼별 독립 계산 후 병합 (오류 가능성 차단)
-    data_list = []
-    for channel, group in grouped:
-        avg_score = group['fake_prob'].mean()
-        max_score = group['fake_prob'].max()
-        count = len(group)
-        keywords_list = group['keywords'].tolist()
-        all_keywords = ' '.join([str(k) for k in keywords_list if k])
-        
-        data_list.append({
-            'channel_name': channel,
-            'analyzed_count': count,
-            'avg_risk': avg_score,
-            'max_risk': max_score,
-            'all_keywords': all_keywords
-        })
-    
-    report = pd.DataFrame(data_list)
-    
-    results = []
-    for _, row in report.iterrows():
-        avg_score = row['avg_risk']
-        
-        if avg_score >= 60: grade = "⛔ BLACKLIST"
-        elif avg_score >= 40: grade = "⚠️ CAUTION"
-        else: grade = "✅ SAFE"
-        
-        tokens = re.findall(r'[가-힣]{2,}', str(row['all_keywords']))
-        targets = ", ".join([t[0] for t in Counter(tokens).most_common(3)])
-        
-        results.append({
-            "채널명": row['channel_name'],
-            "위험 등급": grade,
-            "평균 가짜 확률": f"{int(avg_score)}%",
-            "최고 가짜 확률": f"{int(row['max_risk'])}%",
-            "분석 영상 수": f"{int(row['analyzed_count'])}개",
-            "주요 타겟": targets
-        })
-        
-    return pd.DataFrame(results).sort_values(by='평균 가짜 확률', ascending=False)
-
-# --- [6. 유틸리티 2] ---
+# --- [6. 유틸리티] ---
 def normalize_korean_word(word):
     word = re.sub(r'[^가-힣0-9]', '', word)
     for j in ['은','는','이','가','을','를','의','에','에게','로','으로']:
@@ -666,23 +614,22 @@ def run_forensic_main(url):
 st.title("⚖️유튜브 가짜뉴스 판독기 (Triple Engine)")
 
 with st.container(border=True):
-    st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
-    st.markdown("* **1st Line**: Mistral AI\n* **2nd Line**: Google Gemini Key A\n* **3rd Line**: Google Gemini Key B (Final Backup)")
-    agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
+    st.markdown("### 🛡️ 법적 고지 및 책임 한계 (Disclaimer)\n본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. \n분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.")
+    st.markdown("* **1st Line**: Mistral AI\n* **2nd Line**: Google Gemini Key A\n* **3rd Line**: Google Gemini Key B (Final Backup)")
+    agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다. (동의 시 분석 버튼 활성화)")
 
 url_input = st.text_input("🔗 분석할 유튜브 URL")
 if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not agree):
-    if url_input: run_forensic_main(url_input)
-    else: st.warning("URL을 입력해주세요.")
+    if url_input: run_forensic_main(url_input)
+    else: st.warning("URL을 입력해주세요.")
 
 st.divider()
 st.subheader("🗂️ 학습 데이터 관리 (Cloud Knowledge Base)")
 try:
-    response = supabase.table("analysis_history").select("*").order("id", desc=True).execute()
-    df = pd.DataFrame(response.data)
+    response = supabase.table("analysis_history").select("*").order("id", desc=True).execute()
+    df = pd.DataFrame(response.data)
 except: df = pd.DataFrame()
 
-# [중요: 일반 사용자에게도 히스토리 보임]
 if not df.empty:
     if st.session_state["is_admin"]:
         df['Delete'] = False
@@ -693,72 +640,49 @@ if not df.empty:
                 for index, row in to_delete.iterrows(): supabase.table("analysis_history").delete().eq("id", row['id']).execute()
                 st.success("삭제 완료!"); time.sleep(1); st.rerun()
     else:
-        # 여기가 빠졌던 부분입니다. 다시 복구했습니다.
         st.dataframe(df[['analysis_date', 'video_title', 'fake_prob', 'keywords']], hide_index=True, use_container_width=True)
 else: st.info("데이터가 없습니다.")
 
 st.write("")
 # [관리자 전용 섹션]
 with st.expander("🔐 관리자 접속 (Admin Access)"):
-    if st.session_state["is_admin"]:
-        st.success("관리자 권한 활성화됨")
-        
-        # --- [NEW] B2B 리포트 기능 (에러 수정됨) ---
+    if st.session_state["is_admin"]:
+        st.success("관리자 권한 활성화됨")
+        
         st.divider()
-        st.subheader("🏢 B2B 브랜드 세이프티 리포트 (Business Intelligence)")
-        if st.button("📊 리포트 생성 및 분석"):
-            try:
-                # [B2B 리포트 생성 로직 호출]
-                rpt = generate_b2b_report_logic(df)
-                if not rpt.empty:
-                    st.dataframe(
-                        rpt,
-                        column_config={
-                            "위험 등급": st.column_config.TextColumn("Risk Level", help="평균 가짜뉴스 확률 기반 등급"),
-                            "평균 가짜 확률": st.column_config.ProgressColumn("Avg Risk", format="%s", min_value=0, max_value=100),
-                        },
-                        use_container_width=True, hide_index=True
-                    )
-                    csv = rpt.to_csv(index=False).encode('utf-8-sig')
-                    st.download_button("📥 리포트 엑셀(CSV) 다운로드", csv, "b2b_report.csv", "text/csv")
-                else:
-                    st.info("분석할 데이터가 충분하지 않습니다.")
-            except Exception as e: st.error(f"리포트 생성 실패: {e}")
-        # ---------------------------------------------
+        st.subheader("🛠️ 시스템 상태 및 디버그 로그")
+        
+        st.write("**🤖 Triple Defense System Status:**")
+        
+        st.caption("1️⃣ Mistral Priority Chain")
+        st.code(", ".join(MISTRAL_MODELS))
+        
+        st.caption("2️⃣ Gemini Key A (Dynamic Scan)")
+        try:
+            st.code(", ".join(get_gemini_models_dynamic(GOOGLE_API_KEY_A)))
+        except: st.error("Key A 연결 실패")
 
-        st.divider()
-        st.subheader("🛠️ 시스템 상태 및 디버그 로그")
-        
-        st.write("**🤖 Triple Defense System Status:**")
-        
-        st.caption("1️⃣ Mistral Priority Chain")
-        st.code(", ".join(MISTRAL_MODELS))
-        
-        st.caption("2️⃣ Gemini Key A (Dynamic Scan)")
-        try:
-            st.code(", ".join(get_gemini_models_dynamic(GOOGLE_API_KEY_A)))
-        except: st.error("Key A 연결 실패")
+        st.caption("3️⃣ Gemini Key B (Dynamic Scan)")
+        try:
+            st.code(", ".join(get_gemini_models_dynamic(GOOGLE_API_KEY_B)))
+        except: st.error("Key B 연결 실패")
 
-        st.caption("3️⃣ Gemini Key B (Dynamic Scan)")
-        try:
-            st.code(", ".join(get_gemini_models_dynamic(GOOGLE_API_KEY_B)))
-        except: st.error("Key B 연결 실패")
+        if "debug_logs" in st.session_state and st.session_state["debug_logs"]:
+            st.write(f"**📜 최근 실행 로그 ({len(st.session_state['debug_logs'])}건):**")
+            log_text = "\n".join(st.session_state["debug_logs"])
+            st.text_area("Logs", log_text, height=300)
+        else:
+            st.info("실행된 로그가 없습니다.")
 
-        if "debug_logs" in st.session_state and st.session_state["debug_logs"]:
-            st.write(f"**📜 최근 실행 로그 ({len(st.session_state['debug_logs'])}건):**")
-            log_text = "\n".join(st.session_state["debug_logs"])
-            st.text_area("Logs", log_text, height=300)
-        else:
-            st.info("실행된 로그가 없습니다.")
+        if st.button("로그아웃"):
+            st.session_state["is_admin"] = False
+            st.rerun()
+    else:
+        input_pwd = st.text_input("Admin Password", type="password")
+        if st.button("Login"):
+            if input_pwd == ADMIN_PASSWORD:
+                st.session_state["is_admin"] = True
+                st.rerun()
+            else:
+                st.error("Access Denied")
 
-        if st.button("로그아웃"):
-            st.session_state["is_admin"] = False
-            st.rerun()
-    else:
-        input_pwd = st.text_input("Admin Password", type="password")
-        if st.button("Login"):
-            if input_pwd == ADMIN_PASSWORD:
-                st.session_state["is_admin"] = True
-                st.rerun()
-            else:
-                st.error("Access Denied")
