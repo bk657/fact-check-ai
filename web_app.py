@@ -38,7 +38,7 @@ try:
     GOOGLE_API_KEY_A = st.secrets["GOOGLE_API_KEY_A"]
     GOOGLE_API_KEY_B = st.secrets["GOOGLE_API_KEY_B"]
 except:
-    st.error("❌ secrets.toml 파일 설정 오류")
+    st.error("❌ secrets.toml 설정 오류: API Key를 확인해주세요.")
     st.stop()
 
 @st.cache_resource
@@ -88,27 +88,35 @@ def call_triple_survivor(prompt, is_json=False):
                 response_format=response_format, temperature=0.2
             )
             if resp.choices:
-                return resp.choices[0].message.content, model_name, logs
+                content = resp.choices[0].message.content
+                logs.append(f"✅ Success (Mistral): {model_name}")
+                return content, model_name, logs
         except Exception as e:
             logs.append(f"❌ Mistral Failed: {str(e)[:30]}")
             continue
 
     # 2. Gemini A
     genai.configure(api_key=GOOGLE_API_KEY_A)
-    for model_name in get_gemini_models_dynamic(GOOGLE_API_KEY_A):
+    models_a = get_gemini_models_dynamic(GOOGLE_API_KEY_A)
+    for model_name in models_a:
         try:
             m = genai.GenerativeModel(model_name)
             r = m.generate_content(prompt)
-            if r.text: return r.text, f"{model_name} (Key A)", logs
+            if r.text: 
+                logs.append(f"✅ Success (Key A): {model_name}")
+                return r.text, f"{model_name} (Key A)", logs
         except: continue
 
     # 3. Gemini B
     genai.configure(api_key=GOOGLE_API_KEY_B)
-    for model_name in get_gemini_models_dynamic(GOOGLE_API_KEY_B):
+    models_b = get_gemini_models_dynamic(GOOGLE_API_KEY_B)
+    for model_name in models_b:
         try:
             m = genai.GenerativeModel(model_name)
             r = m.generate_content(prompt)
-            if r.text: return r.text, f"{model_name} (Key B)", logs
+            if r.text: 
+                logs.append(f"✅ Success (Key B): {model_name}")
+                return r.text, f"{model_name} (Key B)", logs
         except: continue
 
     return None, "All Failed", logs
@@ -181,26 +189,27 @@ def get_hybrid_verdict_final(title, transcript, news_list):
     if parsed: return parsed.get('score', 50), f"{parsed.get('reason')} (By {model})"
     return 50, "Judge Failed"
 
-# --- [B2B 리포트 생성 엔진 (수정됨)] ---
+# --- [B2B 리포트 생성 엔진 (에러 수정됨)] ---
 def generate_b2b_report_logic(df_history):
     if df_history.empty: return pd.DataFrame()
     
-    # [핵심 수정] fake_prob를 반드시 숫자로 변환 (에러 원인 해결)
+    # [핵심 수정] fake_prob를 강제로 숫자로 변환 (에러 원인 해결)
     df_history['fake_prob'] = pd.to_numeric(df_history['fake_prob'], errors='coerce').fillna(0)
     
-    # 집계
+    # 집계 로직
     channel_stats = df_history.groupby('channel_name').agg({
         'fake_prob': ['count', 'mean', 'max'],
         'keywords': lambda x: ' '.join([str(k) for k in x if k])
     })
     
-    # 컬럼 평탄화 (Flatten MultiIndex)
+    # 컬럼 이름 재설정 (Flatten MultiIndex)
     channel_stats.columns = ['analyzed_count', 'avg_risk', 'max_risk', 'all_keywords']
     channel_stats = channel_stats.reset_index()
     
     results = []
     for _, row in channel_stats.iterrows():
         avg_score = row['avg_risk']
+        
         if avg_score >= 60: grade = "⛔ BLACKLIST"
         elif avg_score >= 40: grade = "⚠️ CAUTION"
         else: grade = "✅ SAFE"
@@ -212,13 +221,13 @@ def generate_b2b_report_logic(df_history):
         results.append({
             "채널명": row['channel_name'],
             "위험 등급": grade,
-            "평균 위험도": f"{int(avg_score)}%",
-            "최대 위험도": f"{int(row['max_risk'])}%",
-            "분석 영상": f"{int(row['analyzed_count'])}개",
+            "평균 가짜 확률": f"{int(avg_score)}%",
+            "최고 가짜 확률": f"{int(row['max_risk'])}%",
+            "분석 영상 수": f"{int(row['analyzed_count'])}개",
             "주요 타겟": targets
         })
         
-    return pd.DataFrame(results).sort_values(by='평균 위험도', ascending=False)
+    return pd.DataFrame(results).sort_values(by='평균 가짜 확률', ascending=False)
 
 # --- [6. 유틸리티 2] ---
 def normalize_korean_word(word):
@@ -265,7 +274,7 @@ def summarize_transcript(text, title): return text[:800] + "..."
 def clean_html_regex(text): return re.sub('<.*?>', '', text).strip()
 def check_is_official(ch): return any(o in ch.upper().replace(" ","") for o in OFFICIAL_CHANNELS)
 def count_sensational_words(text): return sum(text.count(w) for w in ['충격', '경악', '실체', '폭로', '속보'])
-def detect_ai_content(info): return False, "" # 간소화
+def detect_ai_content(info): return False, ""
 
 def run_forensic_main(url):
     st.session_state["debug_logs"] = []
