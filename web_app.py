@@ -610,6 +610,48 @@ def run_forensic_main(url):
 
         except Exception as e: st.error(f"오류: {e}")
 
+# --- [NEW] B2B 리포트 생성 엔진 (여기에 붙여넣으세요) ---
+def generate_b2b_report_logic(df_history):
+    if df_history.empty: return pd.DataFrame()
+    
+    # 1. 데이터 강제 형변환 (문자열 -> 숫자) [핵심 수정]
+    # 에러 원인이었던 문자열 데이터를 숫자로 바꾸고, 빈 값은 0으로 채웁니다.
+    df_history['fake_prob'] = pd.to_numeric(df_history['fake_prob'], errors='coerce').fillna(0)
+    
+    # 2. 안전한 직접 계산 방식 (MultiIndex 미사용)
+    grouped = df_history.groupby('channel_name')
+    
+    # 컬럼별로 따로 계산해서 합칩니다 (가장 안전한 방법)
+    report = pd.DataFrame({
+        'analyzed_count': grouped['fake_prob'].count(),
+        'avg_risk': grouped['fake_prob'].mean(),
+        'max_risk': grouped['fake_prob'].max(),
+        'all_keywords': grouped['keywords'].apply(lambda x: ' '.join([str(k) for k in x if k]))
+    }).reset_index()
+    
+    results = []
+    for _, row in report.iterrows():
+        avg_score = row['avg_risk']
+        
+        if avg_score >= 60: grade = "⛔ BLACKLIST (심각)"
+        elif avg_score >= 40: grade = "⚠️ CAUTION (주의)"
+        else: grade = "✅ SAFE (양호)"
+        
+        # 주요 키워드 추출
+        tokens = re.findall(r'[가-힣]{2,}', str(row['all_keywords']))
+        targets = ", ".join([t[0] for t in Counter(tokens).most_common(3)])
+        
+        results.append({
+            "채널명": row['channel_name'],
+            "위험 등급": grade,
+            "평균 가짜 확률": f"{int(avg_score)}%",
+            "최고 가짜 확률": f"{int(row['max_risk'])}%",
+            "분석 영상 수": f"{int(row['analyzed_count'])}개",
+            "주요 타겟": targets
+        })
+        
+    return pd.DataFrame(results).sort_values(by='평균 가짜 확률', ascending=False)
+
 # --- [UI Layout] ---
 st.title("⚖️유튜브 가짜뉴스 판독기 (Triple Engine)")
 
@@ -648,6 +690,29 @@ st.write("")
 with st.expander("🔐 관리자 접속 (Admin Access)"):
     if st.session_state["is_admin"]:
         st.success("관리자 권한 활성화됨")
+        st.divider()
+        st.subheader("🏢 B2B 브랜드 세이프티 리포트 (Business Intelligence)")
+        if st.button("📊 리포트 생성 및 분석"):
+            try:
+                # 위에서 정의한 함수를 호출합니다. (df는 바로 위 히스토리 영역에서 이미 정의됨)
+                rpt = generate_b2b_report_logic(df)
+                
+                if not rpt.empty:
+                    st.dataframe(
+                        rpt,
+                        column_config={
+                            "위험 등급": st.column_config.TextColumn("Risk Level", help="평균 가짜뉴스 확률 기반 등급"),
+                            "평균 가짜 확률": st.column_config.ProgressColumn("Avg Risk", format="%s", min_value=0, max_value=100),
+                        },
+                        use_container_width=True, hide_index=True
+                    )
+                    # 엑셀 다운로드 버튼
+                    csv = rpt.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button("📥 리포트 엑셀(CSV) 다운로드", csv, "b2b_report.csv", "text/csv")
+                else:
+                    st.info("분석할 데이터가 충분하지 않습니다.")
+            except Exception as e: st.error(f"리포트 생성 실패: {e}")
+        # ---------------------------------------------
         
         st.divider()
         st.subheader("🛠️ 시스템 상태 및 디버그 로그")
@@ -685,4 +750,5 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
                 st.rerun()
             else:
                 st.error("Access Denied")
+
 
