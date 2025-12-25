@@ -159,7 +159,7 @@ def call_triple_survivor(prompt, is_json=False):
     return None, "All Failed (Mistral + Key A + Key B)", logs
 
 # --- [5. 상수 및 데이터] ---
-# [수정됨] 밸런스: Algo 85% : AI 15% (AI 판단 참고용으로 격하)
+# 밸런스: Algo 85% : AI 15%
 WEIGHT_ALGO = 0.85
 WEIGHT_AI = 0.15
 
@@ -436,7 +436,7 @@ def run_forensic_main(url):
             is_official = check_is_official(uploader)
             is_ai, ai_msg = detect_ai_content(info)
             hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
-            abuse_score, abuse_msg = check_tag_abuse(title, tags, uploader)
+            
             agitation = count_sensational_words(full_text + title)
             
             ts, fs = vector_engine.analyze_position(query + " " + title)
@@ -465,7 +465,7 @@ def run_forensic_main(url):
             else:
                 if max_match >= 80: news_score = -40
                 elif max_match >= 70: news_score = -15
-                elif max_match >= 60: news_score = 10 # 60~69%는 이제 +10점 (가짜 의심)
+                elif max_match >= 60: news_score = 10 
                 else: news_score = 30
 
             cmts, c_status = fetch_comments_via_api(vid)
@@ -478,11 +478,29 @@ def run_forensic_main(url):
                 elif agitation >= 3: silent_penalty = 20
             
             if is_official: news_score = -50; silent_penalty = 0
-            sent_score = 0 
             
-            clickbait = 10 if any(w in title for w in ['충격','경악','폭로']) else -5
+            # ------------------------------------------------------------------
+            # [🚨 긴급 수정: 여론/제목/태그 점수 동적 활성화]
+            # ------------------------------------------------------------------
             
+            # 1. 여론 점수 (Sentiment Score) - 댓글의 '가짜뉴스' 언급 횟수 반영
+            sent_score = min(20, red_cnt * 3)
+            
+            # 2. 낚시성 제목 (Clickbait) - 키워드 대폭 확장
+            bait_keywords = ['충격', '경악', '폭로', '속보', '긴급', '나락', '실체', '소름', '결국', 'ㄷㄷ', '??', '진실', '이유']
+            if any(w in title for w in bait_keywords):
+                clickbait = 10  # 낚시성 제목이면 가짜 의심 (+10)
+            else:
+                clickbait = -5  # 담백한 제목이면 신뢰도 상승 (-5)
+
+            # 3. 태그 남용 점수
+            if len(tags) == 0: abuse_score = 5 # 태그 숨김 의심
+            elif len(tags) > 30: abuse_score = 5 # 태그 스팸 의심
+            else: abuse_score = 0
+            
+            # 4. 종합 알고리즘 점수 합산
             algo_base_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + silent_penalty
+            # ------------------------------------------------------------------
             
             my_bar.progress(90, text="5단계: AI 판사(Triple) 최종 판결 중...")
             ai_judge_score, ai_judge_reason = get_hybrid_verdict_final(title, full_text, news_ev)
