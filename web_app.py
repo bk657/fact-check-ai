@@ -38,7 +38,7 @@ try:
     GOOGLE_API_KEY_A = st.secrets["GOOGLE_API_KEY_A"]
     GOOGLE_API_KEY_B = st.secrets["GOOGLE_API_KEY_B"]
 except:
-    st.error("❌ secrets.toml 파일 설정 오류")
+    st.error("❌ secrets.toml 파일에 API Key 설정이 필요합니다.")
     st.stop()
 
 @st.cache_resource
@@ -50,15 +50,25 @@ def init_clients():
 supabase, mistral_client = init_clients()
 
 # --- [2. 모델 정의] ---
-MISTRAL_MODELS = ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "open-mixtral-8x22b"]
+MISTRAL_MODELS = [
+    "mistral-large-latest",
+    "mistral-medium-latest",
+    "mistral-small-latest",
+    "open-mixtral-8x22b"
+]
 
 def get_gemini_models_dynamic(api_key):
     genai.configure(api_key=api_key)
     try:
-        models = [m.name.replace("models/", "") for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                name = m.name.replace("models/", "")
+                models.append(name)
         models.sort(key=lambda x: 0 if 'flash' in x else 1 if 'pro' in x else 2)
         return models
-    except: return ["gemini-2.0-flash", "gemini-1.5-flash"]
+    except:
+        return ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
 
 # --- [3. 유틸리티] ---
 def parse_llm_json(text):
@@ -66,7 +76,8 @@ def parse_llm_json(text):
         parsed = json.loads(text)
     except:
         try:
-            text = re.sub(r'```json\s*', '', text).replace('```', '')
+            text = re.sub(r'```json\s*', '', text)
+            text = re.sub(r'```', '', text)
             match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
             if match: parsed = json.loads(match.group(1))
             else: return None
@@ -88,7 +99,7 @@ def call_triple_survivor(prompt, is_json=False):
                 response_format=response_format, temperature=0.2
             )
             if resp.choices:
-                return resp.choices[0].message.content, model_name, logs
+                return resp.choices[0].message.content, f"{model_name}", logs
         except Exception as e:
             logs.append(f"❌ Mistral Failed: {str(e)[:30]}")
             continue
@@ -113,7 +124,7 @@ def call_triple_survivor(prompt, is_json=False):
 
     return None, "All Failed", logs
 
-# --- [5. 상수 및 분석 엔진] ---
+# --- [5. 상수 및 데이터] ---
 WEIGHT_ALGO = 0.85; WEIGHT_AI = 0.15
 OFFICIAL_CHANNELS = ['MBC', 'KBS', 'SBS', 'EBS', 'YTN', 'JTBC', 'TVCHOSUN', 'MBN', 'CHANNEL A', 'OBS', '채널A', 'TV조선', '연합뉴스', 'YONHAP', '한겨레', '경향', '조선', '중앙', '동아']
 CRITICAL_STATE_KEYWORDS = ['별거', '이혼', '파경', '사망', '위독', '구속', '체포', '실형', '불화', '폭로', '충격', '논란', '중태', '심정지', '뇌사', '압수수색', '소환', '파산', '빚더미', '전과', '감옥', '간첩']
@@ -181,17 +192,17 @@ def get_hybrid_verdict_final(title, transcript, news_list):
     if parsed: return parsed.get('score', 50), f"{parsed.get('reason')} (By {model})"
     return 50, "Judge Failed"
 
-# --- [B2B 리포트 생성 엔진 (완전 안전한 방식)] ---
+# --- [B2B 리포트 생성 엔진 (Fix Version)] ---
 def generate_b2b_report_logic(df_history):
     if df_history.empty: return pd.DataFrame()
     
-    # 1. 데이터 강제 형변환 (NaN은 0으로)
+    # 1. 데이터 강제 형변환 (NaN은 0으로) -> 'avg_risk' 에러 해결의 핵심
     df_history['fake_prob'] = pd.to_numeric(df_history['fake_prob'], errors='coerce').fillna(0)
     
-    # 2. 안전한 GroupBy (MultiIndex 미사용)
+    # 2. 안전한 GroupBy (직접 계산 방식)
     grouped = df_history.groupby('channel_name')
     
-    # 3. 컬럼별로 따로 계산하여 DataFrame 직접 조립 (이 방식은 실패하지 않음)
+    # 3. 컬럼별 독립 계산 후 병합 (오류 가능성 차단)
     report = pd.DataFrame({
         'analyzed_count': grouped['fake_prob'].count(),
         'avg_risk': grouped['fake_prob'].mean(),
@@ -199,7 +210,6 @@ def generate_b2b_report_logic(df_history):
         'all_keywords': grouped['keywords'].apply(lambda x: ' '.join([str(k) for k in x if k]))
     }).reset_index()
     
-    # 4. 등급 산정 및 포맷팅
     results = []
     for _, row in report.iterrows():
         avg_score = row['avg_risk']
@@ -208,10 +218,8 @@ def generate_b2b_report_logic(df_history):
         elif avg_score >= 40: grade = "⚠️ CAUTION"
         else: grade = "✅ SAFE"
         
-        # 키워드 추출
         tokens = re.findall(r'[가-힣]{2,}', str(row['all_keywords']))
-        top_k = Counter(tokens).most_common(3)
-        targets = ", ".join([t[0] for t in top_k])
+        targets = ", ".join([t[0] for t in Counter(tokens).most_common(3)])
         
         results.append({
             "채널명": row['channel_name'],
@@ -249,8 +257,8 @@ def train_dynamic_vector_engine():
         vector_engine.train(STATIC_TRUTH_CORPUS, STATIC_FAKE_CORPUS)
         return 0, [], []
 
-def save_analysis(channel, title, prob, url, keywords):
-    try: supabase.table("analysis_history").insert({"channel_name": channel, "video_title": title, "fake_prob": prob, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "video_url": url, "keywords": keywords}).execute()
+def save_analysis(channel, title, prob, url, keywords, report_data):
+    try: supabase.table("analysis_history").insert({"channel_name": channel, "video_title": title, "fake_prob": prob, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "video_url": url, "keywords": keywords, "detail_json": json.dumps(report_data, ensure_ascii=False)}).execute()
     except: pass
 
 def render_score_breakdown(data_list):
@@ -271,6 +279,55 @@ def check_is_official(ch): return any(o in ch.upper().replace(" ","") for o in O
 def count_sensational_words(text): return sum(text.count(w) for w in ['충격', '경악', '실체', '폭로', '속보'])
 def detect_ai_content(info): return False, ""
 
+def render_report_full_ui(prob, db_count, title, uploader, d, is_cached=False):
+    if is_cached: st.success("🎉 기존 분석 결과 로드 (Smart Cache)")
+
+    st.subheader("🕵️ Triple-Engine Analysis Result")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("최종 가짜뉴스 확률", f"{prob}%")
+    verdict = "안전" if prob < 30 else "위험" if prob > 60 else "주의"
+    c2.metric("종합 판정", f"{verdict}")
+    c3.metric("지능 노드", f"{db_count} Nodes")
+    
+    st.divider()
+    render_intelligence_distribution(prob)
+    
+    col1, col2 = st.columns([1, 1.4])
+    with col1:
+        st.write("**[영상 정보]**")
+        st.table(pd.DataFrame({"항목": ["제목", "채널", "해시태그"], "내용": [title, uploader, d.get('tags','없음')]}))
+        st.info(f"검색어: {d.get('query', 'N/A')}")
+        with st.container(border=True):
+            st.markdown("📝 **영상 내용 요약**")
+            st.write(d.get('summary','내용 없음'))
+        st.write("**[Score Breakdown]**")
+        render_score_breakdown(d.get('score_breakdown', []))
+    
+    with col2:
+        st.subheader("📊 5대 증거")
+        colored_progress_bar("진실 근접도", d.get('ts', 0), "#2ecc71")
+        colored_progress_bar("거짓 근접도", d.get('fs', 0), "#e74c3c")
+        st.write("---")
+        st.markdown("**[증거 1] 뉴스 교차 대조**")
+        if d.get('news_evidence'):
+            st.dataframe(pd.DataFrame(d.get('news_evidence', [])), column_config={"원문": st.column_config.LinkColumn("링크")}, hide_index=True)
+        else: st.warning("관련 뉴스 없음")
+        
+        st.markdown("**[증거 2] 댓글 여론 분석**")
+        st.table(pd.DataFrame([
+            ["분석 댓글 수", f"{d.get('cmt_count',0)}개"],
+            ["빈출 키워드", ", ".join(d.get('top_cmt_kw', []))],
+            ["논란 감지", f"{d.get('red_cnt',0)}회"],
+            ["주제 일치", d.get('cmt_rel', '')]
+        ], columns=["항목", "내용"]))
+        
+        st.markdown("**[증거 3] 자막 분석**")
+        st.table(pd.DataFrame([["선동성 지수", f"{d.get('agitation',0)}회"]], columns=["항목", "내용"]))
+        
+        st.markdown("**[증거 4] AI 최종 판결**")
+        with st.container(border=True):
+            st.write(f"⚖️ {d.get('ai_score', 'N/A')}점 - {d.get('ai_reason', 'N/A')}")
+
 def run_forensic_main(url):
     st.session_state["debug_logs"] = []
     my_bar = st.progress(0, text="Triple Engine 가동 중...")
@@ -278,6 +335,16 @@ def run_forensic_main(url):
     
     vid = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
     if vid: vid = vid.group(1)
+
+    # 캐시 체크
+    cached_res = supabase.table("analysis_history").select("*").ilike("video_url", f"%{vid}%").order("id", desc=True).limit(1).execute()
+    if cached_res.data:
+        c = cached_res.data[0]
+        try:
+            d = json.loads(c.get('detail_json', '{}'))
+            render_report_full_ui(c['fake_prob'], db_count, c['video_title'], c['channel_name'], d, is_cached=True)
+            return
+        except: pass
 
     with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl:
         try:
@@ -289,7 +356,6 @@ def run_forensic_main(url):
             trans, _ = fetch_real_transcript(info)
             full_text = trans if trans else desc
             summary = summarize_transcript(full_text, title)
-            top_kw_list = extract_top_keywords_from_transcript(full_text)
             
             my_bar.progress(30, "2단계: AI 수사관...")
             query, _ = get_hybrid_search_keywords(title, full_text)
@@ -330,37 +396,19 @@ def run_forensic_main(url):
                 algo_base = int((algo_base + 50) / 2)
             
             final_prob = max(1, min(99, int(algo_base * WEIGHT_ALGO + ai_judge_score * WEIGHT_AI)))
-            save_analysis(uploader, title, final_prob, url, query)
+            
+            score_bd = [["기본 점수", 50, "중립"], ["진실 DB", t_impact, ""], ["가짜 패턴", f_impact, ""], ["뉴스 매칭", news_score, ""], ["AI 판결", ai_judge_score, ""]]
+            
+            report_data = {
+                "summary": summary, "news_evidence": news_ev, "ai_score": ai_judge_score, "ai_reason": ai_judge_reason,
+                "score_breakdown": score_bd, "ts": ts, "fs": fs, "query": query, "tags": ", ".join(tags),
+                "cmt_count": len(cmts), "top_cmt_kw": top_cmt, "red_cnt": red_cnt, "cmt_rel": f"{rel_score}%",
+                "agitation": count_sensational_words(title)
+            }
+            
+            save_analysis(uploader, title, final_prob, url, query, report_data)
             my_bar.empty()
-
-            st.subheader(f"🕵️ Triple-Engine Analysis Result")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("최종 가짜뉴스 확률", f"{final_prob}%", delta=f"AI Judge: {ai_judge_score}")
-            verdict = "안전" if final_prob < 30 else "위험" if final_prob > 60 else "주의"
-            c2.metric("종합 판정", f"{verdict} {'(보정됨)' if neutralized else ''}")
-            c3.metric("지능 노드", f"{db_count} Nodes")
-            
-            st.divider()
-            render_intelligence_distribution(final_prob)
-            
-            col1, col2 = st.columns([1, 1.4])
-            with col1:
-                st.write("**[영상 정보]**")
-                st.table(pd.DataFrame({"항목": ["제목", "채널", "해시태그"], "내용": [title, uploader, ", ".join(tags)]}))
-                st.info(f"검색어: {query}")
-                render_score_breakdown([["기본 점수", 50, "중립"], ["진실 DB", t_impact, ""], ["가짜 패턴", f_impact, ""], ["뉴스 매칭", news_score, ""], ["AI 판결", ai_judge_score, ""]])
-            
-            with col2:
-                st.subheader("📊 5대 증거")
-                colored_progress_bar("진실 근접도", ts, "#2ecc71")
-                colored_progress_bar("거짓 근접도", fs, "#e74c3c")
-                st.write("---")
-                if news_ev: st.dataframe(pd.DataFrame(news_ev), column_config={"원문": st.column_config.LinkColumn("링크")}, hide_index=True)
-                else: st.warning("관련 뉴스 없음")
-                st.markdown("**댓글 여론 분석**")
-                if cmts: st.table(pd.DataFrame([["빈출 키워드", ", ".join(top_cmt)], ["논란 감지", f"{red_cnt}회"], ["주제 일치", f"{rel_score}%"]], columns=["항목", "내용"]))
-                st.markdown("**AI 최종 판결**")
-                st.info(ai_judge_reason)
+            render_report_full_ui(final_prob, db_count, title, uploader, report_data, is_cached=False)
 
         except Exception as e: st.error(f"오류: {e}")
 
