@@ -187,6 +187,7 @@ class VectorEngine:
         mag = math.sqrt(sum(a*a for a in v1)) * math.sqrt(sum(b*b for b in v2))
         return dot/mag if mag>0 else 0
     def analyze_position(self, query):
+        if not self.vocab: return 0, 0
         qv = self.text_to_vector(query)
         mt = max([self.cosine_similarity(qv, v) for v in self.truth_vectors] or [0])
         mf = max([self.cosine_similarity(qv, v) for v in self.fake_vectors] or [0])
@@ -261,6 +262,46 @@ def get_hybrid_verdict_final(title, transcript, verified_news_list):
     res = parse_llm_json(result_text)
     if res: return res.get('score', 50), f"{res.get('reason')} (By {model_used})"
     return 50, "Judge Failed"
+
+# --- [NEW] B2B 리포트 생성 엔진 ---
+def generate_b2b_report_logic(df_history):
+    if df_history.empty: return pd.DataFrame()
+    
+    # 채널별 그룹화 및 집계
+    # fake_prob 평균, 최대값 계산 / 키워드 합치기
+    channel_stats = df_history.groupby('channel_name').agg({
+        'fake_prob': ['count', 'mean', 'max'],
+        'keywords': lambda x: ' '.join([str(k) for k in x if k])
+    })
+    
+    # 컬럼 레벨 정리
+    channel_stats.columns = ['analyzed_count', 'avg_risk', 'max_risk', 'all_keywords']
+    channel_stats = channel_stats.reset_index()
+    
+    results = []
+    for _, row in channel_stats.iterrows():
+        # 위험 등급 산정
+        avg_score = row['avg_risk']
+        if avg_score >= 60: grade = "⛔ BLACKLIST (심각)"
+        elif avg_score >= 40: grade = "⚠️ CAUTION (주의)"
+        else: grade = "✅ SAFE (양호)"
+        
+        # 주 타겟 키워드 추출
+        raw_text = str(row['all_keywords'])
+        tokens = re.findall(r'[가-힣]{2,}', raw_text)
+        top_k = Counter(tokens).most_common(3)
+        targets = ", ".join([t[0] for t in top_k])
+        
+        results.append({
+            "채널명": row['channel_name'],
+            "위험 등급": grade,
+            "평균 가짜 확률": f"{int(avg_score)}%",
+            "최고 가짜 확률": f"{int(row['max_risk'])}%",
+            "분석 영상 수": f"{int(row['analyzed_count'])}개",
+            "주요 타겟 키워드": targets
+        })
+        
+    return pd.DataFrame(results).sort_values(by='avg_risk', ascending=False)
 
 # --- [6. 유틸리티] ---
 def normalize_korean_word(word):
@@ -460,7 +501,6 @@ def run_forensic_main(url):
                     "원문": real_url
                 })
             
-            # [수정됨: 뉴스 유사도 엄격 모드 (Strict Mode) - 60% 이상은 의심]
             if not news_ev: news_score = 0
             else:
                 if max_match >= 80: news_score = -40
@@ -479,33 +519,21 @@ def run_forensic_main(url):
             
             if is_official: news_score = -50; silent_penalty = 0
             
-            # ------------------------------------------------------------------
-            # [🚨 긴급 수정: 여론/제목/태그 점수 동적 활성화]
-            # ------------------------------------------------------------------
-            
-            # 1. 여론 점수 (Sentiment Score) - 댓글의 '가짜뉴스' 언급 횟수 반영
             sent_score = min(20, red_cnt * 3)
             
-            # 2. 낚시성 제목 (Clickbait) - 키워드 대폭 확장
             bait_keywords = ['충격', '경악', '폭로', '속보', '긴급', '나락', '실체', '소름', '결국', 'ㄷㄷ', '??', '진실', '이유']
-            if any(w in title for w in bait_keywords):
-                clickbait = 10  # 낚시성 제목이면 가짜 의심 (+10)
-            else:
-                clickbait = -5  # 담백한 제목이면 신뢰도 상승 (-5)
+            if any(w in title for w in bait_keywords): clickbait = 10
+            else: clickbait = -5
 
-            # 3. 태그 남용 점수
-            if len(tags) == 0: abuse_score = 5 # 태그 숨김 의심
-            elif len(tags) > 30: abuse_score = 5 # 태그 스팸 의심
+            if len(tags) == 0: abuse_score = 5
+            elif len(tags) > 30: abuse_score = 5
             else: abuse_score = 0
             
-            # 4. 종합 알고리즘 점수 합산
             algo_base_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + silent_penalty
-            # ------------------------------------------------------------------
             
             my_bar.progress(90, text="5단계: AI 판사(Triple) 최종 판결 중...")
             ai_judge_score, ai_judge_reason = get_hybrid_verdict_final(title, full_text, news_ev)
             
-            # [Silent Echo Neutralizer]
             neutralizer_applied = False
             if t_impact == 0 and f_impact == 0 and is_silent:
                 neutralizer_applied = True
@@ -649,6 +677,38 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
     if st.session_state["is_admin"]:
         st.success("관리자 권한 활성화됨")
         
+        # --- [NEW] B2B 리포트 기능 추가 ---
+        st.divider()
+        st.subheader("🏢 B2B 브랜드 세이프티 리포트 (Business Intelligence)")
+        st.caption("기업 광고주용 블랙리스트 및 채널 위험도 분석 리포트를 생성합니다.")
+        
+        if st.button("📊 B2B 리포트 생성 및 분석"):
+            try:
+                b2b_report = generate_b2b_report_logic(df)
+                if not b2b_report.empty:
+                    st.dataframe(
+                        b2b_report,
+                        column_config={
+                            "위험 등급": st.column_config.TextColumn("Risk Level", help="평균 가짜뉴스 확률 기반 등급"),
+                            "평균 가짜 확률": st.column_config.ProgressColumn("Avg Risk", format="%s", min_value=0, max_value=100),
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    # CSV 다운로드 버튼
+                    csv = b2b_report.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button(
+                        label="📥 리포트 엑셀(CSV) 다운로드",
+                        data=csv,
+                        file_name='b2b_blacklist_report.csv',
+                        mime='text/csv',
+                    )
+                else:
+                    st.info("분석할 데이터가 충분하지 않습니다.")
+            except Exception as e:
+                st.error(f"리포트 생성 중 오류 발생: {e}")
+        # ----------------------------------
+
         st.divider()
         st.subheader("🛠️ 시스템 상태 및 디버그 로그")
         
