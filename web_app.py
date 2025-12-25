@@ -159,7 +159,7 @@ def call_triple_survivor(prompt, is_json=False):
     return None, "All Failed (Mistral + Key A + Key B)", logs
 
 # --- [5. 상수 및 데이터] ---
-# 밸런스: Algo 85% : AI 15%
+# [수정됨] 밸런스: Algo 85% : AI 15% (AI 판단 참고용으로 격하)
 WEIGHT_ALGO = 0.85
 WEIGHT_AI = 0.15
 
@@ -460,16 +460,12 @@ def run_forensic_main(url):
                     "원문": real_url
                 })
             
-            # [수정됨: 뉴스 유사도 엄격 모드 (Strict Mode)]
+            # [수정됨: 뉴스 유사도 엄격 모드 (Strict Mode) - 60% 이상은 의심]
             if not news_ev: news_score = 0
             else:
-                # 80% 이상: 확실한 팩트 체크 (가짜 확률 대폭 감소)
                 if max_match >= 80: news_score = -40
-                # 70% ~ 79%: 대체로 사실 (가짜 확률 감소)
                 elif max_match >= 70: news_score = -15
-                # 60% ~ 69%: 교묘한 섞어쓰기 의심 구간 (가짜 확률 오히려 증가)
-                elif max_match >= 60: news_score = 10
-                # 60% 미만: 사실 무근 (가짜 확률 대폭 증가)
+                elif max_match >= 60: news_score = 10 # 60~69%는 이제 +10점 (가짜 의심)
                 else: news_score = 30
 
             cmts, c_status = fetch_comments_via_api(vid)
