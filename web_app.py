@@ -450,7 +450,7 @@ def run_forensic_main(url):
                 ai_s, ai_r, source_type, evidence_text, real_url = deep_verify_news(summary, item['link'], item['desc'])
                 if ai_s > max_match: max_match = ai_s
                 
-                status_icon = "🟢" if ai_s >= 70 else "🔴" if ai_s < 30 else "🟡"
+                status_icon = "🟢" if ai_s >= 80 else "🟡" if ai_s >= 60 else "🔴"
                 news_ev.append({
                     "뉴스 제목": item['title'],
                     "일치도": f"{status_icon} {ai_s}%",
@@ -460,12 +460,17 @@ def run_forensic_main(url):
                     "원문": real_url
                 })
             
-            # [수정됨] 뉴스 점수 로직
+            # [수정됨: 뉴스 유사도 엄격 모드 (Strict Mode)]
             if not news_ev: news_score = 0
             else:
-                if max_match >= 70: news_score = -30 
-                elif max_match >= 50: news_score = -10
-                else: news_score = 10 
+                # 80% 이상: 확실한 팩트 체크 (가짜 확률 대폭 감소)
+                if max_match >= 80: news_score = -40
+                # 70% ~ 79%: 대체로 사실 (가짜 확률 감소)
+                elif max_match >= 70: news_score = -15
+                # 60% ~ 69%: 교묘한 섞어쓰기 의심 구간 (가짜 확률 오히려 증가)
+                elif max_match >= 60: news_score = 10
+                # 60% 미만: 사실 무근 (가짜 확률 대폭 증가)
+                else: news_score = 30
 
             cmts, c_status = fetch_comments_via_api(vid)
             top_kw, rel_score, rel_msg = analyze_comment_relevance(cmts, title + " " + full_text)
@@ -486,15 +491,11 @@ def run_forensic_main(url):
             my_bar.progress(90, text="5단계: AI 판사(Triple) 최종 판결 중...")
             ai_judge_score, ai_judge_reason = get_hybrid_verdict_final(title, full_text, news_ev)
             
-            # [핵심 수정: Silent Echo Neutralizer]
-            # 증거가 없는 상태(Silent)에서는, 아무리 AI가 확신해도 강제로 50점(중립) 방향으로 당겨버림
-            # t_impact(진실DB), f_impact(거짓DB), news_ev(뉴스) 셋 다 없을 경우 발동
+            # [Silent Echo Neutralizer]
             neutralizer_applied = False
             if t_impact == 0 and f_impact == 0 and is_silent:
                 neutralizer_applied = True
-                # AI 점수와 50점 사이의 중간값으로 희석 (ex: 90 -> 70, 10 -> 30)
                 ai_judge_score = int((ai_judge_score + 50) / 2)
-                # 알고리즘 점수도 강제 중립화
                 algo_base_score = int((algo_base_score + 50) / 2)
             
             final_prob = int((algo_base_score * WEIGHT_ALGO) + (ai_judge_score * WEIGHT_AI))
@@ -539,7 +540,7 @@ def run_forensic_main(url):
                     ["🏁 기본 중립 점수 (Base Score)", 50, "모든 분석은 50점(중립)에서 시작"],
                     ["진실 데이터 맥락", t_impact, "내부 DB 진실 데이터와 유사성"],
                     ["가짜 패턴 맥락", f_impact, "내부 DB 가짜 데이터와 유사성"],
-                    ["뉴스 매칭 상태", news_score, "Deep-Crawler 정밀 대조 결과"],
+                    ["뉴스 매칭 상태", news_score, "Deep-Crawler 정밀 대조 결과 (Strict)"],
                     ["여론/제목/태그 가감", sent_score + clickbait + abuse_score, ""],
                     ["* 증거 부족 보정", "적용됨" if neutralizer_applied else "미적용", "데이터 없을 시 강제 중립화"],
                     ["-----------------", "", ""],
