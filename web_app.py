@@ -38,7 +38,7 @@ try:
     GOOGLE_API_KEY_A = st.secrets["GOOGLE_API_KEY_A"]
     GOOGLE_API_KEY_B = st.secrets["GOOGLE_API_KEY_B"]
 except:
-    st.error("❌ secrets.toml 설정 오류: API Key를 확인해주세요.")
+    st.error("❌ secrets.toml 파일 설정 오류")
     st.stop()
 
 @st.cache_resource
@@ -88,35 +88,27 @@ def call_triple_survivor(prompt, is_json=False):
                 response_format=response_format, temperature=0.2
             )
             if resp.choices:
-                content = resp.choices[0].message.content
-                logs.append(f"✅ Success (Mistral): {model_name}")
-                return content, model_name, logs
+                return resp.choices[0].message.content, model_name, logs
         except Exception as e:
             logs.append(f"❌ Mistral Failed: {str(e)[:30]}")
             continue
 
     # 2. Gemini A
     genai.configure(api_key=GOOGLE_API_KEY_A)
-    models_a = get_gemini_models_dynamic(GOOGLE_API_KEY_A)
-    for model_name in models_a:
+    for model_name in get_gemini_models_dynamic(GOOGLE_API_KEY_A):
         try:
             m = genai.GenerativeModel(model_name)
             r = m.generate_content(prompt)
-            if r.text: 
-                logs.append(f"✅ Success (Key A): {model_name}")
-                return r.text, f"{model_name} (Key A)", logs
+            if r.text: return r.text, f"{model_name} (Key A)", logs
         except: continue
 
     # 3. Gemini B
     genai.configure(api_key=GOOGLE_API_KEY_B)
-    models_b = get_gemini_models_dynamic(GOOGLE_API_KEY_B)
-    for model_name in models_b:
+    for model_name in get_gemini_models_dynamic(GOOGLE_API_KEY_B):
         try:
             m = genai.GenerativeModel(model_name)
             r = m.generate_content(prompt)
-            if r.text: 
-                logs.append(f"✅ Success (Key B): {model_name}")
-                return r.text, f"{model_name} (Key B)", logs
+            if r.text: return r.text, f"{model_name} (Key B)", logs
         except: continue
 
     return None, "All Failed", logs
@@ -189,34 +181,37 @@ def get_hybrid_verdict_final(title, transcript, news_list):
     if parsed: return parsed.get('score', 50), f"{parsed.get('reason')} (By {model})"
     return 50, "Judge Failed"
 
-# --- [B2B 리포트 생성 엔진 (에러 수정됨)] ---
+# --- [B2B 리포트 생성 엔진 (완전 안전한 방식)] ---
 def generate_b2b_report_logic(df_history):
     if df_history.empty: return pd.DataFrame()
     
-    # [핵심 수정] fake_prob를 강제로 숫자로 변환 (에러 원인 해결)
+    # 1. 데이터 강제 형변환 (NaN은 0으로)
     df_history['fake_prob'] = pd.to_numeric(df_history['fake_prob'], errors='coerce').fillna(0)
     
-    # 집계 로직
-    channel_stats = df_history.groupby('channel_name').agg({
-        'fake_prob': ['count', 'mean', 'max'],
-        'keywords': lambda x: ' '.join([str(k) for k in x if k])
-    })
+    # 2. 안전한 GroupBy (MultiIndex 미사용)
+    grouped = df_history.groupby('channel_name')
     
-    # 컬럼 이름 재설정 (Flatten MultiIndex)
-    channel_stats.columns = ['analyzed_count', 'avg_risk', 'max_risk', 'all_keywords']
-    channel_stats = channel_stats.reset_index()
+    # 3. 컬럼별로 따로 계산하여 DataFrame 직접 조립 (이 방식은 실패하지 않음)
+    report = pd.DataFrame({
+        'analyzed_count': grouped['fake_prob'].count(),
+        'avg_risk': grouped['fake_prob'].mean(),
+        'max_risk': grouped['fake_prob'].max(),
+        'all_keywords': grouped['keywords'].apply(lambda x: ' '.join([str(k) for k in x if k]))
+    }).reset_index()
     
+    # 4. 등급 산정 및 포맷팅
     results = []
-    for _, row in channel_stats.iterrows():
+    for _, row in report.iterrows():
         avg_score = row['avg_risk']
         
         if avg_score >= 60: grade = "⛔ BLACKLIST"
         elif avg_score >= 40: grade = "⚠️ CAUTION"
         else: grade = "✅ SAFE"
         
-        raw_kw = str(row['all_keywords'])
-        tokens = re.findall(r'[가-힣]{2,}', raw_kw)
-        targets = ", ".join([t[0] for t in Counter(tokens).most_common(3)])
+        # 키워드 추출
+        tokens = re.findall(r'[가-힣]{2,}', str(row['all_keywords']))
+        top_k = Counter(tokens).most_common(3)
+        targets = ", ".join([t[0] for t in top_k])
         
         results.append({
             "채널명": row['channel_name'],
