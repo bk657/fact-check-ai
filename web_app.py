@@ -317,45 +317,45 @@ def analyze_comments(cmts, ctx):
     return [f"{w}({c})" for w,c in top], score, "높음" if score>=60 else "보통" if score>=20 else "낮음"
 
 def save_db(ch, ti, pr, url, kw, detail):
-    try: 
-        # [수정 1] kw가 리스트(List)로 들어올 경우를 대비한 처리
+    try:
+        # ... (위쪽 코드는 그대로) ...
+        
+        # [수정 1] 리스트/문자열 처리
         if isinstance(kw, list):
-            # DB 저장을 위해 콤마로 연결된 문자열로 변환 (예: "키워드1, 키워드2")
             kw_str = ", ".join(kw)
-            # 임베딩을 위해 공백으로 연결 (예: "키워드1 키워드2")
             kw_for_embed = " ".join(kw)
         else:
-            # 문자열이면 그대로 사용
             kw_str = str(kw)
             kw_for_embed = str(kw)
 
-        # [수정 2] 임베딩 생성 시 안전한 변수 사용
-        # 기존: embedding = vector_engine.get_embedding(kw + " " + ti) -> 여기서 에러 났을 것임
+        # [수정 2] 임베딩 생성
         embedding = vector_engine.get_embedding(kw_for_embed + " " + ti)
-        
-        # [수정 3] 에러 확인을 위한 구체적인 예외 처리 및 화면 출력
+
+        # 데이터 저장 시도
         data_payload = {
             "channel_name": ch, 
             "video_title": ti, 
             "fake_prob": pr, 
             "video_url": url, 
-            "keywords": kw_str,  # 리스트가 아닌 문자열로 변환된 값을 저장
+            "keywords": kw_str, 
             "detail_json": json.dumps(detail, ensure_ascii=False),
             "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             "vector_json": json.dumps(embedding)
         }
-
         supabase.table("analysis_history").insert(data_payload).execute()
         
-        # 캐시 초기화 (새로운 데이터 반영)
+        # 성공 시 캐시 비우기
         st.cache_data.clear()
 
     except Exception as e:
-        # 화면에 붉은 박스로 에러 원인을 정확히 출력
-        st.error(f"❌ DB 저장 단계에서 에러 발생: {str(e)}")
-        # 관리자용 로그에도 남김
-        st.session_state["debug_logs"].append(f"DB Save Fail: {str(e)} | KW Type: {type(kw)}")
-
+        # 🚨 여기에 st.stop()을 꼭 넣어야 에러가 안 사라집니다!
+        st.error(f"❌ DB 저장 에러 발생! (잠시 멈춤): {str(e)}")
+        st.write(f"입력된 키워드 타입: {type(kw)}") # 디버깅용 정보 추가
+        st.write(f"입력된 키워드 값: {kw}")       # 디버깅용 정보 추가
+        
+        # 👇 이 코드가 없으면 함수가 끝나고 바깥의 st.rerun()이 실행되어 에러가 사라짐
+        st.stop()
+        
 # --- [UI 렌더링 함수 (Conclusion First)] ---
 def render_report_full_ui(prob, db_count, title, channel, data, is_cached=False):
     st.divider()
@@ -708,6 +708,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
