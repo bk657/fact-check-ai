@@ -502,7 +502,8 @@ def generate_b2b_report(df):
 st.title("유튜브 가짜뉴스 판독")
 
 with st.container(border=True):
-    st.markdown("### 🛡️ Disclaimer\n본 결과는 AI 분석 추정치이며 법적 효력이 없습니다.\n결과의 최종 판단은 당사자에게 있습니다.")
+    st.markdown("### 🛡️ Disclaimer\n본 결과는 AI 분석 추정치이며 법적 효력이 없습니다.
+    결과의 최종 판단은 당사자에게 있습니다.")
     
     agree = st.checkbox("동의하고 분석 시작")
 
@@ -586,5 +587,6 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
