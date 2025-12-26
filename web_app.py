@@ -551,13 +551,14 @@ def run_forensic_main(url):
                 "final_summary": final_summary # 저장
             }
             
-            save_db(meta['채널명'], meta['제목'], final_prob, url, final_query, report)
+# [수정 코드] queries(리스트 전체)를 넘김 -> save_db가 알아서 문자열로 변환하여 저장
+            save_db(meta['채널명'], meta['제목'], final_prob, url, queries, report)
+            
             my_bar.empty()
             
-            # [추가] 저장이 완료되었음을 알리고 페이지를 새로고침하여 DB 목록 갱신
             st.success("✅ 분석 완료 및 DB 저장 성공!")
-            time.sleep(2) # 사용자가 성공 메시지를 볼 시간 2초 대기
-            st.rerun()    # 화면 새로고침 -> 최신 DB 목록 불러옴
+            time.sleep(1)
+            st.rerun()
             
         except Exception as e: st.error(f"Error: {e}")
 
@@ -707,6 +708,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
