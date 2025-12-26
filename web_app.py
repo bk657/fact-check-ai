@@ -309,8 +309,10 @@ def save_db(ch, ti, pr, url, kw, detail):
             "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             "vector_json": json.dumps(embedding)
         }).execute()
-    except Exception as e: print(f"DB Error: {e}")
-
+    except Exception as e: 
+        st.error(f"❌ 데이터베이스 저장 실패: {e}") # 화면에 에러를 띄움
+        print(f"DB Error: {e}")
+        
 # --- [UI Components] ---
 def render_score_breakdown(data_list):
     style = """<style>table.score-table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; font-family: sans-serif; font-size: 14px; margin-top: 10px;} table.score-table th { background-color: #f8f9fa; color: #495057; font-weight: bold; padding: 12px 15px; text-align: left; border-bottom: 1px solid #e0e0e0; } table.score-table td { padding: 12px 15px; border-bottom: 1px solid #f0f0f0; color: #333; } table.score-table tr:last-child td { border-bottom: none; } .badge { padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 11px; display: inline-block; text-align: center; min-width: 45px; } .badge-danger { background-color: #ffebee; color: #d32f2f; } .badge-success { background-color: #e8f5e9; color: #2e7d32; } .badge-neutral { background-color: #f5f5f5; color: #757575; border: 1px solid #e0e0e0; }</style>"""
@@ -587,6 +589,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
