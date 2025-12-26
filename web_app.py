@@ -352,9 +352,16 @@ def summarize_transcript(text, title):
 def clean_html_regex(text):
     return re.sub('<.*?>', '', text).strip()
 
+# [기존 detect_ai_content 함수를 이걸로 교체하세요]
 def detect_ai_content(info):
     is_ai, reasons = False, []
-    text = (info.get('title', '') + " " + info.get('description', '') + " " + " ".join(info.get('tags', []))).lower()
+    # 안전장치: 모든 태그를 문자열로 변환
+    safe_tags = [str(t) for t in info.get('tags', [])] if info.get('tags') else []
+    
+    text = (str(info.get('title', '')) + " " + 
+            str(info.get('description', '')) + " " + 
+            " ".join(safe_tags)).lower()
+            
     for kw in ['ai', 'artificial intelligence', 'chatgpt', 'deepfake', 'synthetic', '인공지능', '딥페이크']:
         if kw in text: is_ai = True; reasons.append(f"키워드 감지: {kw}"); break
     return is_ai, ", ".join(reasons)
@@ -388,6 +395,7 @@ def fetch_real_transcript(info_dict):
     except: pass
     return None, "Fail"
 
+# [기존 fetch_comments_via_api 함수를 이걸로 교체하세요]
 def fetch_comments_via_api(video_id):
     try:
         url = "https://www.googleapis.com/youtube/v3/commentThreads"
@@ -397,7 +405,9 @@ def fetch_comments_via_api(video_id):
             items = []
             for i in data.get('items', []):
                 snippet = i.get('snippet', {}).get('topLevelComment', {}).get('snippet', {})
-                if 'textDisplay' in snippet: items.append(snippet['textDisplay'])
+                if 'textDisplay' in snippet:
+                    # [핵심 수정] 무조건 문자열로 변환하여 추가
+                    items.append(str(snippet['textDisplay']))
             return items, "Success"
     except: pass
     return [], "Fail"
@@ -420,9 +430,14 @@ def fetch_news_regex(query):
     except: pass
     return news_res
 
+# [기존 analyze_comment_relevance 함수를 이걸로 교체하세요]
 def analyze_comment_relevance(comments, context_text):
     if not comments: return [], 0, "분석 불가"
-    cn = extract_meaningful_tokens(" ".join(comments))
+    
+    # [핵심 수정] comments 리스트 안의 모든 요소를 문자열로 변환 후 join
+    safe_comments = " ".join([str(c) for c in comments])
+    
+    cn = extract_meaningful_tokens(safe_comments)
     top = Counter(cn).most_common(5)
     ctx = set(extract_meaningful_tokens(context_text))
     match = sum(1 for w,c in top if w in ctx)
@@ -758,6 +773,7 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
                 st.rerun()
             else:
                 st.error("Access Denied")
+
 
 
 
