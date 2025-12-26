@@ -270,11 +270,11 @@ def analyze_comments(cmts, ctx):
     score = int(sum(1 for w,c in top if w in ctx_set)/len(top)*100) if top else 0
     return [f"{w}({c})" for w,c in top], score, "높음" if score>=60 else "보통" if score>=20 else "낮음"
 
-# [수정] 테이블 이름을 'analysis_logs'로 변경
+# [수정] 테이블 이름을 'analysis_history'로 원상복구
 @st.cache_data(ttl=3600)
 def fetch_db_vectors():
     try:
-        res = supabase.table("analysis_logs").select("video_title, fake_prob, vector_json").execute()
+        res = supabase.table("analysis_history").select("video_title, fake_prob, vector_json").execute()
         if not res.data: return [], [], 0
         dt_vecs, df_vecs = [], []
         for row in res.data:
@@ -291,7 +291,7 @@ def train_engine_wrapper():
     vector_engine.train_static(STATIC_TRUTH, STATIC_FAKE)
     return count, [], []
 
-# [수정] 테이블 이름을 'analysis_logs'로 변경 및 저장 로직 최적화
+# [수정] 테이블 이름을 'analysis_history'로 원상복구
 def save_db(ch, ti, pr, url, kw, detail):
     try: 
         embedding = vector_engine.get_embedding(kw + " " + ti)
@@ -300,7 +300,7 @@ def save_db(ch, ti, pr, url, kw, detail):
             "keywords":kw, "detail_json":detail, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             "vector_json": embedding
         }
-        supabase.table("analysis_logs").insert(data_to_insert).execute()
+        supabase.table("analysis_history").insert(data_to_insert).execute()
         st.toast("✅ DB 저장 완료!", icon="💾")
     except Exception as e: 
         st.error(f"❌ 데이터베이스 저장 실패: {e}")
@@ -320,7 +320,7 @@ def render_score_breakdown(data_list):
 
 def render_intelligence_distribution(current_prob):
     try:
-        res = supabase.table("analysis_logs").select("fake_prob").execute()
+        res = supabase.table("analysis_history").select("fake_prob").execute()
         if not res.data: return
         df = pd.DataFrame(res.data)
         base = alt.Chart(df).transform_density('fake_prob', as_=['fake_prob', 'density'], extent=[0, 100], bandwidth=5).mark_area(opacity=0.3, color='#888').encode(x=alt.X('fake_prob:Q', title='가짜뉴스 확률 분포'), y=alt.Y('density:Q', title='밀도'))
@@ -504,8 +504,8 @@ else:
     st.caption("🔒 뷰어 모드: 조회만 가능")
 
 try:
-    # [수정] 테이블 이름을 'analysis_logs'로 변경
-    response = supabase.table("analysis_logs").select("*").order("id", desc=True).execute()
+    # [수정] 테이블 이름을 'analysis_history'로 원상복구
+    response = supabase.table("analysis_history").select("*").order("id", desc=True).execute()
     data = response.data
     if not data: st.info("📭 저장된 분석 기록이 없습니다.")
     else:
@@ -516,8 +516,8 @@ try:
             if st.button("🗑️ 선택 항목 영구 삭제", type="primary"):
                 to_delete = edited_df[edited_df['Delete'] == True]
                 if not to_delete.empty:
-                    # [수정] 테이블 이름을 'analysis_logs'로 변경
-                    for index, row in to_delete.iterrows(): supabase.table("analysis_logs").delete().eq("id", row['id']).execute()
+                    # [수정] 테이블 이름을 'analysis_history'로 원상복구
+                    for index, row in to_delete.iterrows(): supabase.table("analysis_history").delete().eq("id", row['id']).execute()
                     st.success("삭제 완료!"); time.sleep(1); st.rerun()
         else: st.dataframe(df_hist[['analysis_date','channel_name','video_title','fake_prob']], use_container_width=True, hide_index=True)
 except Exception as e: st.error(f"❌ DB Error: {e}")
@@ -540,8 +540,8 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         st.write("---")
         st.write("🔧 **시스템 관리**")
         try:
-            # [수정] 테이블 이름을 'analysis_logs'로 변경
-            null_vecs = supabase.table("analysis_logs").select("id", count='exact').is_("vector_json", "null").execute()
+            # [수정] 테이블 이름을 'analysis_history'로 원상복구
+            null_vecs = supabase.table("analysis_history").select("id", count='exact').is_("vector_json", "null").execute()
             missing_count = null_vecs.count
         except: missing_count = 0
 
@@ -550,13 +550,13 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
             if st.button(f"♻️ 데이터 업데이트 ({missing_count}건)"):
                 prog_text = st.empty()
                 bar = st.progress(0)
-                # [수정] 테이블 이름을 'analysis_logs'로 변경
-                old_rows = supabase.table("analysis_logs").select("*").is_("vector_json", "null").execute().data
+                # [수정] 테이블 이름을 'analysis_history'로 원상복구
+                old_rows = supabase.table("analysis_history").select("*").is_("vector_json", "null").execute().data
                 for i, row in enumerate(old_rows):
                     txt = f"{row.get('keywords','')} {row.get('video_title','')}"
                     try:
                         vec = vector_engine.get_embedding(txt)
-                        supabase.table("analysis_logs").update({"vector_json": vec}).eq("id", row['id']).execute()
+                        supabase.table("analysis_history").update({"vector_json": vec}).eq("id", row['id']).execute()
                     except: continue
                     bar.progress(int(((i+1)/missing_count)*100))
                     prog_text.text(f"처리 중... {i+1}/{missing_count}")
