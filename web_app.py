@@ -421,14 +421,21 @@ def check_red_flags(comments):
 
 def run_forensic_main(url):
     st.session_state["debug_logs"] = []
-    progress_text = "트리플 엔진(Mistral + Gemini A/B) 가동 중..."
-    my_bar = st.progress(0, text=progress_text)
+    my_bar = st.progress(0, text="Triple Engine 가동 중...")
+    db_count, _, _ = train_dynamic_vector_engine()
     
-    db_count, db_truth, db_fake = train_dynamic_vector_engine()
-    
-    my_bar.progress(10, text="1단계: 영상 자막 및 댓글 수집 중...")
     vid = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
     if vid: vid = vid.group(1)
+
+    # 캐시 체크
+    cached_res = supabase.table("analysis_history").select("*").ilike("video_url", f"%{vid}%").order("id", desc=True).limit(1).execute()
+    if cached_res.data:
+        c = cached_res.data[0]
+        try:
+            d = json.loads(c.get('detail_json', '{}'))
+            render_report_full_ui(c['fake_prob'], db_count, c['video_title'], c['channel_name'], d, is_cached=True)
+            return
+        except: pass
 
     with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl:
         try:
@@ -436,14 +443,16 @@ def run_forensic_main(url):
             title = info.get('title', ''); uploader = info.get('uploader', '')
             tags = info.get('tags', []); desc = info.get('description', '')
             
-            trans, t_status = fetch_real_transcript(info)
+            my_bar.progress(10, "1단계: 데이터 수집...")
+            trans, _ = fetch_real_transcript(info)
             full_text = trans if trans else desc
             summary = summarize_transcript(full_text, title)
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
+            # [2단계] 다중 키워드 추출 (Multi-Keyword Strategy)
             my_bar.progress(30, text="2단계: AI 수사관이 최적의 검색어를 찾는 중...")
             queries, source = get_hybrid_search_keywords(title, full_text)
-            
+
             # [3단계] 뉴스 크롤링 (재귀적 검색)
             news_items = []
             final_query = queries[0] # 기본값
@@ -467,178 +476,78 @@ def run_forensic_main(url):
             # 검색 결과가 하나도 없을 때
             if not news_items:
                 st.session_state["debug_logs"].append("❌ All queries failed to find news.")
-                final_query = queries[0] # 실패해도 1순위 키워드로 기록
+                final_query = queries[0]
+
+            # [★핵심 수정] 아래 코드가 없어서 NameError가 났습니다.
+            # 최종 선택된 검색어(final_query)를 기존 변수명(query)에 할당합니다.
+            query = final_query 
+
+            news_ev = []; max_match = 0
             
-            agitation = count_sensational_words(full_text + title)
-            
+            # 여기서부터 query 변수를 사용합니다.
             ts, fs = vector_engine.analyze_position(query + " " + title)
             t_impact = int(ts * 30) * -1; f_impact = int(fs * 30)
 
-            news_items = fetch_news_regex(query)
-            news_ev = []; max_match = 0
-            
             my_bar.progress(70, text="4단계: 뉴스 본문 정밀 대조 중...")
             for idx, item in enumerate(news_items[:3]):
-                ai_s, ai_r, source_type, evidence_text, real_url = deep_verify_news(summary, item['link'], item['desc'])
+                ai_s, ai_r, src, txt, real_url = deep_verify_news(summary, item['link'], item['desc'])
                 if ai_s > max_match: max_match = ai_s
-                
                 status_icon = "🟢" if ai_s >= 80 else "🟡" if ai_s >= 60 else "🔴"
                 news_ev.append({
                     "뉴스 제목": item['title'],
                     "일치도": f"{status_icon} {ai_s}%",
                     "최종 점수": f"{ai_s}%",
                     "분석 근거": ai_r,
-                    "비고": f"[{source_type}] {len(evidence_text)}자 분석",
+                    "비고": f"[{src}]",
                     "원문": real_url
                 })
             
-            # [수정됨: 뉴스 유사도 엄격 모드 (Strict Mode) - 60% 이상은 의심]
-            if not news_ev: news_score = 0
-            else:
-                if max_match >= 80: news_score = -40
-                elif max_match >= 70: news_score = -15
-                elif max_match >= 60: news_score = 10 
-                else: news_score = 30
-
-            cmts, c_status = fetch_comments_via_api(vid)
-            top_kw, rel_score, rel_msg = analyze_comment_relevance(cmts, title + " " + full_text)
-            red_cnt, red_list = check_red_flags(cmts)
+            news_score = -40 if max_match >= 80 else (-15 if max_match >= 70 else (10 if max_match >= 60 else 30)) if news_ev else 0
+            
+            cmts = fetch_comments_via_api(vid)
+            top_cmt, rel_score, rel_msg = analyze_comment_relevance(cmts, title + full_text)
+            red_cnt, _ = check_red_flags(cmts)
             
             silent_penalty = 0; is_silent = (len(news_ev) == 0)
             if is_silent:
                 if any(k in title for k in CRITICAL_STATE_KEYWORDS): silent_penalty = 10
-                elif agitation >= 3: silent_penalty = 20
+                elif count_sensational_words(title) >= 3: silent_penalty = 20
+            if check_is_official(uploader): news_score = -50; silent_penalty = 0
             
-            if is_official: news_score = -50; silent_penalty = 0
+            bait = 10 if any(w in title for w in ['충격','경악','폭로']) else -5
+            algo_base = 50 + t_impact + f_impact + news_score + (min(20, red_cnt*3)) + bait + silent_penalty
             
-            # ------------------------------------------------------------------
-            # [🚨 긴급 수정: 여론/제목/태그 점수 동적 활성화]
-            # ------------------------------------------------------------------
-            
-            # 1. 여론 점수 (Sentiment Score) - 댓글의 '가짜뉴스' 언급 횟수 반영
-            sent_score = min(20, red_cnt * 3)
-            
-            # 2. 낚시성 제목 (Clickbait) - 키워드 대폭 확장
-            bait_keywords = ['충격', '경악', '폭로', '속보', '긴급', '나락', '실체', '소름', '결국', 'ㄷㄷ', '??', '진실', '이유']
-            if any(w in title for w in bait_keywords):
-                clickbait = 10  # 낚시성 제목이면 가짜 의심 (+10)
-            else:
-                clickbait = -5  # 담백한 제목이면 신뢰도 상승 (-5)
-
-            # 3. 태그 남용 점수
-            if len(tags) == 0: abuse_score = 5 # 태그 숨김 의심
-            elif len(tags) > 30: abuse_score = 5 # 태그 스팸 의심
-            else: abuse_score = 0
-            
-            # 4. 종합 알고리즘 점수 합산
-            algo_base_score = 50 + t_impact + f_impact + news_score + sent_score + clickbait + abuse_score + silent_penalty
-            # ------------------------------------------------------------------
-            
-            my_bar.progress(90, text="5단계: AI 판사(Triple) 최종 판결 중...")
+            my_bar.progress(90, "5단계: 최종 판결...")
             ai_judge_score, ai_judge_reason = get_hybrid_verdict_final(title, full_text, news_ev)
             
-            # [Silent Echo Neutralizer]
-            neutralizer_applied = False
+            neutralized = False
             if t_impact == 0 and f_impact == 0 and is_silent:
-                neutralizer_applied = True
+                neutralized = True
                 ai_judge_score = int((ai_judge_score + 50) / 2)
-                algo_base_score = int((algo_base_score + 50) / 2)
+                algo_base = int((algo_base + 50) / 2)
             
-            final_prob = int((algo_base_score * WEIGHT_ALGO) + (ai_judge_score * WEIGHT_AI))
-            final_prob = max(1, min(99, final_prob))
+            final_prob = max(1, min(99, int(algo_base * WEIGHT_ALGO + ai_judge_score * WEIGHT_AI)))
             
-            save_analysis(uploader, title, final_prob, url, query)
+            score_bd = [
+                ["🏁 기본 중립 점수 (Base Score)", 50, "모든 분석은 50점(중립)에서 시작"],
+                ["진실 데이터 맥락", t_impact, "내부 DB 진실 데이터와 유사성"],
+                ["가짜 패턴 맥락", f_impact, "내부 DB 가짜 데이터와 유사성"],
+                ["뉴스 매칭 상태", news_score, "Deep-Crawler 정밀 대조 결과 (Strict)"],
+                ["여론/제목/태그 가감", min(20, red_cnt*3) + bait, ""],
+                ["-----------------", "", ""],
+                ["⚖️ AI Judge Score (15%)", ai_judge_score, "Triple 종합 추론 (참고용)"]
+            ]
+            
+            report_data = {
+                "summary": summary, "news_evidence": news_ev, "ai_score": ai_judge_score, "ai_reason": ai_judge_reason,
+                "score_breakdown": score_bd, "ts": ts, "fs": fs, "query": query, "tags": ", ".join(tags),
+                "cmt_count": len(cmts), "top_cmt_kw": top_cmt, "red_cnt": red_cnt, "cmt_rel": f"{rel_score}% ({rel_msg})",
+                "agitation": count_sensational_words(title)
+            }
+            
+            save_analysis(uploader, title, final_prob, url, query, report_data)
             my_bar.empty()
-
-            st.subheader(f"🕵️ Triple-Engine Analysis Result")
-            col_a, col_b, col_c = st.columns(3)
-            with col_a: 
-                st.metric("최종 가짜뉴스 확률", f"{final_prob}%", delta=f"AI Judge: {ai_judge_score}pt")
-            with col_b:
-                icon = "🟢" if final_prob < 30 else "🔴" if final_prob > 60 else "🟠"
-                verdict = "안전 (Verified)" if final_prob < 30 else "위험 (Fake/Bias)" if final_prob > 60 else "주의 (Caution)"
-                if neutralizer_applied: verdict += " (증거 부족으로 보정됨)"
-                st.metric("종합 AI 판정", f"{icon} {verdict}")
-            with col_c: 
-                st.metric("AI Intelligence Level", f"{db_count} Nodes", delta="Triple Active")
-            
-            st.divider()
-            st.subheader("🧠 Intelligence Map")
-            render_intelligence_distribution(final_prob)
-
-            if is_ai: st.warning(f"🤖 **AI 생성 콘텐츠 감지됨**: {ai_msg}")
-            if is_official: st.success(f"🛡️ **공식 언론사 채널({uploader})입니다.**")
-            if neutralizer_applied:
-                st.info("💡 **Silent Echo 감지**: 뉴스 기사와 DB 데이터가 발견되지 않아, AI 판단 점수를 '중립(50점)' 방향으로 강제 보정했습니다.")
-
-            st.divider()
-            col1, col2 = st.columns([1, 1.4])
-            with col1:
-                st.write("**[영상 상세 정보]**")
-                st.table(pd.DataFrame({"항목": ["영상 제목", "채널명", "조회수", "해시태그"], "내용": [title, uploader, f"{info.get('view_count',0):,}회", hashtag_display]}))
-                st.info(f"🎯 **Investigator (Triple) 추출 검색어**: {query}")
-                with st.container(border=True):
-                    st.markdown("📝 **영상 내용 요약**")
-                    st.write(summary)
-                
-                st.write("**[Score Breakdown]**")
-                render_score_breakdown([
-                    ["🏁 기본 중립 점수 (Base Score)", 50, "모든 분석은 50점(중립)에서 시작"],
-                    ["진실 데이터 맥락", t_impact, "내부 DB 진실 데이터와 유사성"],
-                    ["가짜 패턴 맥락", f_impact, "내부 DB 가짜 데이터와 유사성"],
-                    ["뉴스 매칭 상태", news_score, "Deep-Crawler 정밀 대조 결과 (Strict)"],
-                    ["여론/제목/태그 가감", sent_score + clickbait + abuse_score, ""],
-                    ["* 증거 부족 보정", "적용됨" if neutralizer_applied else "미적용", "데이터 없을 시 강제 중립화"],
-                    ["-----------------", "", ""],
-                    ["⚖️ AI Judge Score (15%)", ai_judge_score, "Triple 종합 추론 (참고용)"]
-                ])
-
-            with col2:
-                st.subheader("📊 5대 정밀 분석 증거")
-                
-                st.markdown("**[증거 0] Semantic Vector Space (Internal DB)**")
-                colored_progress_bar("✅ 진실 영역 근접도", ts, "#2ecc71")
-                colored_progress_bar("🚨 거짓 영역 근접도", fs, "#e74c3c")
-                st.write("---")
-
-                st.markdown(f"**[증거 1] 뉴스 교차 대조 (Deep-Web Crawler)**")
-                if news_ev:
-                    st.dataframe(
-                        pd.DataFrame(news_ev),
-                        column_config={
-                            "원문": st.column_config.LinkColumn(label="링크", display_text="🔗 이동")
-                        },
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                    with st.expander("🔍 크롤링된 뉴스 본문 샘플 보기"):
-                        for n in news_ev:
-                            st.caption(f"**{n['뉴스 제목']}**: {n['비고']}")
-                else: st.warning("🔍 관련 뉴스를 찾을 수 없습니다. (Silent Echo Risk)")
-                    
-                st.markdown("**[증거 2] 시청자 여론 심층 분석**")
-                if cmts: st.table(pd.DataFrame([["최다 빈출 키워드", ", ".join(top_kw)], ["논란 감지 여부", f"{red_cnt}회"], ["주제 일치도", f"{rel_score}% ({rel_msg})"]], columns=["항목", "내용"]))
-                
-                st.markdown("**[증거 3] 자막 세만틱 심층 대조**")
-                top_kw_str = ", ".join([f"{w}({c})" for w, c in top_transcript_keywords])
-                st.table(pd.DataFrame([["영상 최다 언급 키워드", top_kw_str], ["제목 낚시어", "있음" if clickbait > 0 else "없음"], ["선동성 지수", f"{agitation}회"]], columns=["분석 항목", "판정 결과"]))
-                
-                st.markdown("**[증거 4] AI 최종 분석 판단 (Judge Verdict)**")
-                with st.container(border=True):
-                    st.write(f"⚖️ **판결:** {ai_judge_reason}")
-                    st.caption(f"* Triple 독립 추론 점수: {ai_judge_score}점")
-
-                reasons = []
-                if final_prob >= 60:
-                    reasons.append("🚨 **위험 감지**: AI 판사와 알고리즘 모두 이 영상의 주장을 의심하고 있습니다.")
-                    if len(news_ev) == 0: reasons.append("🔇 **근거 부재**: 자극적인 주장에 비해 언론 보도가 전무합니다.")
-                elif final_prob <= 30:
-                    reasons.append("✅ **안전 판정**: 영상 내용이 주요 뉴스 보도와 일치하며, AI 추론 결과도 긍정적입니다.")
-                else:
-                    reasons.append("⚠️ **주의 요망**: 일부 과장된 표현이나 확인되지 않은 사실이 포함되어 있을 수 있습니다.")
-                
-                st.success(f"🔍 최종 분석 결과: **{final_prob}점**")
-                for r in reasons: st.write(r)
+            render_report_full_ui(final_prob, db_count, title, uploader, report_data, is_cached=False)
 
         except Exception as e: st.error(f"오류: {e}")
 
@@ -782,6 +691,7 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
                 st.rerun()
             else:
                 st.error("Access Denied")
+
 
 
 
