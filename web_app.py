@@ -22,15 +22,53 @@ from bs4 import BeautifulSoup
 # --- [1. 시스템 설정 및 CSS 최적화] ---
 st.set_page_config(page_title="유튜브 가짜뉴스 판독기 (Triple Engine)", layout="wide", page_icon="🛡️")
 
-# [Mobile/Web UI 최적화 CSS]
+# [Mobile/Web UI 최적화 CSS - 여백 및 폰트 조정]
 st.markdown("""
     <style>
-        .block-container { padding-top: 1rem; padding-bottom: 5rem; }
-        .stMetric { background-color: #f8f9fa; padding: 10px; border-radius: 8px; border: 1px solid #eee; text-align: center; }
-        div[data-testid="stMetricValue"] { font-size: 1.5rem !important; }
-        .summary-box { background-color: #e3f2fd; border-left: 5px solid #2196f3; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
-        .risk-badge { padding: 5px 10px; border-radius: 5px; font-weight: bold; color: white; }
-        h3 { font-size: 1.2rem !important; margin-top: 20px !important; }
+        /* 상단 메뉴바에 가리지 않도록 전체 컨테이너 여백 조정 */
+        .block-container { 
+            padding-top: 3.5rem !important; /* 상단 여백 확보 */
+            padding-bottom: 5rem; 
+        }
+        
+        /* 메트릭 박스 스타일 */
+        .stMetric { 
+            background-color: #f8f9fa; 
+            padding: 10px; 
+            border-radius: 8px; 
+            border: 1px solid #eee; 
+            text-align: center; 
+        }
+        
+        /* 메트릭 숫자 크기 조절 (너무 크지 않게) */
+        div[data-testid="stMetricValue"] { 
+            font-size: 1.3rem !important; 
+        }
+        
+        /* 제목 폰트 사이즈 최적화 */
+        h1 { 
+            font-size: 1.8rem !important; 
+            padding-bottom: 10px;
+        }
+        h3 { 
+            font-size: 1.2rem !important; 
+            margin-top: 20px !important; 
+        }
+        
+        /* 요약 박스 및 배지 스타일 */
+        .summary-box { 
+            background-color: #e3f2fd; 
+            border-left: 5px solid #2196f3; 
+            padding: 15px; 
+            border-radius: 5px; 
+            margin-bottom: 20px; 
+        }
+        .risk-badge { 
+            padding: 5px 10px; 
+            border-radius: 5px; 
+            font-weight: bold; 
+            color: white; 
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -289,7 +327,7 @@ def render_report_full_ui(prob, db_count, title, channel, data, is_cached=False)
     # 1. [HERO SECTION] Score & Risk (최상단)
     c1, c2, c3 = st.columns([2, 2, 1])
     with c1: st.metric("🔥 가짜뉴스 확률", f"{prob}%")
-    with c2: st.markdown(f"<div style='text-align:center; padding:10px; border-radius:10px; background-color:{risk_color}; color:white; font-weight:bold; font-size:1.2rem; margin-top:5px;'>{risk_text}</div>", unsafe_allow_html=True)
+    with c2: st.markdown(f"<div style='text-align:center; padding:10px; border-radius:10px; background-color:{risk_color}; color:white; font-weight:bold; font-size:1.1rem; margin-top:5px;'>{risk_text}</div>", unsafe_allow_html=True)
     with c3: st.metric("🗄️ 누적 DB", f"{db_count}건")
     
     # 2. [FINAL SUMMARY] AI 종합 리포트 (바로 아래 배치)
@@ -413,6 +451,7 @@ def run_forensic_main(url):
                 if items: news_items = items; final_query = q; break
             
             my_bar.progress(60, "팩트체크 대조 분석 중...")
+            # [수정] 5개까지 검증
             news_ev = []; max_match = 0
             for item in news_items[:5]:
                 s, r, src, r_url = verify_news(summary, item['link'], item['title'])
@@ -499,15 +538,22 @@ def generate_b2b_report(df):
     return pd.DataFrame(res).sort_values("Avg Risk", ascending=False)
 
 # --- [Layout Main] ---
-st.title("유튜브 가짜뉴스 판독")
+st.title("⚖️유튜브 가짜뉴스 판독기 (Triple Engine)")
 
 with st.container(border=True):
-    st.markdown("### 🛡️ Disclaimer\n본 결과는 AI 분석 추정치이며 법적 효력이 없습니다.")
-    st.markdown("결과의 최종 판단은 당사자에게 있습니다.")
-    agree = st.checkbox("동의하고 분석 시작")
+    with st.expander("ℹ️ 서비스 이용 안내 및 면책 조항 (Disclaimer)"):
+        st.markdown("""
+        본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. 
+        **분석 결과는 어떠한 법적 효력도 없으며, 최종 판단과 책임은 전적으로 사용자(당사자)에게 있습니다.**
+        
+        * **1st Line**: Mistral AI (Logic Analysis)
+        * **2nd Line**: Google Gemini (Cross-Check)
+        * **3rd Line**: Deep News Crawler (Fact Verification)
+        """)
+    agree = st.checkbox("위 고지 내용을 확인하였으며, 결과에 대한 최종 책임이 본인에게 있음을 동의합니다.")
 
-url = st.text_input("🔗 YouTube URL")
-if st.button("🚀 분석 시작", use_container_width=True, disabled=not agree):
+url = st.text_input("🔗 YouTube URL 입력")
+if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not agree):
     if url: run_forensic_main(url)
     else: st.warning("URL을 입력하세요.")
 
@@ -586,8 +632,3 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
-
-
-
-
-
