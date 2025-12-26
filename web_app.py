@@ -159,9 +159,8 @@ class VectorEngine:
         self.model_name = "models/text-embedding-004" 
 
     def get_embedding(self, text):
-        # 텍스트를 입력받아 768차원 벡터로 변환하는 핵심 함수
         try:
-            # 텍스트가 너무 길면 자름 (API 제한 방지)
+            # 텍스트가 너무 길면 자름
             result = genai.embed_content(
                 model=self.model_name,
                 content=text[:2000],
@@ -169,20 +168,14 @@ class VectorEngine:
             )
             return result['embedding']
         except:
-            return [0] * 768 # 에러 시 0벡터 반환
+            return [0] * 768
 
     def train(self, truth_list, fake_list):
-        # DB에 있는 진실/가짜 텍스트들을 미리 벡터로 변환해둠 (공간 좌표 생성)
-        # API 호출 비용/시간 절약을 위해 실제로는 DB에 벡터값을 저장해두는 것이 좋으나
-        # 현재 데모 버전에서는 실행 시 계산합니다.
         if not truth_list or not fake_list: return
-        
-        # Batch 처리가 좋지만, 간단하게 순회
         self.truth_vectors = [self.get_embedding(t) for t in truth_list]
         self.fake_vectors = [self.get_embedding(t) for t in fake_list]
 
     def cosine_similarity(self, v1, v2):
-        # 벡터 간의 각도(유사도) 계산
         if not v1 or not v2: return 0
         dot = sum(a*b for a,b in zip(v1,v2))
         mag1 = math.sqrt(sum(a*a for a in v1))
@@ -191,15 +184,26 @@ class VectorEngine:
         return dot / (mag1 * mag2)
 
     def analyze(self, query):
-        # 입력된 쿼리(영상 정보)를 벡터로 변환
         query_vec = self.get_embedding(query)
         
-        # 진실 그룹 중 가장 가까운 놈과의 거리 측정
-        truth_score = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
-        # 가짜 그룹 중 가장 가까운 놈과의 거리 측정
-        fake_score = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
+        # 1. Raw Score 계산
+        raw_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
+        raw_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
         
-        return truth_score, fake_score
+        # 2. [핵심 기술] Contrast Filter (점수 보정)
+        # 임베딩 특성상 0.7 이상이면 주제가 같은 것임. 
+        # 0.7~1.0 구간을 0~100점으로 확장(Scaling)하여 차이를 극대화함.
+        
+        def calibrate(score):
+            baseline = 0.75  # 이 점수 이하는 0점으로 취급 (노이즈 제거)
+            if score < baseline: return 0.0
+            # (현재점수 - 기준점) / (만점 - 기준점)
+            return (score - baseline) / (1.0 - baseline)
+
+        final_t = calibrate(raw_t)
+        final_f = calibrate(raw_f)
+        
+        return final_t, final_f
 
 vector_engine = VectorEngine()
 
@@ -649,4 +653,5 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
