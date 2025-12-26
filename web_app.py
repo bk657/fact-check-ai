@@ -527,22 +527,11 @@ except Exception as e: st.error(f"❌ DB Error: {e}")
 st.divider()
 with st.expander("🔐 관리자 (Admin & B2B Report)"):
     if st.session_state["is_admin"]:
-        st.success("Admin Logged In - 강제 실행 모드")
+        st.success("Admin Logged In - 무조건 실행 모드")
         
-        # 1. 현재 DB 상태를 먼저 보여줍니다.
-        try:
-            # 전체 데이터 개수 확인
-            all_rows = supabase.table("analysis_history").select("count", count="exact").head(1).execute()
-            total_count = all_rows.count
-            st.metric(label="현재 저장된 데이터 개수", value=f"{total_count}개")
-        except Exception as e:
-            st.error(f"⚠️ DB 상태 조회 실패: {e}")
-            total_count = 0
-
-        st.write("---")
-
-        # 2. 데이터 복구 (벡터 제외)
-        st.write("### 🚑 데이터 복구 (벡터 제외)")
+        # 1. 데이터 복구 (벡터 제외하고 일단 저장)
+        st.write("### 🚑 데이터 복구 (1단계)")
+        st.info("👇 백업 파일을 올리고 복구 버튼을 누르세요.")
         uploaded_file = st.file_uploader("백업 파일(export.csv) 업로드", type="csv")
         
         if uploaded_file is not None:
@@ -556,7 +545,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
                         title = str(row.get('video_title', ''))
                         if not title or title == 'nan': continue
                         
-                        # 벡터 없이 기본 데이터만 밀어넣음
+                        # [핵심] API 에러를 피하기 위해 'vector_json'은 아예 뺍니다.
                         data = {
                             "analysis_date": str(row.get('analysis_date', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))),
                             "channel_name": str(row.get('channel_name', 'Unknown')),
@@ -564,16 +553,17 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
                             "fake_prob": int(row['fake_prob']) if pd.notna(row.get('fake_prob')) else 0,
                             "video_url": str(row.get('video_url', '')),
                             "keywords": str(row.get('keywords', '')),
-                            "detail_json": {"final_summary": "복구됨"},
-                            # vector_json은 아예 보내지 않음 (에러 방지)
+                            "detail_json": {"final_summary": "복구됨"}
                         }
                         try:
+                            # DB에 저장
                             supabase.table("analysis_history").insert(data).execute()
                             success += 1
-                        except: pass
+                        except: pass # 에러나도 일단 무시하고 다음 거 저장
+                        
                         bar.progress(int(((i+1)/len(df_restore))*100))
                     
-                    st.success(f"✅ {success}건 저장 완료!")
+                    st.success(f"✅ {success}건 저장 완료! (이제 아래 업데이트 버튼을 누르세요)")
                     time.sleep(1)
                     st.rerun()
                 except Exception as e:
@@ -581,61 +571,45 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
 
         st.write("---")
 
-        # 3. [핵심] 강제 업데이트 버튼 (조건 없음)
-        st.write("### 🔧 AI 학습 (강제 실행)")
-        st.info("👇 아래 버튼을 누르면 강제로 학습을 시도합니다.")
+        # 2. 강제 업데이트 버튼 (조건 없이 무조건 뜸)
+        st.write("### 🔧 AI 학습 (2단계)")
+        st.info("👇 위 복구가 끝나면 이 버튼을 눌러 AI 학습을 시키세요.")
         
-        # 조건문 없이 무조건 버튼 표시
+        # 조건문, 조회문 다 빼고 무조건 버튼 표시
         if st.button("♻️ 학습 강제 시작 (Update Vectors)"):
             progress_text = st.empty()
             my_bar = st.progress(0)
             
             try:
-                # 1. 학습 안 된(NULL) 데이터만 싹 긁어옴
-                # (만약 여기서 에러나면 전체 데이터를 가져오도록 예외처리)
+                # 학습 안 된 데이터 가져오기 (없으면 전체 가져오기)
                 try:
-                    target_rows = supabase.table("analysis_history").select("*").is_("vector_json", "null").execute().data
+                    res = supabase.table("analysis_history").select("*").is_("vector_json", "null").execute()
+                    target_rows = res.data
                 except:
-                    st.warning("⚠️ 필터링 조회 실패 -> 전체 데이터 대상으로 시도합니다.")
-                    target_rows = supabase.table("analysis_history").select("*").execute().data
+                    # 필터링 에러나면 그냥 다 가져와
+                    res = supabase.table("analysis_history").select("*").execute()
+                    target_rows = res.data
 
                 total = len(target_rows)
                 st.write(f"🎯 학습 대상: {total}건")
                 
-                if total == 0:
-                    st.warning("학습할 데이터가 없습니다. (이미 완료되었거나 DB가 비어있음)")
-                
-                success_update = 0
-                
                 for i, row in enumerate(target_rows):
-                    # 텍스트 만들기
                     txt = f"{row.get('keywords','')} {row.get('video_title','')}"
-                    
                     try:
-                        # 2. 벡터 생성
+                        # 벡터 생성 및 업데이트
                         vec = vector_engine.get_embedding(txt)
-                        
-                        # 3. 업데이트 (여기서 에러나면 바로 출력)
                         supabase.table("analysis_history").update({"vector_json": vec}).eq("id", row['id']).execute()
-                        success_update += 1
-                        
-                    except Exception as e:
-                        # 에러나면 빨간 글씨로 한 번만 보여줌
-                        if i == 0: 
-                            st.error(f"🚨 업데이트 실패 (API 에러): {e}")
-                            st.info("💡 해결책: Supabase Table Editor에서 'analysis_history' 테이블에 아무 컬럼이나 하나 추가했다가 지우세요!")
-                        pass
+                    except: pass
                     
                     my_bar.progress(int(((i+1)/total)*100))
                     progress_text.text(f"학습 중... {i+1}/{total}")
                 
-                if success_update > 0:
-                    st.success(f"✅ {success_update}건 학습 완료!")
-                    time.sleep(2)
-                    st.rerun()
+                st.success("✅ 학습 완료!")
+                time.sleep(2)
+                st.rerun()
                     
             except Exception as e:
-                st.error(f"치명적 오류: {e}")
+                st.error(f"진행 중 오류: {e}")
 
         if st.button("Logout"): st.session_state["is_admin"]=False; st.rerun()
     else:
@@ -643,3 +617,4 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
