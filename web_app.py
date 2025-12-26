@@ -22,7 +22,6 @@ from bs4 import BeautifulSoup
 # --- [1. 시스템 설정] ---
 st.set_page_config(page_title="유튜브 가짜뉴스 판독기 (Triple Engine)", layout="wide", page_icon="🛡️")
 
-# [CSS 최적화]
 st.markdown("""
     <style>
         .block-container { padding-top: 3.5rem !important; padding-bottom: 5rem; }
@@ -61,7 +60,7 @@ def init_clients():
 
 supabase, mistral_client = init_clients()
 
-# --- [2. 모델 및 엔진 정의] ---
+# --- [2. 모델 정의] ---
 MISTRAL_MODELS = ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest"]
 
 def get_gemini_models_dynamic(api_key):
@@ -72,7 +71,7 @@ def get_gemini_models_dynamic(api_key):
         return models
     except: return ["gemini-2.0-flash", "gemini-1.5-flash"]
 
-# --- [핵심 기술: 벡터 엔진 (Semantic Embedding + Contrast Filter)] ---
+# --- [핵심 기술: 벡터 엔진] ---
 class VectorEngine:
     def __init__(self):
         self.truth_vectors = []
@@ -80,9 +79,8 @@ class VectorEngine:
         self.model_name = "models/text-embedding-004" 
 
     def get_embedding(self, text):
-        # 텍스트 -> 768차원 벡터 변환 (Gemini API)
         try:
-            genai.configure(api_key=GOOGLE_API_KEY_A) # 임베딩용 키 설정
+            genai.configure(api_key=GOOGLE_API_KEY_A)
             result = genai.embed_content(
                 model=self.model_name,
                 content=text[:2000],
@@ -93,12 +91,10 @@ class VectorEngine:
             return [0] * 768
 
     def load_pretrained_vectors(self, truth_vecs, fake_vecs):
-        # DB에서 로드한 벡터 주입 (속도 최적화)
         self.truth_vectors = truth_vecs
         self.fake_vectors = fake_vecs
 
     def train_static(self, truth_text, fake_text):
-        # 기본(Static) 데이터만 API로 변환하여 추가
         self.truth_vectors.extend([self.get_embedding(t) for t in truth_text])
         self.fake_vectors.extend([self.get_embedding(t) for t in fake_text])
 
@@ -112,28 +108,22 @@ class VectorEngine:
 
     def analyze(self, query):
         query_vec = self.get_embedding(query)
-        
-        # [독자 기술] Contrast Filter (점수 보정)
         def calibrate(score):
             baseline = 0.75 
             if score < baseline: return 0.0
             return (score - baseline) / (1.0 - baseline)
-
         raw_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
         raw_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
-        
         return calibrate(raw_t), calibrate(raw_f)
 
 vector_engine = VectorEngine()
 
 # --- [3. 유틸리티] ---
 def parse_llm_json(text):
-    try:
-        parsed = json.loads(text)
+    try: parsed = json.loads(text)
     except:
         try:
-            text = re.sub(r'```json\s*', '', text)
-            text = re.sub(r'```', '', text)
+            text = re.sub(r'```json\s*', '', text); text = re.sub(r'```', '', text)
             match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
             if match: parsed = json.loads(match.group(1))
             else: return None
@@ -143,7 +133,7 @@ def parse_llm_json(text):
     return None
 
 def determine_risk_level(prob):
-    if prob >= 70: return "⛔ 위험 (Fake)", "#d32f2f"
+    if prob >= 70: return "⛔ 위험 (High Risk)", "#d32f2f"
     elif prob >= 40: return "⚠️ 주의 (Caution)", "#f57c00"
     return "✅ 안전 (Safe)", "#388e3c"
 
@@ -280,10 +270,11 @@ def analyze_comments(cmts, ctx):
     score = int(sum(1 for w,c in top if w in ctx_set)/len(top)*100) if top else 0
     return [f"{w}({c})" for w,c in top], score, "높음" if score>=60 else "보통" if score>=20 else "낮음"
 
+# [수정] 테이블 이름을 'analysis_logs'로 변경
 @st.cache_data(ttl=3600)
 def fetch_db_vectors():
     try:
-        res = supabase.table("analysis_history").select("video_title, fake_prob, vector_json").execute()
+        res = supabase.table("analysis_logs").select("video_title, fake_prob, vector_json").execute()
         if not res.data: return [], [], 0
         dt_vecs, df_vecs = [], []
         for row in res.data:
@@ -300,39 +291,21 @@ def train_engine_wrapper():
     vector_engine.train_static(STATIC_TRUTH, STATIC_FAKE)
     return count, [], []
 
+# [수정] 테이블 이름을 'analysis_logs'로 변경 및 저장 로직 최적화
 def save_db(ch, ti, pr, url, kw, detail):
     try: 
-        # 1. 임베딩 변환
         embedding = vector_engine.get_embedding(kw + " " + ti)
-        
-        # 2. 데이터 준비 (JSONB 컬럼에는 파이썬 객체 그대로 넣습니다)
         data_to_insert = {
-            "channel_name": ch, 
-            "video_title": ti, 
-            "fake_prob": pr, 
-            "video_url": url, 
-            "keywords": kw, 
-            "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            
-            # [수정] json.dumps() 제거 -> 파이썬 딕셔너리/리스트 그대로 전달
-            "detail_json": detail,        
-            "vector_json": embedding      
+            "channel_name":ch, "video_title":ti, "fake_prob":pr, "video_url":url, 
+            "keywords":kw, "detail_json":detail, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "vector_json": embedding
         }
-        
-        # 3. Supabase에 저장 요청
-        # execute() 결과를 받아서 실제로 들어갔는지 확인합니다.
-        result = supabase.table("analysis_history").insert(data_to_insert).execute()
-        
-        # 4. 결과 확인
-        if result.data:
-            st.toast("✅ DB 저장 및 벡터 생성 완료!", icon="💾")
-        else:
-            st.error("❌ DB 저장 실패: 반환된 데이터가 없습니다. (RLS 문제일 수 있음)")
-            
+        supabase.table("analysis_logs").insert(data_to_insert).execute()
+        st.toast("✅ DB 저장 완료!", icon="💾")
     except Exception as e: 
-        st.error(f"❌ 데이터베이스 저장 중 오류 발생: {e}")
-        print(f"DB Insert Error: {e}")
-        
+        st.error(f"❌ 데이터베이스 저장 실패: {e}")
+        print(f"DB Error: {e}")
+
 # --- [UI Components] ---
 def render_score_breakdown(data_list):
     style = """<style>table.score-table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; font-family: sans-serif; font-size: 14px; margin-top: 10px;} table.score-table th { background-color: #f8f9fa; color: #495057; font-weight: bold; padding: 12px 15px; text-align: left; border-bottom: 1px solid #e0e0e0; } table.score-table td { padding: 12px 15px; border-bottom: 1px solid #f0f0f0; color: #333; } table.score-table tr:last-child td { border-bottom: none; } .badge { padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 11px; display: inline-block; text-align: center; min-width: 45px; } .badge-danger { background-color: #ffebee; color: #d32f2f; } .badge-success { background-color: #e8f5e9; color: #2e7d32; } .badge-neutral { background-color: #f5f5f5; color: #757575; border: 1px solid #e0e0e0; }</style>"""
@@ -347,7 +320,7 @@ def render_score_breakdown(data_list):
 
 def render_intelligence_distribution(current_prob):
     try:
-        res = supabase.table("analysis_history").select("fake_prob").execute()
+        res = supabase.table("analysis_logs").select("fake_prob").execute()
         if not res.data: return
         df = pd.DataFrame(res.data)
         base = alt.Chart(df).transform_density('fake_prob', as_=['fake_prob', 'density'], extent=[0, 100], bandwidth=5).mark_area(opacity=0.3, color='#888').encode(x=alt.X('fake_prob:Q', title='가짜뉴스 확률 분포'), y=alt.Y('density:Q', title='밀도'))
@@ -531,7 +504,8 @@ else:
     st.caption("🔒 뷰어 모드: 조회만 가능")
 
 try:
-    response = supabase.table("analysis_history").select("*").order("id", desc=True).execute()
+    # [수정] 테이블 이름을 'analysis_logs'로 변경
+    response = supabase.table("analysis_logs").select("*").order("id", desc=True).execute()
     data = response.data
     if not data: st.info("📭 저장된 분석 기록이 없습니다.")
     else:
@@ -542,7 +516,8 @@ try:
             if st.button("🗑️ 선택 항목 영구 삭제", type="primary"):
                 to_delete = edited_df[edited_df['Delete'] == True]
                 if not to_delete.empty:
-                    for index, row in to_delete.iterrows(): supabase.table("analysis_history").delete().eq("id", row['id']).execute()
+                    # [수정] 테이블 이름을 'analysis_logs'로 변경
+                    for index, row in to_delete.iterrows(): supabase.table("analysis_logs").delete().eq("id", row['id']).execute()
                     st.success("삭제 완료!"); time.sleep(1); st.rerun()
         else: st.dataframe(df_hist[['analysis_date','channel_name','video_title','fake_prob']], use_container_width=True, hide_index=True)
 except Exception as e: st.error(f"❌ DB Error: {e}")
@@ -551,6 +526,8 @@ st.divider()
 with st.expander("🔐 관리자 (Admin & B2B Report)"):
     if st.session_state["is_admin"]:
         st.success("Admin Logged In")
+        
+        # B2B 리포트
         if st.button("📊 B2B 리포트 생성"):
             try:
                 rpt = generate_b2b_report(pd.DataFrame(data))
@@ -558,61 +535,44 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
                     st.dataframe(rpt, use_container_width=True)
                     st.download_button("📥 CSV 다운로드", rpt.to_csv().encode('utf-8-sig'), "b2b_report.csv", "text/csv")
             except: st.error("데이터 부족")
-        if st.button("Logout"): st.session_state["is_admin"]=False; st.rerun()
-# --- [추가된 기능] 과거 데이터 심폐소생술 ---
+            
+        # 구형 데이터 업데이트 기능
         st.write("---")
         st.write("🔧 **시스템 관리**")
-        
-        # 벡터가 없는 옛날 데이터가 몇 개인지 확인
         try:
-            null_vecs = supabase.table("analysis_history").select("id", count='exact').is_("vector_json", "null").execute()
+            # [수정] 테이블 이름을 'analysis_logs'로 변경
+            null_vecs = supabase.table("analysis_logs").select("id", count='exact').is_("vector_json", "null").execute()
             missing_count = null_vecs.count
         except: missing_count = 0
 
         if missing_count > 0:
-            st.warning(f"⚠️ 학습에 참여하지 못하는 구형 데이터가 {missing_count}건 있습니다.")
-            if st.button(f"♻️ 구형 데이터 {missing_count}건 벡터 변환 (업데이트)"):
-                progress_text = st.empty()
-                my_bar = st.progress(0)
-                
-                # 데이터 가져오기
-                old_rows = supabase.table("analysis_history").select("*").is_("vector_json", "null").execute().data
-                
+            st.warning(f"⚠️ 학습 미반영 데이터 {missing_count}건")
+            if st.button(f"♻️ 데이터 업데이트 ({missing_count}건)"):
+                prog_text = st.empty()
+                bar = st.progress(0)
+                # [수정] 테이블 이름을 'analysis_logs'로 변경
+                old_rows = supabase.table("analysis_logs").select("*").is_("vector_json", "null").execute().data
                 for i, row in enumerate(old_rows):
-                    # 1. 텍스트 추출 (키워드 + 제목)
-                    text_to_embed = f"{row.get('keywords','')} {row.get('video_title','')}"
-                    
-                    # 2. 벡터 변환 (Gemini API 사용)
-                    # (API 호출 제한 방지를 위해 약간의 텀을 줍니다)
+                    txt = f"{row.get('keywords','')} {row.get('video_title','')}"
                     try:
-                        vec = vector_engine.get_embedding(text_to_embed)
-                        
-                        # 3. DB에 업데이트
-                        supabase.table("analysis_history").update({"vector_json": json.dumps(vec)}).eq("id", row['id']).execute()
-                    except Exception as e:
-                        print(f"Error updating id {row['id']}: {e}")
-                        continue
-                    
-                    # 진행률 표시
-                    percent = int(((i + 1) / missing_count) * 100)
-                    my_bar.progress(percent)
-                    progress_text.text(f"변환 중... ({i+1}/{missing_count})")
-                    time.sleep(0.5) # API 과부하 방지 딜레이
-                
-                st.success("✅ 모든 구형 데이터가 최신 엔진에 등록되었습니다!")
-                time.sleep(2)
+                        vec = vector_engine.get_embedding(txt)
+                        supabase.table("analysis_logs").update({"vector_json": vec}).eq("id", row['id']).execute()
+                    except: continue
+                    bar.progress(int(((i+1)/missing_count)*100))
+                    prog_text.text(f"처리 중... {i+1}/{missing_count}")
+                    time.sleep(0.5)
+                st.success("업데이트 완료!")
+                time.sleep(1)
                 st.rerun()
-        else:
-            st.info("✅ 모든 DB 데이터가 최신 벡터(학습용) 상태입니다.")
+        else: st.info("✅ 모든 데이터가 최신 상태입니다.")
+
+        st.write("---")
+        st.write("📜 System Logs")
+        st.text_area("Logs", "\n".join(st.session_state["debug_logs"]), height=200)
+        
+        if st.button("Logout"): st.session_state["is_admin"]=False; st.rerun()
     else:
         pwd = st.text_input("Password", type="password")
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
-
-
-
-
-
-
-
