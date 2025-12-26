@@ -152,23 +152,54 @@ STATIC_TRUTH = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "
 STATIC_FAKE = ["충격 폭로 경악", "긴급 속보 소름", "구속 영장 발부", "사형 집행", "위독설"]
 
 class VectorEngine:
-    def __init__(self): self.vocab=set(); self.truth=[]; self.fake=[]
-    def tokenize(self, t): return re.findall(r'[가-힣]{2,}', t)
-    def train(self, t_list, f_list):
-        for t in t_list+f_list: self.vocab.update(self.tokenize(t))
-        self.vocab = sorted(list(self.vocab))
-        self.truth = [self.vec(t) for t in t_list]
-        self.fake = [self.vec(t) for t in f_list]
-    def vec(self, t):
-        c = Counter(self.tokenize(t))
-        return [c[w] for w in self.vocab]
-    def sim(self, v1, v2):
+    def __init__(self):
+        self.truth_vectors = []
+        self.fake_vectors = []
+        # Google Embeddings 모델 설정
+        self.model_name = "models/text-embedding-004" 
+
+    def get_embedding(self, text):
+        # 텍스트를 입력받아 768차원 벡터로 변환하는 핵심 함수
+        try:
+            # 텍스트가 너무 길면 자름 (API 제한 방지)
+            result = genai.embed_content(
+                model=self.model_name,
+                content=text[:2000],
+                task_type="retrieval_document"
+            )
+            return result['embedding']
+        except:
+            return [0] * 768 # 에러 시 0벡터 반환
+
+    def train(self, truth_list, fake_list):
+        # DB에 있는 진실/가짜 텍스트들을 미리 벡터로 변환해둠 (공간 좌표 생성)
+        # API 호출 비용/시간 절약을 위해 실제로는 DB에 벡터값을 저장해두는 것이 좋으나
+        # 현재 데모 버전에서는 실행 시 계산합니다.
+        if not truth_list or not fake_list: return
+        
+        # Batch 처리가 좋지만, 간단하게 순회
+        self.truth_vectors = [self.get_embedding(t) for t in truth_list]
+        self.fake_vectors = [self.get_embedding(t) for t in fake_list]
+
+    def cosine_similarity(self, v1, v2):
+        # 벡터 간의 각도(유사도) 계산
+        if not v1 or not v2: return 0
         dot = sum(a*b for a,b in zip(v1,v2))
-        mag = math.sqrt(sum(a*a for a in v1))*math.sqrt(sum(b*b for b in v2))
-        return dot/mag if mag>0 else 0
-    def analyze(self, q):
-        qv = self.vec(q)
-        return max([self.sim(qv,v) for v in self.truth] or [0]), max([self.sim(qv,v) for v in self.fake] or [0])
+        mag1 = math.sqrt(sum(a*a for a in v1))
+        mag2 = math.sqrt(sum(b*b for b in v2))
+        if mag1 == 0 or mag2 == 0: return 0
+        return dot / (mag1 * mag2)
+
+    def analyze(self, query):
+        # 입력된 쿼리(영상 정보)를 벡터로 변환
+        query_vec = self.get_embedding(query)
+        
+        # 진실 그룹 중 가장 가까운 놈과의 거리 측정
+        truth_score = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
+        # 가짜 그룹 중 가장 가까운 놈과의 거리 측정
+        fake_score = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
+        
+        return truth_score, fake_score
 
 vector_engine = VectorEngine()
 
@@ -618,3 +649,4 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
