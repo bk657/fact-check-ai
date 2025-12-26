@@ -555,48 +555,52 @@ def run_forensic_main(url):
 
         except Exception as e: st.error(f"오류: {e}")
 
-# --- [NEW] B2B 리포트 생성 엔진 (여기에 붙여넣으세요) ---
+# --- [NEW] B2B 리포트 생성 엔진 (리스트/문자열 혼용 에러 완벽 수정) ---
 def generate_b2b_report_logic(df_history):
     if df_history.empty: return pd.DataFrame()
     
-    # 1. 데이터 강제 형변환 (문자열 -> 숫자) [핵심 수정]
-    # 에러 원인이었던 문자열 데이터를 숫자로 바꾸고, 빈 값은 0으로 채웁니다.
+    # 1. 데이터 강제 형변환 (NaN은 0으로)
     df_history['fake_prob'] = pd.to_numeric(df_history['fake_prob'], errors='coerce').fillna(0)
     
-    # 2. 안전한 직접 계산 방식 (MultiIndex 미사용)
+    # 2. 그룹화 (채널별)
     grouped = df_history.groupby('channel_name')
     
-    # 컬럼별로 따로 계산해서 합칩니다 (가장 안전한 방법)
-    report = pd.DataFrame({
-        'analyzed_count': grouped['fake_prob'].count(),
-        'avg_risk': grouped['fake_prob'].mean(),
-        'max_risk': grouped['fake_prob'].max(),
-        'all_keywords': grouped['keywords'].apply(lambda x: ' '.join([str(k) for k in x if k]))
-    }).reset_index()
-    
     results = []
-    for _, row in report.iterrows():
-        avg_score = row['avg_risk']
+    for channel, group in grouped:
+        # 통계 계산
+        avg_score = group['fake_prob'].mean()
+        max_score = group['fake_prob'].max()
+        count = len(group)
         
+        # [핵심 수정] 키워드 데이터 평탄화 (Flatten)
+        # DB에 ['키워드1', '키워드2'] 리스트로 저장된 경우와 "키워드" 문자열로 저장된 경우 모두 처리
+        kw_bucket = []
+        for k in group['keywords']:
+            if isinstance(k, list): 
+                kw_bucket.extend([str(i) for i in k]) # 리스트면 풀어서 담기
+            elif k: 
+                kw_bucket.append(str(k)) # 문자열이면 그냥 담기
+        
+        # 주요 타겟 키워드 추출 (빈도수 상위 3개)
+        full_text = ' '.join(kw_bucket)
+        tokens = re.findall(r'[가-힣]{2,}', full_text)
+        targets = ", ".join([t[0] for t in Counter(tokens).most_common(3)])
+        
+        # 위험 등급 산정
         if avg_score >= 60: grade = "⛔ BLACKLIST (심각)"
         elif avg_score >= 40: grade = "⚠️ CAUTION (주의)"
         else: grade = "✅ SAFE (양호)"
         
-        # 주요 키워드 추출
-        tokens = re.findall(r'[가-힣]{2,}', str(row['all_keywords']))
-        targets = ", ".join([t[0] for t in Counter(tokens).most_common(3)])
-        
         results.append({
-            "채널명": row['channel_name'],
+            "채널명": channel,
             "위험 등급": grade,
             "평균 가짜 확률": f"{int(avg_score)}%",
-            "최고 가짜 확률": f"{int(row['max_risk'])}%",
-            "분석 영상 수": f"{int(row['analyzed_count'])}개",
+            "최고 가짜 확률": f"{int(max_score)}%",
+            "분석 영상 수": f"{count}개",
             "주요 타겟": targets
         })
         
     return pd.DataFrame(results).sort_values(by='평균 가짜 확률', ascending=False)
-
 # --- [UI Layout] ---
 st.title("⚖️유튜브 가짜뉴스 판독기 (Triple Engine)")
 
@@ -695,6 +699,7 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
                 st.rerun()
             else:
                 st.error("Access Denied")
+
 
 
 
