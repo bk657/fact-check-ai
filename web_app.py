@@ -602,6 +602,35 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if missing_count > 0:
             if st.button(f"♻️ 데이터 업데이트 ({missing_count}건)"):
                 st.write("업데이트 시작...")
-                # ... (업데이트 로직 생략, 일단 복구부터) ...
-                # 복구가 되면 여기 로직은 기존과 같습니다.
+                prog_text = st.empty()
+                bar = st.progress(0)
+                old_rows = supabase.table("analysis_history").select("*").is_("vector_json", "null").execute().data
+                
+                for i, row in enumerate(old_rows):
+                    # 제목 + 키워드로 벡터 생성
+                    txt = f"{row.get('keywords','')} {row.get('video_title','')}"
+                    try:
+                        vec = vector_engine.get_embedding(txt)
+                        supabase.table("analysis_history").update({"vector_json": vec}).eq("id", row['id']).execute()
+                    except: continue
+                    
+                    bar.progress(int(((i+1)/missing_count)*100))
+                    prog_text.text(f"학습 처리 중... {i+1}/{missing_count}")
+                    time.sleep(0.5)
+                
+                st.success("✅ 모든 데이터 학습 완료!")
+                time.sleep(1)
+                st.rerun()
+        else:
+            st.success("✅ 모든 데이터가 최신 상태입니다.")
+
+        st.write("---")
+        
+        if st.button("Logout"): st.session_state["is_admin"]=False; st.rerun()
+    else:
+        pwd = st.text_input("Password", type="password")
+        if st.button("Login"):
+            if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
+            else: st.error("Wrong Password")
+
 
