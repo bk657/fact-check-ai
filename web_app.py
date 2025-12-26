@@ -536,9 +536,56 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
                     st.dataframe(rpt, use_container_width=True)
                     st.download_button("📥 CSV 다운로드", rpt.to_csv().encode('utf-8-sig'), "b2b_report.csv", "text/csv")
             except: st.error("데이터 부족")
+
+        # --- [추가된 기능] 과거 데이터 심폐소생술 ---
+        st.write("---")
+        st.write("🔧 **시스템 관리**")
+        
+        # 벡터가 없는 옛날 데이터가 몇 개인지 확인
+        try:
+            null_vecs = supabase.table("analysis_history").select("id", count='exact').is_("vector_json", "null").execute()
+            missing_count = null_vecs.count
+        except: missing_count = 0
+
+        if missing_count > 0:
+            st.warning(f"⚠️ 학습에 참여하지 못하는 구형 데이터가 {missing_count}건 있습니다.")
+            if st.button(f"♻️ 구형 데이터 {missing_count}건 벡터 변환 (업데이트)"):
+                progress_text = st.empty()
+                my_bar = st.progress(0)
+                
+                # 데이터 가져오기
+                old_rows = supabase.table("analysis_history").select("*").is_("vector_json", "null").execute().data
+                
+                for i, row in enumerate(old_rows):
+                    # 1. 텍스트 추출 (키워드 + 제목)
+                    text_to_embed = f"{row.get('keywords','')} {row.get('video_title','')}"
+                    
+                    # 2. 벡터 변환 (Gemini API 사용)
+                    # (API 호출 제한 방지를 위해 약간의 텀을 줍니다)
+                    try:
+                        vec = vector_engine.get_embedding(text_to_embed)
+                        
+                        # 3. DB에 업데이트
+                        supabase.table("analysis_history").update({"vector_json": json.dumps(vec)}).eq("id", row['id']).execute()
+                    except Exception as e:
+                        print(f"Error updating id {row['id']}: {e}")
+                        continue
+                    
+                    # 진행률 표시
+                    percent = int(((i + 1) / missing_count) * 100)
+                    my_bar.progress(percent)
+                    progress_text.text(f"변환 중... ({i+1}/{missing_count})")
+                    time.sleep(0.5) # API 과부하 방지 딜레이
+                
+                st.success("✅ 모든 구형 데이터가 최신 엔진에 등록되었습니다!")
+                time.sleep(2)
+                st.rerun()
+        else:
+            st.info("✅ 모든 DB 데이터가 최신 벡터(학습용) 상태입니다.")        
         if st.button("Logout"): st.session_state["is_admin"]=False; st.rerun()
     else:
         pwd = st.text_input("Password", type="password")
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
