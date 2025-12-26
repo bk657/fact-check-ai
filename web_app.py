@@ -8,27 +8,47 @@ from supabase import create_client
 import openai
 
 # -----------------------------------------------------------------------------
-# 1. 설정 및 초기화 (Setup)
+# 1. 설정 및 초기화 (Setup) - 진단 모드
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="AI 영상 분석기", layout="wide", page_icon="🎬")
 
-# 비밀번호 및 API 키 로드 (st.secrets 사용)
+st.write("### 🔑 Secrets 연결 진단 (디버깅)")
+
+# 1. 현재 Streamlit이 인식하고 있는 키 목록을 출력합니다. (값은 보안상 숨김)
+st.write("현재 설정된 키 목록:", list(st.secrets.keys()))
+
 try:
+    # 2. 하나씩 불러오면서 어디서 막히는지 확인합니다.
+    st.write("1. SUPABASE_URL 로딩 중...")
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    st.success("OK")
+
+    st.write("2. SUPABASE_KEY 로딩 중...")
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+    st.success("OK")
+    
+    st.write("3. OPENAI_API_KEY 로딩 중...")
     OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+    st.success("OK")
+    
+    st.write("4. ADMIN_PASSWORD 로딩 중...")
     ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
-except:
-    st.error("❌ .streamlit/secrets.toml 파일에 API 키가 설정되지 않았습니다.")
+    st.success("OK")
+
+    st.success("✅ 모든 키가 정상적으로 로드되었습니다! (이제 이 진단 코드를 지우셔도 됩니다.)")
+
+except KeyError as e:
+    st.error(f"🚨 범인 검거: {e} 라는 키를 찾을 수 없습니다!")
+    st.warning("👉 Streamlit 설정 화면의 Secrets에 적은 이름과, 위 코드에서 부르는 이름이 정확히 일치하는지(대소문자 포함) 확인하세요.")
+    st.info(f"힌트: 혹시 [supabase] 같은 섹션을 만드셨나요? 그렇다면 st.secrets['supabase']['url'] 처럼 불러야 합니다.")
+    st.stop()
+except Exception as e:
+    st.error(f"알 수 없는 오류: {e}")
     st.stop()
 
-# 클라이언트 연결
+# 클라이언트 연결 (성공 시에만 실행됨)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
-
-# 세션 상태 초기화
-if "is_admin" not in st.session_state: st.session_state["is_admin"] = False
-if "analysis_result" not in st.session_state: st.session_state["analysis_result"] = None
 
 # -----------------------------------------------------------------------------
 # 2. 유틸리티 클래스 & 함수 (Utils)
@@ -294,3 +314,4 @@ with st.expander("🔐 관리자 (시스템 복구 및 관리)"):
                     st.rerun()
             except Exception as e:
                 st.error(f"업데이트 에러: {e}")
+
