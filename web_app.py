@@ -530,13 +530,6 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
     if st.session_state["is_admin"]:
         st.success("Admin Logged In")
         if st.button("📊 B2B 리포트 생성"):
-            try:
-                rpt = generate_b2b_report(pd.DataFrame(data))
-                if not rpt.empty:
-                    st.dataframe(rpt, use_container_width=True)
-                    st.download_button("📥 CSV 다운로드", rpt.to_csv().encode('utf-8-sig'), "b2b_report.csv", "text/csv")
-            except: st.error("데이터 부족")
-        if st.button("Logout"): st.session_state["is_admin"]=False; st.rerun()
     # --- [추가된 기능] 과거 데이터 심폐소생술 ---
         st.write("---")
         st.write("🔧 **시스템 관리**")
@@ -582,10 +575,18 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
                 st.rerun()
         else:
             st.info("✅ 모든 DB 데이터가 최신 벡터(학습용) 상태입니다.")
+            try:
+                rpt = generate_b2b_report(pd.DataFrame(data))
+                if not rpt.empty:
+                    st.dataframe(rpt, use_container_width=True)
+                    st.download_button("📥 CSV 다운로드", rpt.to_csv().encode('utf-8-sig'), "b2b_report.csv", "text/csv")
+            except: st.error("데이터 부족")
+        if st.button("Logout"): st.session_state["is_admin"]=False; st.rerun()
     else:
         pwd = st.text_input("Password", type="password")
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
