@@ -462,7 +462,25 @@ st.divider()
 st.subheader("🗂️ DB History")
 try:
     df_hist = pd.DataFrame(supabase.table("analysis_history").select("*").order("id", desc=True).execute().data)
-    if not df_hist.empty: st.dataframe(df_hist[['analysis_date','channel_name','video_title','fake_prob']], use_container_width=True, hide_index=True)
+    if not df_hist.empty:
+        # [삭제 기능 구현]
+        if st.session_state["is_admin"]:
+            df_hist['Delete'] = False
+            # 컬럼 순서 조정: Delete를 맨 앞으로
+            cols = ['Delete'] + [c for c in df_hist.columns if c != 'Delete']
+            edited_df = st.data_editor(df_hist[cols], hide_index=True, use_container_width=True)
+            
+            if st.button("🗑️ 선택 항목 삭제", type="primary"):
+                to_delete = edited_df[edited_df['Delete'] == True]
+                if not to_delete.empty:
+                    for index, row in to_delete.iterrows():
+                        supabase.table("analysis_history").delete().eq("id", row['id']).execute()
+                    st.success("삭제 완료!")
+                    time.sleep(1)
+                    st.rerun()
+        else:
+            # 일반 모드: 조회만 가능
+            st.dataframe(df_hist[['analysis_date','channel_name','video_title','fake_prob']], use_container_width=True, hide_index=True)
 except: pass
 
 st.divider()
