@@ -303,9 +303,24 @@ def train_dynamic_vector_engine():
         vector_engine.train(STATIC_TRUTH_CORPUS, STATIC_FAKE_CORPUS)
         return 0, [], []
 
-def save_analysis(channel, title, prob, url, keywords):
-    try: supabase.table("analysis_history").insert({"channel_name": channel, "video_title": title, "fake_prob": prob, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "video_url": url, "keywords": keywords}).execute()
-    except: pass
+# [수정 후] 인자 추가 및 JSON 처리 강화
+def save_analysis(channel, title, prob, url, keywords, detail_json=None):
+    try: 
+        # detail_json이 딕셔너리면 JSON 문자열로 변환
+        json_str = json.dumps(detail_json, ensure_ascii=False) if detail_json else "{}"
+        
+        data = {
+            "channel_name": channel, 
+            "video_title": title, 
+            "fake_prob": prob, 
+            "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 
+            "video_url": url, 
+            "keywords": keywords,
+            "detail_json": json_str # DB에 detail_json 컬럼이 있다면 저장
+        }
+        supabase.table("analysis_history").insert(data).execute()
+    except Exception as e: 
+        print(f"DB Save Error: {e}") # 디버깅용 출력
 
 def render_intelligence_distribution(current_prob):
     try:
@@ -418,6 +433,50 @@ def analyze_comment_relevance(comments, context_text):
 def check_red_flags(comments):
     detected = [k for c in comments for k in ['가짜뉴스', '주작', '사기', '거짓말', '허위', '선동'] if k in c]
     return len(detected), list(set(detected))
+
+# --- [UI 컴포넌트 추가] 리포트 렌더링 함수 (이 부분을 check_red_flags 와 run_forensic_main 사이에 넣으세요) ---
+def render_report_full_ui(prob, db_count, title, channel, data, is_cached=False):
+    st.divider()
+    if is_cached:
+        st.info(f"💾 이 영상은 과거 분석 기록을 불러왔습니다. (DB 데이터: {db_count}개)")
+    
+    # 1. 헤더 섹션
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        st.markdown(f"### 🔥 가짜뉴스 확률\n# **{prob}%**")
+        render_intelligence_distribution(prob)
+    with col2:
+        st.markdown(f"#### 📺 {title}")
+        st.caption(f"채널: {channel} | 분석일: {datetime.now().strftime('%Y-%m-%d')}")
+        if data.get('query'):
+            st.code(f"🔑 핵심 추적 키워드: {data['query']}")
+            
+    # 2. 상세 분석 탭
+    tab1, tab2, tab3 = st.tabs(["📝 뉴스 대조", "📊 점수 산정표", "💬 여론 분석"])
+    
+    with tab1:
+        st.subheader("📰 팩트체크 증거 자료")
+        if data.get('news_evidence'):
+            for news in data['news_evidence']:
+                with st.expander(f"{news['일치도']} {news['뉴스 제목']}"):
+                    st.write(f"**분석 근거:** {news['분석 근거']}")
+                    st.caption(f"출처: {news['비고']}")
+                    st.link_button("기사 원문 보기", news['원문'])
+        else:
+            st.warning("관련된 신뢰할 수 있는 뉴스 기사를 찾지 못했습니다.")
+            
+    with tab2:
+        st.subheader("⚖️ AI 판결 근거")
+        st.write(f"**AI Judge Opinion:** {data.get('ai_reason', 'N/A')}")
+        if data.get('score_breakdown'):
+            render_score_breakdown(data['score_breakdown'])
+            
+    with tab3:
+        st.subheader("🗣️ 댓글 여론 분석")
+        st.metric("수집된 댓글", f"{data.get('cmt_count', 0)}개")
+        st.write(f"**주제 연관성:** {data.get('cmt_rel', 'N/A')}")
+        if data.get('top_cmt_kw'):
+            st.write(f"**주요 키워드:** {', '.join(data['top_cmt_kw'])}")
 
 def run_forensic_main(url):
     st.session_state["debug_logs"] = []
@@ -544,7 +603,7 @@ def run_forensic_main(url):
             
             report_data = {
                 "summary": summary, "news_evidence": news_ev, "ai_score": ai_judge_score, "ai_reason": ai_judge_reason,
-                "score_breakdown": score_bd, "ts": ts, "fs": fs, "query": query, "tags": ", ".join(tags),
+                "score_breakdown": score_bd, "ts": ts, "fs": fs, "query": query, "tags": ", ".join([str(t) for t in tags]) if tags else "",
                 "cmt_count": len(cmts), "top_cmt_kw": top_cmt, "red_cnt": red_cnt, "cmt_rel": f"{rel_score}% ({rel_msg})",
                 "agitation": count_sensational_words(title)
             }
@@ -699,6 +758,7 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
                 st.rerun()
             else:
                 st.error("Access Denied")
+
 
 
 
