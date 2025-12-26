@@ -81,6 +81,22 @@ def determine_risk_level(prob):
     elif prob >= 40: return "⚠️ 주의 (Caution)", "orange"
     return "✅ 안전 (Safe)", "green"
 
+def colored_bar_html(label, score, color):
+    # 점수가 0~1 사이로 들어온다고 가정하거나 0~100
+    # 여기선 0.0 ~ 1.0 (vector similarity) -> 100% 변환
+    pct = min(100, max(0, int(score * 100)))
+    return f"""
+    <div style="margin-bottom: 8px;">
+        <div style="display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; color: #333;">
+            <span>{label}</span>
+            <span>{pct}%</span>
+        </div>
+        <div style="width: 100%; background-color: #eee; border-radius: 5px; height: 10px;">
+            <div style="width: {pct}%; background-color: {color}; height: 10px; border-radius: 5px;"></div>
+        </div>
+    </div>
+    """
+
 # --- [4. Core Logic] ---
 def call_triple_survivor(prompt, is_json=False):
     logs = []
@@ -179,6 +195,26 @@ def judge_final(title, trans, evidences):
     p = parse_llm_json(res)
     return (p['score'], f"{p['reason']} ({model})") if p else (50, "Failed")
 
+def generate_comprehensive_summary(title, final_prob, news_ev, red_cnt, ai_reason, risk_text):
+    prompt = f"""
+    당신은 팩트체크 전문 AI 분석가입니다. 아래 데이터를 바탕으로 사용자에게 최종 종합 리포트를 작성해주세요.
+    
+    [분석 데이터]
+    - 영상 제목: {title}
+    - 최종 가짜뉴스 확률: {final_prob}% ({risk_text})
+    - 뉴스 대조 결과: {len(news_ev)}개의 기사와 대조됨
+    - 선동성 댓글 감지: {red_cnt}개
+    - AI 판단 요약: {ai_reason}
+    
+    [요청사항]
+    1. 이 영상이 왜 {final_prob}% 점수를 받았는지 종합적으로 설명하세요.
+    2. 뉴스 증거가 부족한지, 제목이 자극적인지, 아니면 팩트가 맞는지 구체적으로 언급하세요.
+    3. 사용자에게 이 영상을 믿어야 할지 말아야 할지, 주의할 점은 무엇인지 친절하고 명확하게 조언하세요.
+    4. 한국어로 정중하게 작성하세요. (3~4문장)
+    """
+    res, _, _ = call_triple_survivor(prompt, is_json=False)
+    return res if res else "종합 분석 결과를 생성하는데 실패했습니다."
+
 # --- [6. Helper Functions] ---
 def normalize(w): return re.sub(r'은$|는$|이$|가$|을$|를$|의$|에$|로$', '', re.sub(r'[^가-힣0-9]', '', w))
 def get_tokens(t): return [normalize(w) for w in re.findall(r'[가-힣]{2,}', t) if w not in ['충격','속보','뉴스']]
@@ -211,7 +247,7 @@ def fetch_news(q):
         raw = requests.get(f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl=ko&gl=KR", timeout=5).text
         items = re.findall(r'<item>(.*?)</item>', raw, re.DOTALL)
         res = []
-        for i in items[:5]:
+        for i in items[:10]: # 10개 가져와서 나중에 5개 씀
             t = re.search(r'<title>(.*?)</title>', i); l = re.search(r'<link>(.*?)</link>', i)
             if t and l: res.append({'title':t.group(1).replace("<![CDATA[","").replace("]]>",""), 'link':l.group(1).strip()})
         return res
@@ -233,15 +269,14 @@ def save_db(ch, ti, pr, url, kw, detail):
     }).execute()
     except Exception as e: print(f"DB Error: {e}")
 
-# --- [UI 렌더링 함수 (요청사항 반영)] ---
+# --- [UI 렌더링 함수] ---
 def render_report_full_ui(prob, db_count, title, channel, data, is_cached=False):
-    # 상단 요약 (가짜뉴스 확률, 위험도, DB 데이터수)
     st.divider()
     if is_cached: st.info(f"💾 과거 분석 기록 호출됨 (총 DB 데이터: {db_count}개)")
     
     risk_text, risk_color = determine_risk_level(prob)
     
-    # [Top Section] 요청하신 스타일 유지
+    # [Top Section]
     c1, c2, c3 = st.columns([2, 2, 1])
     with c1: st.metric("🔥 가짜뉴스 확률", f"{prob}%")
     with c2: st.metric("🛡️ 위험도 진단", risk_text)
@@ -270,12 +305,19 @@ def render_report_full_ui(prob, db_count, title, channel, data, is_cached=False)
     if data.get('score_breakdown'):
         render_score_breakdown(data['score_breakdown'])
 
-    # 5. 수집된 증거 1 : 가짜뉴스 확률 분포
-    st.subheader("5. [증거 1] 가짜뉴스 확률 분포")
+    # 5. 수집된 증거 1 : 가짜뉴스 확률 분포 (게이지 추가)
+    st.subheader("5. [증거 1] 데이터 유사도 분석")
+    col_sim1, col_sim2 = st.columns(2)
+    with col_sim1:
+        st.markdown(colored_bar_html("진실 데이터 유사도 (Truth)", data.get('ts', 0), "#4CAF50"), unsafe_allow_html=True)
+    with col_sim2:
+        st.markdown(colored_bar_html("가짜 데이터 유사도 (Fake)", data.get('fs', 0), "#F44336"), unsafe_allow_html=True)
+    
+    st.caption("※ 아래 분포도는 전체 데이터베이스 상에서의 현재 영상 위치를 나타냅니다.")
     render_intelligence_distribution(prob)
 
-    # 6. 수집된 증거 2 : 뉴스 대조
-    st.subheader("6. [증거 2] 뉴스 대조 및 팩트체크")
+    # 6. 수집된 증거 2 : 뉴스 대조 (5개)
+    st.subheader("6. [증거 2] 뉴스 대조 및 팩트체크 (Top 5)")
     if data.get('news_evidence'):
         for news in data['news_evidence']:
             with st.expander(f"{news['일치도']} {news['뉴스 제목']}"):
@@ -295,12 +337,19 @@ def render_report_full_ui(prob, db_count, title, channel, data, is_cached=False)
         st.write(f"**🗣️ 주요 키워드:** {', '.join(data['top_cmt_kw'])}")
 
     # 8. 수집된 증거 4 : AI 분석
-    st.subheader("8. [증거 4] AI 종합 분석 (Judge Opinion)")
-    st.success(f"**🤖 AI 판단:**\n{data.get('ai_reason', '판단 보류')}")
+    st.subheader("8. [증거 4] AI 기술적 판단 (Techncial Judge)")
+    st.info(f"**🤖 AI Internal Reasoning:**\n{data.get('ai_reason', '판단 보류')}")
 
-    # 9. 최종 점수
-    st.subheader("9. 최종 가짜뉴스 확률")
-    st.markdown(f"<h1 style='text-align: center; color: {risk_color};'>{prob}%</h1>", unsafe_allow_html=True)
+    # 9. 최종 종합 분석 (새로운 기능)
+    st.divider()
+    st.subheader("📝 9. 최종 종합 리포트 (Final Summary)")
+    
+    final_box = st.container(border=True)
+    with final_box:
+        st.markdown(f"### 🏁 종합 가짜뉴스 확률: <span style='color:{risk_color}'>{prob}%</span>", unsafe_allow_html=True)
+        st.write("")
+        # LLM이 작성한 종합 코멘트 출력
+        st.markdown(f"**📢 AI Analyst Comment:**\n\n{data.get('final_summary', '종합 분석 데이터가 없습니다.')}")
 
 
 def render_score_breakdown(data_list):
@@ -364,14 +413,14 @@ def run_forensic_main(url):
                 if items: news_items = items; final_query = q; break
             
             my_bar.progress(60, "팩트체크 대조 분석 중...")
+            # [수정] 5개까지 검증
             news_ev = []; max_match = 0
-            for item in news_items[:3]:
+            for item in news_items[:5]:
                 s, r, src, r_url = verify_news(summary, item['link'], item['title'])
                 if s > max_match: max_match = s
                 icon = "🟢" if s>=80 else "🟡" if s>=60 else "🔴"
                 news_ev.append({"뉴스 제목":item['title'], "일치도":f"{icon} {s}%", "최종 점수":s, "분석 근거":r, "비고":src, "원문":r_url})
             
-            # 점수 계산
             cmts = fetch_comments(vid)
             top_kw, rel_score, rel_msg = analyze_comments(cmts, full_text)
             red_cnt, _ = check_red_flags(cmts)
@@ -393,6 +442,10 @@ def run_forensic_main(url):
             
             final_prob = max(1, min(99, int(base_score*WEIGHT_ALGO + ai_score*WEIGHT_AI)))
             
+            # [추가] 최종 종합 리포트 생성
+            risk_text, _ = determine_risk_level(final_prob)
+            final_summary = generate_comprehensive_summary(meta['제목'], final_prob, news_ev, red_cnt, ai_reason, risk_text)
+
             score_bd = [
                 ["기본 점수", 50, "Base Score"],
                 ["진실 데이터 유사도", t_impact, "Truth Corpus Similarity"],
@@ -406,7 +459,8 @@ def run_forensic_main(url):
                 "meta": meta, "summary": summary, "query_list": queries, "query": final_query,
                 "score_breakdown": score_bd, "news_evidence": news_ev,
                 "cmt_count": len(cmts), "cmt_rel": f"{rel_score}% ({rel_msg})", "red_cnt": red_cnt, "top_cmt_kw": top_kw,
-                "ai_reason": ai_reason
+                "ai_reason": ai_reason, "ts": ts, "fs": fs,
+                "final_summary": final_summary # 저장
             }
             
             save_db(meta['채널명'], meta['제목'], final_prob, url, final_query, report)
@@ -461,7 +515,6 @@ if st.button("🚀 분석 시작", use_container_width=True, disabled=not agree)
 st.divider()
 st.subheader("🗂️ DB History")
 
-# [디버깅] 현재 관리자 상태 출력 (배포 시 삭제 가능)
 if st.session_state["is_admin"]:
     st.caption("✅ 관리자 모드: 삭제 가능")
 else:
@@ -477,7 +530,6 @@ try:
         df_hist = pd.DataFrame(data)
         
         if st.session_state["is_admin"]:
-            # Admin: Checkbox Column 추가하여 삭제 UI 구성
             if "Delete" not in df_hist.columns:
                 df_hist.insert(0, "Delete", False)
             
@@ -489,7 +541,7 @@ try:
                     "Delete": st.column_config.CheckboxColumn("삭제", help="체크 후 삭제 버튼 클릭", default=False),
                     "fake_prob": st.column_config.NumberColumn("가짜 확률", format="%d%%"),
                     "video_url": st.column_config.LinkColumn("URL"),
-                    "detail_json": None # 너무 긴 데이터는 숨김
+                    "detail_json": None 
                 },
                 disabled=["id", "analysis_date", "channel_name", "video_title", "fake_prob", "keywords", "video_url"]
             )
@@ -505,7 +557,6 @@ try:
                 else:
                     st.warning("삭제할 항목을 선택해주세요.")
         else:
-            # Viewer Mode
             st.dataframe(
                 df_hist[['analysis_date','channel_name','video_title','fake_prob']], 
                 use_container_width=True, 
@@ -520,7 +571,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         st.success("Admin Logged In")
         if st.button("📊 B2B 리포트 생성"):
             try:
-                rpt = generate_b2b_report(pd.DataFrame(data)) # 위에서 로드한 data 재사용
+                rpt = generate_b2b_report(pd.DataFrame(data))
                 if not rpt.empty:
                     st.dataframe(rpt, use_container_width=True)
                     st.download_button("📥 CSV 다운로드", rpt.to_csv().encode('utf-8-sig'), "b2b_report.csv", "text/csv")
