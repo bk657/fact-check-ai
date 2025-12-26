@@ -527,42 +527,42 @@ except Exception as e: st.error(f"❌ DB Error: {e}")
 st.divider()
 with st.expander("🔐 관리자 (Admin & B2B Report)"):
     if st.session_state["is_admin"]:
-        st.success("관리자 모드 (정상 가동 중)")
+        st.success("✅ 관리자 모드 (정상 가동 중)")
         
-        # 1. DB 현황판
+        # 1. DB 현황판 (오타 수정됨)
         try:
-            # 전체 데이터 수
-            rows = supabase.table("analysis_history").select("count", count="exact").head(1).execute()
+            # 전체 데이터 수 (limit 사용)
+            rows = supabase.table("analysis_history").select("*", count="exact").limit(1).execute()
             total = rows.count
             
             # 학습(벡터) 완료된 수
-            vec_rows = supabase.table("analysis_history").select("count", count="exact").not_.is_("vector_json", "null").execute()
+            vec_rows = supabase.table("analysis_history").select("*", count="exact").not_.is_("vector_json", "null").limit(1).execute()
             vec_count = vec_rows.count
             
+            # 현황 표시
             c1, c2 = st.columns(2)
-            c1.metric("총 데이터", f"{total}건")
-            c2.metric("AI 학습 완료", f"{vec_count}건")
+            c1.metric("📊 총 데이터", f"{total}건")
+            c2.metric("🧠 AI 학습 완료", f"{vec_count}건")
             
             if total > vec_count:
-                st.warning(f"⚠️ 학습 필요한 데이터가 {total - vec_count}건 있습니다.")
-        except:
-            st.error("DB 연결 상태를 확인해주세요.")
+                st.warning(f"⚠️ 학습이 필요한 데이터가 {total - vec_count}건 있습니다.")
+        except Exception as e:
+            st.error(f"현황판 조회 오류: {e}")
 
         st.write("---")
 
-        # 2. B2B 리포트 (필수 기능)
-        st.write("### 📊 주간 리포트 다운로드")
+        # 2. B2B 리포트
+        st.write("### 📊 리포트 다운로드")
         if st.button("B2B 리포트 생성"):
             try:
-                # 최근 500개만 가져와서 리포트 생성
-                res = supabase.table("analysis_history").select("*").order("id", desc=True).limit(500).execute()
+                # 최근 1000개 데이터 가져오기
+                res = supabase.table("analysis_history").select("*").order("id", desc=True).limit(1000).execute()
                 df_report = pd.DataFrame(res.data)
                 
                 if not df_report.empty:
-                    # 간단한 리포트 로직 (필요시 함수 호출로 대체)
                     csv = df_report.to_csv(index=False).encode('utf-8-sig')
                     st.download_button("📥 CSV 다운로드", csv, "report.csv", "text/csv")
-                    st.dataframe(df_report.head())
+                    st.dataframe(df_report.head(5))
                 else:
                     st.info("데이터가 없습니다.")
             except Exception as e:
@@ -570,10 +570,10 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
 
         st.write("---")
         
-        # 3. 데이터 학습 (수동 업데이트)
+        # 3. 데이터 학습 (수동 업데이트 기능 유지)
         if st.button("♻️ 데이터 수동 업데이트 (AI 학습)"):
             try:
-                # 학습 안 된 것만 찾아서 업데이트
+                # 학습 안 된 것만 찾기
                 targets = supabase.table("analysis_history").select("*").is_("vector_json", "null").execute().data
                 if targets:
                     progress_text = st.empty()
@@ -585,7 +585,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
                             supabase.table("analysis_history").update({"vector_json": vec}).eq("id", row['id']).execute()
                         except: pass
                         bar.progress(int(((i+1)/len(targets))*100))
-                    st.success(f"✅ {len(targets)}건 업데이트 완료!")
+                    st.success(f"✅ {len(targets)}건 추가 학습 완료!")
                     time.sleep(1)
                     st.rerun()
                 else:
