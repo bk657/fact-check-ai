@@ -302,16 +302,31 @@ def train_engine_wrapper():
 
 def save_db(ch, ti, pr, url, kw, detail):
     try: 
+        # 1. 임베딩 변환 시도
         embedding = vector_engine.get_embedding(kw + " " + ti)
-        supabase.table("analysis_history").insert({
-            "channel_name":ch, "video_title":ti, "fake_prob":pr, "video_url":url, 
-            "keywords":kw, "detail_json":json.dumps(detail, ensure_ascii=False),
+        
+        # 2. DB 저장 시도
+        data_to_insert = {
+            "channel_name":ch, 
+            "video_title":ti, 
+            "fake_prob":pr, 
+            "video_url":url, 
+            "keywords":kw, 
+            "detail_json":json.dumps(detail, ensure_ascii=False),
             "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             "vector_json": json.dumps(embedding)
-        }).execute()
+        }
+        
+        result = supabase.table("analysis_history").insert(data_to_insert).execute()
+        
+        # 3. 저장 성공 메시지 (디버깅용)
+        st.success("✅ DB 저장 성공!")
+        
     except Exception as e: 
-        st.error(f"❌ 데이터베이스 저장 실패: {e}") # 화면에 에러를 띄움
-        print(f"DB Error: {e}")
+        # [중요] 에러가 나면 여기서 화면에 보여줍니다.
+        st.error(f"❌ 데이터베이스 저장 실패 원인: {e}")
+        # 터미널에도 출력
+        print(f"Detail DB Error: {e}")
         
 # --- [UI Components] ---
 def render_score_breakdown(data_list):
@@ -589,6 +604,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
