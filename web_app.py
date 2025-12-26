@@ -546,9 +546,9 @@ with st.container(border=True):
         본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. 
         **분석 결과는 어떠한 법적 효력도 없으며, 최종 판단과 책임은 전적으로 사용자(당사자)에게 있습니다.**
         
-        * **1st Line**: Mistral AI (Logic Analysis)
-        * **2nd Line**: Google Gemini (Cross-Check)
-        * **3rd Line**: Deep News Crawler (Fact Verification)
+        * **1st Engine**: Mistral AI (Logic Analysis)
+        * **2nd Engine**: Google Gemini (Cross-Check)
+        * **3rd Engine**: Deep News Crawler (Fact Verification)
         """)
     agree = st.checkbox("위 고지 내용을 확인하였으며, 결과에 대한 최종 책임이 본인에게 있음을 동의합니다.")
 
@@ -632,3 +632,4 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
