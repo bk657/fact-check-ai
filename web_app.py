@@ -529,17 +529,16 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
     if st.session_state["is_admin"]:
         st.success("Admin Logged In (Target: analysis_archive_v2)")
         
-        st.write("### 🚑 데이터 이사 (최종 시도)")
+        st.write("### 🚑 데이터 이사 (최종_진짜_마지막.ver)")
         uploaded_file = st.file_uploader("백업 파일(export.csv)을 여기에 올리세요", type="csv")
         
         if uploaded_file is not None:
-            # 버튼을 누르면 복구를 시작합니다.
             if st.button("🚨 새 DB로 복구 시작", type="primary"):
                 
                 # 1. 파일 읽기
                 try:
                     df_restore = pd.read_csv(uploaded_file)
-                    st.write(f"📂 파일 데이터 확인: 총 {len(df_restore)}개 행")
+                    st.info(f"📂 파일 읽기 성공: {len(df_restore)}개 데이터 대기 중...")
                 except Exception as e:
                     st.error(f"파일 읽기 실패: {e}")
                     st.stop()
@@ -548,22 +547,13 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
                 success_cnt = 0
                 fail_cnt = 0
                 
-                # 2. DB 연결 테스트 (테이블이 진짜 있는지 찔러봅니다)
-                try:
-                    test_res = supabase.table("analysis_archive_v2").select("count", count="exact").head(1).execute()
-                    st.success("✅ DB 연결 성공! 테이블이 존재합니다.")
-                except Exception as e:
-                    st.error("❌ [치명적 오류] 테이블을 찾을 수 없습니다!")
-                    st.error(f"에러 내용: {e}")
-                    st.warning("위의 1단계 SQL을 다시 실행해주세요!")
-                    st.stop()
-
-                # 3. 데이터 주입 시작
+                # 2. 바로 데이터 주입 시작 (쓸데없는 조회 코드 삭제)
                 for i, row in df_restore.iterrows():
-                    # 데이터 준비
+                    # 제목 없는 데이터 패스
                     title = str(row.get('video_title', ''))
                     if title == 'nan' or not title: continue
                     
+                    # 데이터 매핑
                     restore_data = {
                         "analysis_date": str(row.get('analysis_date', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))),
                         "channel_name": str(row.get('channel_name', 'Unknown')),
@@ -582,30 +572,33 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
                         
                     except Exception as e:
                         fail_cnt += 1
-                        # [중요] 에러가 나면 여기서 화면을 멈추고 보여줍니다.
+                        # 에러 발생 시 즉시 화면에 출력하고 멈춤
                         if fail_cnt == 1:
-                            st.error(f"🚨 저장 실패 발생! (첫 번째 에러)")
-                            st.code(f"에러 메시지: {e}")
+                            st.error(f"🚨 저장 실패! (첫 번째 데이터)")
+                            st.error(f"에러 메시지: {e}")
+                            st.write("넣으려고 했던 데이터:")
                             st.json(restore_data)
-                            st.stop() # 화면 정지!
+                            st.stop()
                     
                     restore_bar.progress(int(((i + 1) / len(df_restore)) * 100))
                 
-                # 결과 출력 (새로고침 안 함)
+                # 결과
                 st.write("---")
                 if success_cnt > 0:
-                    st.success(f"✅ {success_cnt}건 저장 성공!")
-                    st.info("이제 아래 [데이터 업데이트] 버튼을 눌러주세요.")
+                    st.success(f"✅ {success_cnt}건 완벽하게 복구 성공!")
+                    st.balloons()
+                    st.info("이제 아래 [데이터 업데이트] 버튼을 눌러주세요!")
                 else:
-                    st.error("❌ 0건 저장됨. (위 에러 메시지를 확인하세요)")
+                    st.error("❌ 0건 저장됨.")
 
         st.write("---")
 
         # 3. 데이터 업데이트 (새 테이블 기준)
         st.write("### 🔧 시스템 관리")
         try:
-            null_vecs = supabase.table("analysis_archive_v2").select("id", count='exact').is_("vector_json", "null").execute()
-            missing_count = null_vecs.count
+            # 여기도 .head() 같은 거 안 쓰고 안전하게 조회
+            res = supabase.table("analysis_archive_v2").select("id", count='exact').is_("vector_json", "null").execute()
+            missing_count = res.count
         except: missing_count = 0
 
         if missing_count > 0:
@@ -636,4 +629,5 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
