@@ -527,111 +527,115 @@ except Exception as e: st.error(f"❌ DB Error: {e}")
 st.divider()
 with st.expander("🔐 관리자 (Admin & B2B Report)"):
     if st.session_state["is_admin"]:
-        st.success("Admin Logged In")
+        st.success("Admin Logged In - 강제 실행 모드")
         
-        st.write("### 🚑 데이터 복구 (벡터 제외 모드)")
-        st.info("💡 API가 인식을 못 하는 '학습 데이터'를 제외하고, 기본 데이터부터 먼저 저장합니다.")
-        
-        uploaded_file = st.file_uploader("백업 파일(export.csv)을 여기에 올리세요", type="csv")
-        
-        if uploaded_file is not None:
-            if st.button("🚨 데이터 복구 시작 (벡터 제외)", type="primary"):
-                
-                # 1. 파일 읽기
-                try:
-                    df_restore = pd.read_csv(uploaded_file)
-                    st.info(f"📂 파일 읽기 성공: {len(df_restore)}개 행")
-                except Exception as e:
-                    st.error(f"파일 읽기 실패: {e}")
-                    st.stop()
-
-                restore_bar = st.progress(0)
-                success_cnt = 0
-                fail_cnt = 0
-                
-                # 2. 데이터 주입 (vector_json 제거)
-                for i, row in df_restore.iterrows():
-                    title = str(row.get('video_title', ''))
-                    if title == 'nan' or not title: continue
-                    
-                    restore_data = {
-                        "analysis_date": str(row.get('analysis_date', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))),
-                        "channel_name": str(row.get('channel_name', 'Unknown')),
-                        "video_title": title,
-                        "fake_prob": int(row['fake_prob']) if pd.notna(row.get('fake_prob')) else 0,
-                        "video_url": str(row.get('video_url', '')),
-                        "keywords": str(row.get('keywords', '')),
-                        "detail_json": {"final_summary": "복구된 데이터"}
-                        # [핵심] vector_json 항목을 아예 삭제했습니다. (API 에러 회피)
-                    }
-                    
-                    try:
-                        supabase.table("analysis_history").insert(restore_data).execute()
-                        success_cnt += 1
-                        
-                    except Exception as e:
-                        fail_cnt += 1
-                        if fail_cnt == 1:
-                            st.error(f"🚨 저장 실패! (첫 번째 에러)")
-                            st.error(f"에러 메시지: {e}")
-                            st.stop()
-                    
-                    restore_bar.progress(int(((i + 1) / len(df_restore)) * 100))
-                
-                st.write("---")
-                if success_cnt > 0:
-                    st.success(f"✅ {success_cnt}건 기본 데이터 저장 성공!")
-                    st.info("이제 아래 [데이터 업데이트] 버튼이 뜰 겁니다. 그걸 눌러서 학습을 시도하세요!")
-                    time.sleep(2)
-                    st.rerun()
-                else:
-                    st.error("❌ 0건 저장됨.")
+        # 1. 현재 DB 상태를 먼저 보여줍니다.
+        try:
+            # 전체 데이터 개수 확인
+            all_rows = supabase.table("analysis_history").select("count", count="exact").head(1).execute()
+            total_count = all_rows.count
+            st.metric(label="현재 저장된 데이터 개수", value=f"{total_count}개")
+        except Exception as e:
+            st.error(f"⚠️ DB 상태 조회 실패: {e}")
+            total_count = 0
 
         st.write("---")
 
-        # 3. 데이터 업데이트 (이제 여기서 벡터를 채워 넣습니다)
-        st.write("### 🔧 시스템 관리")
-        try:
-            # 벡터가 비어있는 데이터 개수 조회
-            res = supabase.table("analysis_history").select("id", count='exact').is_("vector_json", "null").execute()
-            missing_count = res.count
-        except: missing_count = 0
-
-        if missing_count > 0:
-            st.warning(f"⚠️ 학습 미반영 데이터 {missing_count}건")
-            st.caption("위의 복구가 성공했다면, 이 버튼을 눌러 AI에게 내용을 학습시키세요.")
-            
-            if st.button(f"♻️ 데이터 업데이트 ({missing_count}건)"):
-                prog_text = st.empty()
-                bar = st.progress(0)
-                
+        # 2. 데이터 복구 (벡터 제외)
+        st.write("### 🚑 데이터 복구 (벡터 제외)")
+        uploaded_file = st.file_uploader("백업 파일(export.csv) 업로드", type="csv")
+        
+        if uploaded_file is not None:
+            if st.button("🚨 데이터 복구 시작", type="primary"):
                 try:
-                    # 업데이트할 데이터 가져오기
-                    old_rows = supabase.table("analysis_history").select("*").is_("vector_json", "null").execute().data
+                    df_restore = pd.read_csv(uploaded_file)
+                    bar = st.progress(0)
+                    success = 0
                     
-                    for i, row in enumerate(old_rows):
-                        txt = f"{row.get('keywords','')} {row.get('video_title','')}"
-                        try:
-                            # 벡터 생성
-                            vec = vector_engine.get_embedding(txt)
-                            # 업데이트 시도
-                            supabase.table("analysis_history").update({"vector_json": vec}).eq("id", row['id']).execute()
-                        except Exception as e:
-                            print(f"Update Fail: {e}") # 업데이트 실패는 일단 무시하고 진행
-                            continue
+                    for i, row in df_restore.iterrows():
+                        title = str(row.get('video_title', ''))
+                        if not title or title == 'nan': continue
                         
-                        bar.progress(int(((i+1)/missing_count)*100))
-                        prog_text.text(f"학습 처리 중... {i+1}/{missing_count}")
-                        time.sleep(0.5)
+                        # 벡터 없이 기본 데이터만 밀어넣음
+                        data = {
+                            "analysis_date": str(row.get('analysis_date', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))),
+                            "channel_name": str(row.get('channel_name', 'Unknown')),
+                            "video_title": title,
+                            "fake_prob": int(row['fake_prob']) if pd.notna(row.get('fake_prob')) else 0,
+                            "video_url": str(row.get('video_url', '')),
+                            "keywords": str(row.get('keywords', '')),
+                            "detail_json": {"final_summary": "복구됨"},
+                            # vector_json은 아예 보내지 않음 (에러 방지)
+                        }
+                        try:
+                            supabase.table("analysis_history").insert(data).execute()
+                            success += 1
+                        except: pass
+                        bar.progress(int(((i+1)/len(df_restore))*100))
                     
-                    st.success("✅ 학습 완료!")
+                    st.success(f"✅ {success}건 저장 완료!")
                     time.sleep(1)
                     st.rerun()
                 except Exception as e:
-                    st.error(f"업데이트 중 에러 발생: {e}")
-                    st.info("💡 팁: Supabase Table Editor에서 아무 컬럼이나 하나 만들었다 지우면 해결됩니다.")
-        else:
-            st.success("✅ 모든 데이터가 최신 상태입니다.")
+                    st.error(f"오류: {e}")
+
+        st.write("---")
+
+        # 3. [핵심] 강제 업데이트 버튼 (조건 없음)
+        st.write("### 🔧 AI 학습 (강제 실행)")
+        st.info("👇 아래 버튼을 누르면 강제로 학습을 시도합니다.")
+        
+        # 조건문 없이 무조건 버튼 표시
+        if st.button("♻️ 학습 강제 시작 (Update Vectors)"):
+            progress_text = st.empty()
+            my_bar = st.progress(0)
+            
+            try:
+                # 1. 학습 안 된(NULL) 데이터만 싹 긁어옴
+                # (만약 여기서 에러나면 전체 데이터를 가져오도록 예외처리)
+                try:
+                    target_rows = supabase.table("analysis_history").select("*").is_("vector_json", "null").execute().data
+                except:
+                    st.warning("⚠️ 필터링 조회 실패 -> 전체 데이터 대상으로 시도합니다.")
+                    target_rows = supabase.table("analysis_history").select("*").execute().data
+
+                total = len(target_rows)
+                st.write(f"🎯 학습 대상: {total}건")
+                
+                if total == 0:
+                    st.warning("학습할 데이터가 없습니다. (이미 완료되었거나 DB가 비어있음)")
+                
+                success_update = 0
+                
+                for i, row in enumerate(target_rows):
+                    # 텍스트 만들기
+                    txt = f"{row.get('keywords','')} {row.get('video_title','')}"
+                    
+                    try:
+                        # 2. 벡터 생성
+                        vec = vector_engine.get_embedding(txt)
+                        
+                        # 3. 업데이트 (여기서 에러나면 바로 출력)
+                        supabase.table("analysis_history").update({"vector_json": vec}).eq("id", row['id']).execute()
+                        success_update += 1
+                        
+                    except Exception as e:
+                        # 에러나면 빨간 글씨로 한 번만 보여줌
+                        if i == 0: 
+                            st.error(f"🚨 업데이트 실패 (API 에러): {e}")
+                            st.info("💡 해결책: Supabase Table Editor에서 'analysis_history' 테이블에 아무 컬럼이나 하나 추가했다가 지우세요!")
+                        pass
+                    
+                    my_bar.progress(int(((i+1)/total)*100))
+                    progress_text.text(f"학습 중... {i+1}/{total}")
+                
+                if success_update > 0:
+                    st.success(f"✅ {success_update}건 학습 완료!")
+                    time.sleep(2)
+                    st.rerun()
+                    
+            except Exception as e:
+                st.error(f"치명적 오류: {e}")
 
         if st.button("Logout"): st.session_state["is_admin"]=False; st.rerun()
     else:
