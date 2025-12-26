@@ -565,6 +565,57 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
                 time.sleep(1)
                 st.rerun()
         else: st.info("✅ 모든 데이터가 최신 상태입니다.")
+            # --- [추가] CSV 긴급 복구 도구 ---
+        st.write("---")
+        st.write("🚑 **긴급 데이터 복구**")
+        uploaded_file = st.file_uploader("📂 백업 CSV 파일 업로드 (export.csv)", type="csv")
+        
+        if uploaded_file and st.button("🚨 데이터 복구 시작"):
+            try:
+                df_restore = pd.read_csv(uploaded_file)
+                success_count = 0
+                fail_count = 0
+                
+                restore_bar = st.progress(0, text="데이터 복구 중...")
+                
+                for i, row in df_restore.iterrows():
+                    # 제목이 없는 데이터는 건너뜀
+                    if pd.isna(row['video_title']): continue
+                    
+                    try:
+                        # 1. 복구할 데이터 구성
+                        data = {
+                            "analysis_date": str(row['analysis_date']),
+                            "channel_name": str(row['channel_name']),
+                            "video_title": str(row['video_title']),
+                            "fake_prob": int(row['fake_prob']) if not pd.isna(row['fake_prob']) else 0,
+                            
+                            # [유실된 항목 채워넣기]
+                            "video_url": "", # URL은 없으니 공란
+                            "keywords": str(row['video_title']), # 키워드 대신 제목을 사용
+                            "detail_json": {"final_summary": "⚠️ 데이터 유실로 인해 CSV 백업본에서 긴급 복구된 기록입니다."},
+                            "vector_json": None # 나중에 '업데이트' 버튼으로 생성!
+                        }
+                        
+                        # 2. DB에 삽입
+                        supabase.table("analysis_history").insert(data).execute()
+                        success_count += 1
+                        
+                    except Exception as e:
+                        print(f"Row {i} fail: {e}")
+                        fail_count += 1
+                    
+                    # 진행률 표시
+                    restore_bar.progress(int(((i + 1) / len(df_restore)) * 100))
+                
+                restore_bar.empty()
+                st.success(f"✅ 복구 완료! (성공: {success_count}건 / 실패: {fail_count}건)")
+                st.info("이제 위의 [♻️ 데이터 업데이트] 버튼을 눌러서 '벡터(학습 데이터)'를 생성해주세요!")
+                time.sleep(3)
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"파일 읽기 오류: {e}")
 
         st.write("---")
         st.write("📜 System Logs")
@@ -576,3 +627,4 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
