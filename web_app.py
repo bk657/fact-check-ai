@@ -527,18 +527,18 @@ except Exception as e: st.error(f"❌ DB Error: {e}")
 st.divider()
 with st.expander("🔐 관리자 (Admin & B2B Report)"):
     if st.session_state["is_admin"]:
-        st.success("Admin Logged In (Target: analysis_archive_v2)")
+        st.success("Admin Logged In (Target: analysis_history)") # 타겟 변경됨
         
-        st.write("### 🚑 데이터 이사 (최종_진짜_마지막.ver)")
+        st.write("### 🚑 데이터 이사 (Target: History)")
         uploaded_file = st.file_uploader("백업 파일(export.csv)을 여기에 올리세요", type="csv")
         
         if uploaded_file is not None:
-            if st.button("🚨 새 DB로 복구 시작", type="primary"):
+            if st.button("🚨 데이터 복구 시작", type="primary"):
                 
                 # 1. 파일 읽기
                 try:
                     df_restore = pd.read_csv(uploaded_file)
-                    st.info(f"📂 파일 읽기 성공: {len(df_restore)}개 데이터 대기 중...")
+                    st.info(f"📂 파일 읽기 성공: {len(df_restore)}개 데이터")
                 except Exception as e:
                     st.error(f"파일 읽기 실패: {e}")
                     st.stop()
@@ -547,13 +547,11 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
                 success_cnt = 0
                 fail_cnt = 0
                 
-                # 2. 바로 데이터 주입 시작 (쓸데없는 조회 코드 삭제)
+                # 2. 데이터 주입 (테이블 이름: analysis_history)
                 for i, row in df_restore.iterrows():
-                    # 제목 없는 데이터 패스
                     title = str(row.get('video_title', ''))
                     if title == 'nan' or not title: continue
                     
-                    # 데이터 매핑
                     restore_data = {
                         "analysis_date": str(row.get('analysis_date', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))),
                         "channel_name": str(row.get('channel_name', 'Unknown')),
@@ -566,38 +564,34 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
                     }
                     
                     try:
-                        # 저장 시도
-                        supabase.table("analysis_archive_v2").insert(restore_data).execute()
+                        # [수정] 다시 analysis_history 테이블로 넣습니다.
+                        supabase.table("analysis_history").insert(restore_data).execute()
                         success_cnt += 1
                         
                     except Exception as e:
                         fail_cnt += 1
-                        # 에러 발생 시 즉시 화면에 출력하고 멈춤
                         if fail_cnt == 1:
-                            st.error(f"🚨 저장 실패! (첫 번째 데이터)")
+                            st.error(f"🚨 저장 실패!")
                             st.error(f"에러 메시지: {e}")
-                            st.write("넣으려고 했던 데이터:")
-                            st.json(restore_data)
                             st.stop()
                     
                     restore_bar.progress(int(((i + 1) / len(df_restore)) * 100))
                 
-                # 결과
                 st.write("---")
                 if success_cnt > 0:
-                    st.success(f"✅ {success_cnt}건 완벽하게 복구 성공!")
+                    st.success(f"✅ {success_cnt}건 복구 완료!")
                     st.balloons()
-                    st.info("이제 아래 [데이터 업데이트] 버튼을 눌러주세요!")
+                    st.info("아래 [데이터 업데이트] 버튼을 눌러주세요!")
                 else:
                     st.error("❌ 0건 저장됨.")
 
         st.write("---")
 
-        # 3. 데이터 업데이트 (새 테이블 기준)
+        # 3. 데이터 업데이트 (Target: History)
         st.write("### 🔧 시스템 관리")
         try:
-            # 여기도 .head() 같은 거 안 쓰고 안전하게 조회
-            res = supabase.table("analysis_archive_v2").select("id", count='exact').is_("vector_json", "null").execute()
+            # 테이블 이름 수정됨
+            res = supabase.table("analysis_history").select("id", count='exact').is_("vector_json", "null").execute()
             missing_count = res.count
         except: missing_count = 0
 
@@ -606,13 +600,15 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
             if st.button(f"♻️ 데이터 업데이트 ({missing_count}건)"):
                 prog_text = st.empty()
                 bar = st.progress(0)
-                old_rows = supabase.table("analysis_archive_v2").select("*").is_("vector_json", "null").execute().data
+                # 테이블 이름 수정됨
+                old_rows = supabase.table("analysis_history").select("*").is_("vector_json", "null").execute().data
                 
                 for i, row in enumerate(old_rows):
                     txt = f"{row.get('keywords','')} {row.get('video_title','')}"
                     try:
                         vec = vector_engine.get_embedding(txt)
-                        supabase.table("analysis_archive_v2").update({"vector_json": vec}).eq("id", row['id']).execute()
+                        # 테이블 이름 수정됨
+                        supabase.table("analysis_history").update({"vector_json": vec}).eq("id", row['id']).execute()
                     except: continue
                     bar.progress(int(((i+1)/missing_count)*100))
                     prog_text.text(f"처리 중... {i+1}/{missing_count}")
@@ -629,5 +625,4 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
-
 
