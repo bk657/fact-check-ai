@@ -316,19 +316,35 @@ def analyze_comments(cmts, ctx):
     score = int(sum(1 for w,c in top if w in ctx_set)/len(top)*100) if top else 0
     return [f"{w}({c})" for w,c in top], score, "높음" if score>=60 else "보통" if score>=20 else "낮음"
 
+# [수정 후: save_db 함수 전체를 이렇게 바꾸세요]
 def save_db(ch, ti, pr, url, kw, detail):
     try: 
-        # [핵심] 저장하기 전에 타이틀+키워드를 벡터로 변환 (여기서 시간 조금 소요됨)
-        # 하지만 이건 분석 '끝난 후'라 사용자는 로딩으로 안 느낌
+        # 임베딩 생성
         embedding = vector_engine.get_embedding(kw + " " + ti)
         
-        supabase.table("analysis_history").insert({
-            "channel_name":ch, "video_title":ti, "fake_prob":pr, "video_url":url, 
-            "keywords":kw, "detail_json":json.dumps(detail, ensure_ascii=False),
+        # 데이터 삽입 시도
+        data = {
+            "channel_name": ch, 
+            "video_title": ti, 
+            "fake_prob": pr, 
+            "video_url": url, 
+            "keywords": kw, 
+            "detail_json": json.dumps(detail, ensure_ascii=False),
             "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            "vector_json": json.dumps(embedding) # 벡터 저장!
-        }).execute()
-    except Exception as e: print(f"DB Error: {e}")
+            "vector_json": json.dumps(embedding)
+        }
+        
+        # execute() 결과를 받아서 확인
+        response = supabase.table("analysis_history").insert(data).execute()
+        
+        # 성공 시 캐시를 비우고 재실행 (그래야 DB 카운트가 올라감)
+        st.cache_data.clear()
+        
+    except Exception as e:
+        # 🚨 화면에 에러를 직접 출력
+        st.error(f"❌ DB 저장 실패 원인: {str(e)}")
+        # 디버깅을 위해 로그에도 추가
+        st.session_state["debug_logs"].append(f"DB Save Error: {str(e)}")
 
 # --- [UI 렌더링 함수 (Conclusion First)] ---
 def render_report_full_ui(prob, db_count, title, channel, data, is_cached=False):
@@ -677,6 +693,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
