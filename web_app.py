@@ -549,6 +549,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
                 
                 # 2. 데이터 주입 (테이블 이름: analysis_history)
                 for i, row in df_restore.iterrows():
+                    # 제목 없는 데이터 패스
                     title = str(row.get('video_title', ''))
                     if title == 'nan' or not title: continue
                     
@@ -570,6 +571,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
                         
                     except Exception as e:
                         fail_cnt += 1
+                        # 첫 번째 에러만 보여줌
                         if fail_cnt == 1:
                             st.error(f"🚨 저장 실패!")
                             st.error(f"에러 메시지: {e}")
@@ -625,4 +627,3 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
-
