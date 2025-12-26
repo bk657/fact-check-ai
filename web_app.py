@@ -527,99 +527,105 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
     if st.session_state["is_admin"]:
         st.success("Admin Logged In")
         
-        # B2B 리포트
-        if st.button("📊 B2B 리포트 생성"):
+        # 1. B2B 리포트
+        st.write("### 📊 리포트")
+        if st.button("B2B 리포트 생성"):
             try:
                 rpt = generate_b2b_report(pd.DataFrame(data))
                 if not rpt.empty:
                     st.dataframe(rpt, use_container_width=True)
                     st.download_button("📥 CSV 다운로드", rpt.to_csv().encode('utf-8-sig'), "b2b_report.csv", "text/csv")
             except: st.error("데이터 부족")
-            
-        # 구형 데이터 업데이트 기능
+        
         st.write("---")
-        st.write("🔧 **시스템 관리**")
+        
+        # 2. [핵심] CSV 긴급 복구 도구
+        st.write("### 🚑 긴급 데이터 복구 (CSV)")
+        uploaded_file = st.file_uploader("백업 파일(export.csv)을 여기에 올리세요", type="csv")
+        
+        if uploaded_file is not None:
+            # 파일을 올리면 이 버튼이 나타납니다. 꼭 눌러주세요!
+            if st.button("🚨 데이터 복구 시작 (클릭)", type="primary"):
+                try:
+                    df_restore = pd.read_csv(uploaded_file)
+                    progress_text = st.empty()
+                    restore_bar = st.progress(0)
+                    
+                    success_cnt = 0
+                    
+                    for i, row in df_restore.iterrows():
+                        if pd.isna(row['video_title']): continue
+                        
+                        # 복구 데이터 구성
+                        restore_data = {
+                            "analysis_date": str(row['analysis_date']),
+                            "channel_name": str(row['channel_name']),
+                            "video_title": str(row['video_title']),
+                            "fake_prob": int(row['fake_prob']) if pd.notna(row['fake_prob']) else 0,
+                            "video_url": "", 
+                            "keywords": str(row['video_title']),
+                            "detail_json": {"final_summary": "⚠️ 긴급 복구된 기록입니다."},
+                            "vector_json": None # 나중에 업데이트로 채움
+                        }
+                        
+                        try:
+                            # DB Insert
+                            supabase.table("analysis_history").insert(restore_data).execute()
+                            success_cnt += 1
+                        except Exception as e:
+                            print(f"Row {i} Insert Fail: {e}")
+                        
+                        restore_bar.progress(int(((i + 1) / len(df_restore)) * 100))
+                        progress_text.text(f"복구 중... ({i+1}/{len(df_restore)})")
+                    
+                    st.success(f"✅ {success_cnt}건 복구 완료! 잠시 후 새로고침 됩니다.")
+                    time.sleep(2)
+                    st.rerun() # [중요] 자동으로 새로고침해서 업데이트 버튼 띄움
+                    
+                except Exception as e:
+                    st.error(f"복구 실패: {e}")
+
+        st.write("---")
+
+        # 3. 구형 데이터 업데이트 (복구된 데이터가 있으면 나타남)
+        st.write("### 🔧 시스템 관리")
         try:
-            # [수정] 테이블 이름을 'analysis_history'로 원상복구
+            # vector_json이 비어있는 데이터 개수 확인
             null_vecs = supabase.table("analysis_history").select("id", count='exact').is_("vector_json", "null").execute()
             missing_count = null_vecs.count
         except: missing_count = 0
 
         if missing_count > 0:
-            st.warning(f"⚠️ 학습 미반영 데이터 {missing_count}건")
+            st.warning(f"⚠️ 학습 미반영 데이터 {missing_count}건이 발견되었습니다.")
+            st.info("아래 버튼을 누르면 AI가 복구된 데이터를 다시 학습합니다.")
+            
             if st.button(f"♻️ 데이터 업데이트 ({missing_count}건)"):
                 prog_text = st.empty()
                 bar = st.progress(0)
-                # [수정] 테이블 이름을 'analysis_history'로 원상복구
+                
+                # 업데이트 대상 가져오기
                 old_rows = supabase.table("analysis_history").select("*").is_("vector_json", "null").execute().data
+                
                 for i, row in enumerate(old_rows):
                     txt = f"{row.get('keywords','')} {row.get('video_title','')}"
                     try:
+                        # 벡터 변환
                         vec = vector_engine.get_embedding(txt)
+                        # DB 업데이트
                         supabase.table("analysis_history").update({"vector_json": vec}).eq("id", row['id']).execute()
                     except: continue
+                    
                     bar.progress(int(((i+1)/missing_count)*100))
-                    prog_text.text(f"처리 중... {i+1}/{missing_count}")
-                    time.sleep(0.5)
-                st.success("업데이트 완료!")
+                    prog_text.text(f"학습 처리 중... {i+1}/{missing_count}")
+                    time.sleep(0.5) # API 속도 조절
+                
+                st.success("✅ 모든 데이터 학습 완료!")
                 time.sleep(1)
                 st.rerun()
-        else: st.info("✅ 모든 데이터가 최신 상태입니다.")
-            # --- [추가] CSV 긴급 복구 도구 ---
-        st.write("---")
-        st.write("🚑 **긴급 데이터 복구**")
-        uploaded_file = st.file_uploader("📂 백업 CSV 파일 업로드 (export.csv)", type="csv")
-        
-        if uploaded_file and st.button("🚨 데이터 복구 시작"):
-            try:
-                df_restore = pd.read_csv(uploaded_file)
-                success_count = 0
-                fail_count = 0
-                
-                restore_bar = st.progress(0, text="데이터 복구 중...")
-                
-                for i, row in df_restore.iterrows():
-                    # 제목이 없는 데이터는 건너뜀
-                    if pd.isna(row['video_title']): continue
-                    
-                    try:
-                        # 1. 복구할 데이터 구성
-                        data = {
-                            "analysis_date": str(row['analysis_date']),
-                            "channel_name": str(row['channel_name']),
-                            "video_title": str(row['video_title']),
-                            "fake_prob": int(row['fake_prob']) if not pd.isna(row['fake_prob']) else 0,
-                            
-                            # [유실된 항목 채워넣기]
-                            "video_url": "", # URL은 없으니 공란
-                            "keywords": str(row['video_title']), # 키워드 대신 제목을 사용
-                            "detail_json": {"final_summary": "⚠️ 데이터 유실로 인해 CSV 백업본에서 긴급 복구된 기록입니다."},
-                            "vector_json": None # 나중에 '업데이트' 버튼으로 생성!
-                        }
-                        
-                        # 2. DB에 삽입
-                        supabase.table("analysis_history").insert(data).execute()
-                        success_count += 1
-                        
-                    except Exception as e:
-                        print(f"Row {i} fail: {e}")
-                        fail_count += 1
-                    
-                    # 진행률 표시
-                    restore_bar.progress(int(((i + 1) / len(df_restore)) * 100))
-                
-                restore_bar.empty()
-                st.success(f"✅ 복구 완료! (성공: {success_count}건 / 실패: {fail_count}건)")
-                st.info("이제 위의 [♻️ 데이터 업데이트] 버튼을 눌러서 '벡터(학습 데이터)'를 생성해주세요!")
-                time.sleep(3)
-                st.rerun()
-                
-            except Exception as e:
-                st.error(f"파일 읽기 오류: {e}")
+        else:
+            st.success("✅ 모든 데이터가 최신 상태입니다. (복구할 데이터 없음)")
 
         st.write("---")
-        st.write("📜 System Logs")
-        st.text_area("Logs", "\n".join(st.session_state["debug_logs"]), height=200)
         
         if st.button("Logout"): st.session_state["is_admin"]=False; st.rerun()
     else:
@@ -627,4 +633,3 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
-
