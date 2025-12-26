@@ -194,19 +194,31 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# [Engine A] 수사관
+# [Engine A] 수사관 (다중 키워드 생성 버전)
 def get_hybrid_search_keywords(title, transcript):
-    context_data = transcript[:15000] 
+    context_data = transcript[:15000]
     prompt = f"""
     You are a Fact-Check Investigator.
     [Input] Title: {title}, Transcript: {context_data}
-    [Task] Extract ONE precise Google News search query.
-    [Rules] Focus on Proper Nouns (Person, Drug, Event). Ignore Generic Verbs.
-    [Output] ONLY the Korean search query string (2-4 words). Do not add quotes.
+    [Task] Generate 3 diverse Google News search queries to verify this video.
+    1. Specific: Entity + Exact Event (e.g., 'Lee Jae-myung raid')
+    2. Broader: Main Subject + Action (e.g., 'Democratic Party prosecutor investigation')
+    3. Contextual: Related Keyword + Status (e.g., 'Election law violation trial')
+    
+    [Output JSON] {{ "queries": ["query1", "query2", "query3"] }}
     """
-    result_text, model_used, logs = call_triple_survivor(prompt)
+    result_text, model_used, logs = call_triple_survivor(prompt, is_json=True)
     st.session_state["debug_logs"].extend([f"[Key A] {l}" for l in logs])
-    return (result_text.strip(), f"✨ {model_used}") if result_text else (title, "❌ Error")
+    
+    # JSON 파싱 시도
+    parsed = parse_llm_json(result_text)
+    if parsed and 'queries' in parsed and isinstance(parsed['queries'], list):
+        # 3개 키워드 리스트 반환
+        return parsed['queries'], f"✨ {model_used} (Multi-Search)"
+    
+    # 파싱 실패 시 원본 텍스트를 정제해서 단일 리스트로 반환
+    fallback_q = result_text.strip().replace('"', '').replace('[', '').replace(']', '') if result_text else title
+    return [fallback_q], f"⚠️ {model_used} (Fallback)"
 
 # [크롤러] 뉴스 본문 수집
 def scrape_news_content_robust(google_url):
@@ -429,13 +441,33 @@ def run_forensic_main(url):
             summary = summarize_transcript(full_text, title)
             top_transcript_keywords = extract_top_keywords_from_transcript(full_text)
             
-            my_bar.progress(30, text="2단계: AI 수사관(Triple)이 검색 키워드 추출 중...")
-            query, source = get_hybrid_search_keywords(title, full_text)
+            my_bar.progress(30, text="2단계: AI 수사관이 최적의 검색어를 찾는 중...")
+            queries, source = get_hybrid_search_keywords(title, full_text)
+            
+            # [3단계] 뉴스 크롤링 (재귀적 검색)
+            news_items = []
+            final_query = queries[0] # 기본값
+            
+            for i, q in enumerate(queries):
+                # 진행률 바 업데이트 (검색 시도 횟수 보여주기)
+                my_bar.progress(40 + (i * 5), text=f"3단계: 뉴스 검색 시도 ({i+1}/{len(queries)}) - '{q}'")
+                
+                # 검색 시도
+                items = fetch_news_regex(q)
+                
+                if items:
+                    news_items = items
+                    final_query = q
+                    st.session_state["debug_logs"].append(f"✅ News Found with query: '{q}' ({len(items)} items)")
+                    break # 뉴스를 찾았으면 루프 종료
+                else:
+                    st.session_state["debug_logs"].append(f"⚠️ No news for query: '{q}'. Trying next...")
+                    time.sleep(0.5) # 구글 차단 방지용 딜레이
 
-            my_bar.progress(50, text="3단계: 뉴스 크롤링 및 딥 웹 탐색 중...")
-            is_official = check_is_official(uploader)
-            is_ai, ai_msg = detect_ai_content(info)
-            hashtag_display = ", ".join([f"#{t}" for t in tags]) if tags else "해시태그 없음"
+            # 검색 결과가 하나도 없을 때
+            if not news_items:
+                st.session_state["debug_logs"].append("❌ All queries failed to find news.")
+                final_query = queries[0] # 실패해도 1순위 키워드로 기록
             
             agitation = count_sensational_words(full_text + title)
             
@@ -750,6 +782,7 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
                 st.rerun()
             else:
                 st.error("Access Denied")
+
 
 
 
