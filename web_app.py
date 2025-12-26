@@ -155,12 +155,11 @@ class VectorEngine:
     def __init__(self):
         self.truth_vectors = []
         self.fake_vectors = []
-        # Google Embeddings 모델 설정
         self.model_name = "models/text-embedding-004" 
 
     def get_embedding(self, text):
+        # 텍스트 -> 벡터 변환 (API 사용, 비용 발생)
         try:
-            # 텍스트가 너무 길면 자름
             result = genai.embed_content(
                 model=self.model_name,
                 content=text[:2000],
@@ -170,10 +169,16 @@ class VectorEngine:
         except:
             return [0] * 768
 
-    def train(self, truth_list, fake_list):
-        if not truth_list or not fake_list: return
-        self.truth_vectors = [self.get_embedding(t) for t in truth_list]
-        self.fake_vectors = [self.get_embedding(t) for t in fake_list]
+    def load_pretrained_vectors(self, truth_vecs, fake_vecs):
+        # [NEW] DB에서 가져온 벡터를 바로 로드 (API 호출 X, 속도 0.001초)
+        self.truth_vectors = truth_vecs
+        self.fake_vectors = fake_vecs
+
+    def train_static(self, truth_text, fake_text):
+        # [NEW] 고정된 기본 데이터(Static Corpus)만 API로 변환 (최초 1회만 캐싱됨)
+        # 이 부분은 Streamlit 캐싱을 이용해 속도를 높일 겁니다.
+        self.truth_vectors.extend([self.get_embedding(t) for t in truth_text])
+        self.fake_vectors.extend([self.get_embedding(t) for t in fake_text])
 
     def cosine_similarity(self, v1, v2):
         if not v1 or not v2: return 0
@@ -184,26 +189,18 @@ class VectorEngine:
         return dot / (mag1 * mag2)
 
     def analyze(self, query):
-        query_vec = self.get_embedding(query)
+        query_vec = self.get_embedding(query) # 검색어는 실시간 변환 필요
         
-        # 1. Raw Score 계산
+        # Contrast Filter 적용
+        def calibrate(score):
+            baseline = 0.75 
+            if score < baseline: return 0.0
+            return (score - baseline) / (1.0 - baseline)
+
         raw_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
         raw_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
         
-        # 2. [핵심 기술] Contrast Filter (점수 보정)
-        # 임베딩 특성상 0.7 이상이면 주제가 같은 것임. 
-        # 0.7~1.0 구간을 0~100점으로 확장(Scaling)하여 차이를 극대화함.
-        
-        def calibrate(score):
-            baseline = 0.75  # 이 점수 이하는 0점으로 취급 (노이즈 제거)
-            if score < baseline: return 0.0
-            # (현재점수 - 기준점) / (만점 - 기준점)
-            return (score - baseline) / (1.0 - baseline)
-
-        final_t = calibrate(raw_t)
-        final_f = calibrate(raw_f)
-        
-        return final_t, final_f
+        return calibrate(raw_t), calibrate(raw_f)
 
 vector_engine = VectorEngine()
 
@@ -320,11 +317,17 @@ def analyze_comments(cmts, ctx):
     return [f"{w}({c})" for w,c in top], score, "높음" if score>=60 else "보통" if score>=20 else "낮음"
 
 def save_db(ch, ti, pr, url, kw, detail):
-    try: supabase.table("analysis_history").insert({
-        "channel_name":ch, "video_title":ti, "fake_prob":pr, "video_url":url, 
-        "keywords":kw, "detail_json":json.dumps(detail, ensure_ascii=False),
-        "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    }).execute()
+    try: 
+        # [핵심] 저장하기 전에 타이틀+키워드를 벡터로 변환 (여기서 시간 조금 소요됨)
+        # 하지만 이건 분석 '끝난 후'라 사용자는 로딩으로 안 느낌
+        embedding = vector_engine.get_embedding(kw + " " + ti)
+        
+        supabase.table("analysis_history").insert({
+            "channel_name":ch, "video_title":ti, "fake_prob":pr, "video_url":url, 
+            "keywords":kw, "detail_json":json.dumps(detail, ensure_ascii=False),
+            "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "vector_json": json.dumps(embedding) # 벡터 저장!
+        }).execute()
     except Exception as e: print(f"DB Error: {e}")
 
 # --- [UI 렌더링 함수 (Conclusion First)] ---
@@ -528,17 +531,38 @@ def run_forensic_main(url):
             
         except Exception as e: st.error(f"Error: {e}")
 
-def train_engine_wrapper():
+@st.cache_data(ttl=3600) # [핵심] 1시간 동안 메모리에 저장해둠 (새로고침해도 로딩 안 걸림)
+def fetch_db_vectors():
+    # DB에서 'vector_json' 컬럼도 같이 가져옴
     try:
-        res_t = supabase.table("analysis_history").select("video_title").lt("fake_prob", 40).execute()
-        res_f = supabase.table("analysis_history").select("video_title").gt("fake_prob", 60).execute()
-        dt = [r['video_title'] for r in res_t.data] if res_t.data else []
-        df = [r['video_title'] for r in res_f.data] if res_f.data else []
-        vector_engine.train(STATIC_TRUTH + dt, STATIC_FAKE + df)
-        return len(dt)+len(df), dt, df
-    except:
-        vector_engine.train(STATIC_TRUTH, STATIC_FAKE)
-        return 0, [], []
+        res = supabase.table("analysis_history").select("video_title, fake_prob, vector_json").execute()
+        if not res.data: return [], [], 0
+        
+        dt_vecs = []
+        df_vecs = []
+        
+        for row in res.data:
+            # 벡터가 이미 저장되어 있다면 그걸 쓰고, 없다면(옛날 데이터) 건너뜀
+            if row.get('vector_json'):
+                vec = json.loads(row['vector_json'])
+                if row['fake_prob'] < 40: dt_vecs.append(vec)
+                elif row['fake_prob'] > 60: df_vecs.append(vec)
+                
+        return dt_vecs, df_vecs, len(res.data)
+    except: return [], [], 0
+
+def train_engine_wrapper():
+    # 1. DB에서 벡터 로드 (API 호출 0회)
+    dt_vecs, df_vecs, count = fetch_db_vectors()
+    
+    # 2. 엔진에 주입
+    vector_engine.truth_vectors = dt_vecs
+    vector_engine.fake_vectors = df_vecs
+    
+    # 3. 기본(Static) 데이터만 빠르게 추가 학습
+    vector_engine.train_static(STATIC_TRUTH, STATIC_FAKE)
+    
+    return count, [], [] # 리턴값 유지
 
 # --- [B2B Report Logic] ---
 def generate_b2b_report(df):
@@ -653,5 +677,6 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
