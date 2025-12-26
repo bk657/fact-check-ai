@@ -302,31 +302,36 @@ def train_engine_wrapper():
 
 def save_db(ch, ti, pr, url, kw, detail):
     try: 
-        # 1. 임베딩 변환 시도
+        # 1. 임베딩 변환
         embedding = vector_engine.get_embedding(kw + " " + ti)
         
-        # 2. DB 저장 시도
+        # 2. 데이터 준비 (JSONB 컬럼에는 파이썬 객체 그대로 넣습니다)
         data_to_insert = {
-            "channel_name":ch, 
-            "video_title":ti, 
-            "fake_prob":pr, 
-            "video_url":url, 
-            "keywords":kw, 
-            "detail_json":json.dumps(detail, ensure_ascii=False),
+            "channel_name": ch, 
+            "video_title": ti, 
+            "fake_prob": pr, 
+            "video_url": url, 
+            "keywords": kw, 
             "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            "vector_json": json.dumps(embedding)
+            
+            # [수정] json.dumps() 제거 -> 파이썬 딕셔너리/리스트 그대로 전달
+            "detail_json": detail,        
+            "vector_json": embedding      
         }
         
+        # 3. Supabase에 저장 요청
+        # execute() 결과를 받아서 실제로 들어갔는지 확인합니다.
         result = supabase.table("analysis_history").insert(data_to_insert).execute()
         
-        # 3. 저장 성공 메시지 (디버깅용)
-        st.success("✅ DB 저장 성공!")
-        
+        # 4. 결과 확인
+        if result.data:
+            st.toast("✅ DB 저장 및 벡터 생성 완료!", icon="💾")
+        else:
+            st.error("❌ DB 저장 실패: 반환된 데이터가 없습니다. (RLS 문제일 수 있음)")
+            
     except Exception as e: 
-        # [중요] 에러가 나면 여기서 화면에 보여줍니다.
-        st.error(f"❌ 데이터베이스 저장 실패 원인: {e}")
-        # 터미널에도 출력
-        print(f"Detail DB Error: {e}")
+        st.error(f"❌ 데이터베이스 저장 중 오류 발생: {e}")
+        print(f"DB Insert Error: {e}")
         
 # --- [UI Components] ---
 def render_score_breakdown(data_list):
@@ -604,6 +609,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
