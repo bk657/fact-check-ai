@@ -270,12 +270,12 @@ def analyze_comments(cmts, ctx):
     score = int(sum(1 for w,c in top if w in ctx_set)/len(top)*100) if top else 0
     return [f"{w}({c})" for w,c in top], score, "높음" if score>=60 else "보통" if score>=20 else "낮음"
 
-# [수정] 테이블 이름을 'analysis_archive_v2'로 변경했습니다.
+# [수정] 데이터를 가져오는 곳을 다시 'analysis_history'로 변경
 @st.cache_data(ttl=3600)
 def fetch_db_vectors():
     try:
-        # v2 테이블 조회
-        res = supabase.table("analysis_archive_v2").select("video_title, fake_prob, vector_json").execute()
+        # v2 -> history 로 수정됨
+        res = supabase.table("analysis_history").select("video_title, fake_prob, vector_json").execute()
         if not res.data: return [], [], 0
         dt_vecs, df_vecs = [], []
         for row in res.data:
@@ -292,7 +292,7 @@ def train_engine_wrapper():
     vector_engine.train_static(STATIC_TRUTH, STATIC_FAKE)
     return count, [], []
 
-# [수정] 테이블 이름을 'analysis_archive_v2'로 변경했습니다.
+# [수정] 데이터를 저장하는 곳도 다시 'analysis_history'로 변경
 def save_db(ch, ti, pr, url, kw, detail):
     try: 
         embedding = vector_engine.get_embedding(kw + " " + ti)
@@ -301,8 +301,8 @@ def save_db(ch, ti, pr, url, kw, detail):
             "keywords":kw, "detail_json":detail, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             "vector_json": embedding
         }
-        # v2 테이블에 저장
-        supabase.table("analysis_archive_v2").insert(data_to_insert).execute()
+        # v2 -> history 로 수정됨
+        supabase.table("analysis_history").insert(data_to_insert).execute()
         st.toast("✅ DB 저장 완료!", icon="💾")
     except Exception as e: 
         st.error(f"❌ 데이터베이스 저장 실패: {e}")
@@ -618,3 +618,4 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
