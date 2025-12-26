@@ -19,8 +19,22 @@ import pandas as pd
 import altair as alt
 from bs4 import BeautifulSoup
 
-# --- [1. 시스템 설정] ---
+# --- [1. 시스템 설정 및 CSS 최적화] ---
 st.set_page_config(page_title="유튜브 가짜뉴스 판독기 (Triple Engine)", layout="wide", page_icon="🛡️")
+
+# [Mobile/Web UI 최적화 CSS]
+st.markdown("""
+    <style>
+        .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+        .stMetric { background-color: #f9f9f9; padding: 10px; border-radius: 10px; border: 1px solid #eee; text-align: center; }
+        div[data-testid="stMetricValue"] { font-size: 1.6rem !important; }
+        .risk-badge { padding: 5px 10px; border-radius: 5px; font-weight: bold; color: white; display: inline-block; margin-bottom: 5px; }
+        .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+        .stTabs [data-baseweb="tab"] { height: 50px; white-space: pre-wrap; background-color: #f0f2f6; border-radius: 4px 4px 0 0; gap: 1px; padding-top: 10px; padding-bottom: 10px; }
+        .stTabs [aria-selected="true"] { background-color: #ffffff; border-top: 2px solid #ff4b4b; }
+        h3 { font-size: 1.3rem !important; }
+    </style>
+""", unsafe_allow_html=True)
 
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
@@ -77,22 +91,20 @@ def parse_llm_json(text):
     return None
 
 def determine_risk_level(prob):
-    if prob >= 70: return "⛔ 위험 (Fake/Danger)", "red"
-    elif prob >= 40: return "⚠️ 주의 (Caution)", "orange"
-    return "✅ 안전 (Safe)", "green"
+    if prob >= 70: return "⛔ 위험 (High Risk)", "#d32f2f" # Red
+    elif prob >= 40: return "⚠️ 주의 (Caution)", "#f57c00" # Orange
+    return "✅ 안전 (Safe)", "#388e3c" # Green
 
 def colored_bar_html(label, score, color):
-    # 점수가 0~1 사이로 들어온다고 가정하거나 0~100
-    # 여기선 0.0 ~ 1.0 (vector similarity) -> 100% 변환
     pct = min(100, max(0, int(score * 100)))
     return f"""
-    <div style="margin-bottom: 8px;">
-        <div style="display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; color: #333;">
+    <div style="margin-bottom: 6px;">
+        <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; color: #444;">
             <span>{label}</span>
             <span>{pct}%</span>
         </div>
-        <div style="width: 100%; background-color: #eee; border-radius: 5px; height: 10px;">
-            <div style="width: {pct}%; background-color: {color}; height: 10px; border-radius: 5px;"></div>
+        <div style="width: 100%; background-color: #e0e0e0; border-radius: 6px; height: 8px; margin-top: 2px;">
+            <div style="width: {pct}%; background-color: {color}; height: 8px; border-radius: 6px;"></div>
         </div>
     </div>
     """
@@ -269,87 +281,87 @@ def save_db(ch, ti, pr, url, kw, detail):
     }).execute()
     except Exception as e: print(f"DB Error: {e}")
 
-# --- [UI 렌더링 함수] ---
+# --- [UI 렌더링 함수 (Mobile & Web Hybrid Optimized)] ---
 def render_report_full_ui(prob, db_count, title, channel, data, is_cached=False):
     st.divider()
     if is_cached: st.info(f"💾 과거 분석 기록 호출됨 (총 DB 데이터: {db_count}개)")
     
     risk_text, risk_color = determine_risk_level(prob)
     
-    # [Top Section]
-    c1, c2, c3 = st.columns([2, 2, 1])
-    with c1: st.metric("🔥 가짜뉴스 확률", f"{prob}%")
-    with c2: st.metric("🛡️ 위험도 진단", risk_text)
-    with c3: st.metric("🗄️ 누적 DB", f"{db_count}건")
+    # [HERO SECTION] 모바일에서 한눈에 보이도록 카드형 배치
+    with st.container(border=True):
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.markdown(f"<h1 style='text-align: center; color: {risk_color}; margin:0;'>{prob}%</h1>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-weight:bold; color:{risk_color}; margin-bottom:10px;'>{risk_text}</div>", unsafe_allow_html=True)
+        with col2:
+            st.write(f"**📺 {title}**")
+            st.caption(f"채널: {channel} | 분석일: {datetime.now().strftime('%Y-%m-%d')}")
+            st.caption(f"🗄️ 누적 분석 DB: {db_count}건")
     
-    st.markdown(f"### 📺 {title}")
+    # [TABS] 모바일 스크롤 압박 해소를 위한 탭 구조 도입
+    tab_info, tab_news, tab_data, tab_ai = st.tabs(["ℹ️ 정보/요약", "📰 팩트체크", "📊 데이터/여론", "🤖 AI 종합"])
     
-    # 1. 영상 Meta 데이터
-    st.subheader("1. 영상 Meta 데이터")
-    meta_df = pd.DataFrame([data.get('meta', {})])
-    st.dataframe(meta_df, use_container_width=True, hide_index=True)
+    # [TAB 1: 정보 및 요약]
+    with tab_info:
+        st.subheader("1. 영상 정보 및 요약")
+        st.info(data.get('summary', '요약 없음'))
+        
+        with st.expander("영상 상세 메타데이터"):
+            st.dataframe(pd.DataFrame([data.get('meta', {})]), use_container_width=True, hide_index=True)
+        
+        st.write("🔑 **검색 추출 키워드**")
+        if data.get('query_list'):
+            st.code(" / ".join(data['query_list']))
 
-    # 2. 영상 내용 요약
-    st.subheader("2. 영상 내용 요약 (Transcript Summary)")
-    st.info(data.get('summary', '요약 없음'))
+    # [TAB 2: 뉴스 팩트체크 (증거 2)]
+    with tab_news:
+        st.subheader("6. [증거 2] 뉴스 대조 (Top 5)")
+        if data.get('news_evidence'):
+            for news in data['news_evidence']:
+                with st.expander(f"{news['일치도']} {news['뉴스 제목']}"):
+                    st.write(f"**🕵️ 분석 근거:** {news['분석 근거']}")
+                    st.caption(f"출처: {news['비고']}")
+                    st.link_button("🔗 기사 원문", news['원문'])
+        else:
+            st.warning("신뢰할 수 있는 뉴스 기사를 찾지 못했습니다.")
 
-    # 3. 뉴스 키워드 검색용 추출 키워드
-    st.subheader("3. 뉴스 검색 키워드 (Extraction Keywords)")
-    if data.get('query_list'):
-        st.write(" / ".join([f"`{q}`" for q in data['query_list']]))
-    else:
-        st.write(f"`{data.get('query', '')}`")
+    # [TAB 3: 데이터 유사도 & 여론 (증거 1, 3)]
+    with tab_data:
+        st.subheader("5. [증거 1] 데이터 유사도 분석")
+        c1, c2 = st.columns(2)
+        with c1: st.markdown(colored_bar_html("진실 유사도", data.get('ts', 0), "#4CAF50"), unsafe_allow_html=True)
+        with c2: st.markdown(colored_bar_html("가짜 유사도", data.get('fs', 0), "#F44336"), unsafe_allow_html=True)
+        
+        st.caption("전체 DB 내 위치 분포")
+        render_intelligence_distribution(prob)
+        
+        st.divider()
+        st.subheader("7. [증거 3] 댓글 여론")
+        col_c1, col_c2, col_c3 = st.columns(3)
+        with col_c1: st.metric("댓글 수", f"{data.get('cmt_count', 0)}")
+        with col_c2: st.metric("주제 연관", data.get('cmt_rel', '-'))
+        with col_c3: st.metric("선동 의심", f"{data.get('red_cnt', 0)}")
+        
+        if data.get('top_cmt_kw'):
+            st.write(f"🗣️ **주요 키워드:** {', '.join(data['top_cmt_kw'])}")
 
-    # 4. Score Breakdown
-    st.subheader("4. 점수 산정 내역 (Score Breakdown)")
-    if data.get('score_breakdown'):
-        render_score_breakdown(data['score_breakdown'])
+    # [TAB 4: AI 종합 판단 (증거 4)]
+    with tab_ai:
+        st.subheader("8. [증거 4] AI 기술적 판단")
+        st.info(f"**🤖 Internal Logic:**\n{data.get('ai_reason', '판단 보류')}")
+        
+        st.subheader("4. 점수 산정 내역")
+        if data.get('score_breakdown'):
+            render_score_breakdown(data['score_breakdown'])
 
-    # 5. 수집된 증거 1 : 가짜뉴스 확률 분포 (게이지 추가)
-    st.subheader("5. [증거 1] 데이터 유사도 분석")
-    col_sim1, col_sim2 = st.columns(2)
-    with col_sim1:
-        st.markdown(colored_bar_html("진실 데이터 유사도 (Truth)", data.get('ts', 0), "#4CAF50"), unsafe_allow_html=True)
-    with col_sim2:
-        st.markdown(colored_bar_html("가짜 데이터 유사도 (Fake)", data.get('fs', 0), "#F44336"), unsafe_allow_html=True)
-    
-    st.caption("※ 아래 분포도는 전체 데이터베이스 상에서의 현재 영상 위치를 나타냅니다.")
-    render_intelligence_distribution(prob)
-
-    # 6. 수집된 증거 2 : 뉴스 대조 (5개)
-    st.subheader("6. [증거 2] 뉴스 대조 및 팩트체크 (Top 5)")
-    if data.get('news_evidence'):
-        for news in data['news_evidence']:
-            with st.expander(f"{news['일치도']} {news['뉴스 제목']}"):
-                st.write(f"**🕵️ 분석 근거:** {news['분석 근거']}")
-                st.caption(f"출처: {news['비고']}")
-                st.link_button("🔗 기사 원문 보기", news['원문'])
-    else:
-        st.warning("관련된 신뢰할 수 있는 뉴스 기사를 찾지 못했습니다.")
-
-    # 7. 수집된 증거 3 : 댓글 여론
-    st.subheader("7. [증거 3] 댓글 여론 분석")
-    c_col1, c_col2, c_col3 = st.columns(3)
-    with c_col1: st.metric("수집된 댓글 수", f"{data.get('cmt_count', 0)}개")
-    with c_col2: st.metric("주제 연관성", data.get('cmt_rel', 'N/A'))
-    with c_col3: st.metric("선동 의심 댓글", f"{data.get('red_cnt', 0)}개")
-    if data.get('top_cmt_kw'):
-        st.write(f"**🗣️ 주요 키워드:** {', '.join(data['top_cmt_kw'])}")
-
-    # 8. 수집된 증거 4 : AI 분석
-    st.subheader("8. [증거 4] AI 기술적 판단 (Techncial Judge)")
-    st.info(f"**🤖 AI Internal Reasoning:**\n{data.get('ai_reason', '판단 보류')}")
-
-    # 9. 최종 종합 분석 (새로운 기능)
+    # [FINAL SUMMARY] 가장 하단에 배치
     st.divider()
-    st.subheader("📝 9. 최종 종합 리포트 (Final Summary)")
-    
+    st.subheader("📝 9. 최종 종합 리포트")
     final_box = st.container(border=True)
     with final_box:
-        st.markdown(f"### 🏁 종합 가짜뉴스 확률: <span style='color:{risk_color}'>{prob}%</span>", unsafe_allow_html=True)
-        st.write("")
-        # LLM이 작성한 종합 코멘트 출력
-        st.markdown(f"**📢 AI Analyst Comment:**\n\n{data.get('final_summary', '종합 분석 데이터가 없습니다.')}")
+        st.markdown(f"### 🏁 최종 가짜뉴스 확률: <span style='color:{risk_color}'>{prob}%</span>", unsafe_allow_html=True)
+        st.markdown(f"**📢 AI Analyst Comment:**\n\n{data.get('final_summary', '분석 데이터 생성 중 오류 발생')}")
 
 
 def render_score_breakdown(data_list):
@@ -361,14 +373,14 @@ def render_score_breakdown(data_list):
             badge = f'<span class="badge badge-danger">+{score_num}</span>' if score_num > 0 else f'<span class="badge badge-success">{score_num}</span>' if score_num < 0 else f'<span class="badge badge-neutral">0</span>'
         except: badge = f'<span class="badge badge-neutral">{score}</span>'
         rows += f"<tr><td>{item}<br><span style='color:#888; font-size:11px;'>{note}</span></td><td style='text-align: right;'>{badge}</td></tr>"
-    st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목 (Score Breakdown)</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
+    st.markdown(f"{style}<table class='score-table'><thead><tr><th>분석 항목</th><th style='text-align: right;'>변동</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
 
 def render_intelligence_distribution(current_prob):
     try:
         res = supabase.table("analysis_history").select("fake_prob").execute()
         if not res.data: return
         df = pd.DataFrame(res.data)
-        base = alt.Chart(df).transform_density('fake_prob', as_=['fake_prob', 'density'], extent=[0, 100], bandwidth=5).mark_area(opacity=0.3, color='#888').encode(x=alt.X('fake_prob:Q', title='가짜뉴스 확률 분포'), y=alt.Y('density:Q', title='데이터 밀도'))
+        base = alt.Chart(df).transform_density('fake_prob', as_=['fake_prob', 'density'], extent=[0, 100], bandwidth=5).mark_area(opacity=0.3, color='#888').encode(x=alt.X('fake_prob:Q', title='가짜뉴스 확률 분포'), y=alt.Y('density:Q', title='밀도'))
         rule = alt.Chart(pd.DataFrame({'x': [current_prob]})).mark_rule(color='red', size=3).encode(x='x')
         st.altair_chart(base + rule, use_container_width=True)
     except: pass
@@ -503,11 +515,19 @@ def generate_b2b_report(df):
 st.title("⚖️유튜브 가짜뉴스 판독기 (Triple Engine)")
 
 with st.container(border=True):
-    st.markdown("### 🛡️ Disclaimer\n본 결과는 AI 분석 추정치이며 법적 효력이 없습니다.")
-    agree = st.checkbox("동의하고 분석 시작")
+    with st.expander("ℹ️ 서비스 이용 안내 및 면책 조항 (Disclaimer)"):
+        st.markdown("""
+        본 서비스는 **인공지능(AI) 및 알고리즘 기반**으로 영상의 신뢰도를 분석하는 보조 도구입니다. 
+        분석 결과는 법적 효력이 없으며, 최종 판단의 책임은 사용자에게 있습니다.
+        
+        * **1st Line**: Mistral AI (Logic)
+        * **2nd Line**: Google Gemini (Cross-Check)
+        * **3rd Line**: Deep News Crawler (Fact Verification)
+        """)
+    agree = st.checkbox("위 내용을 확인하였으며, 이에 동의합니다.")
 
-url = st.text_input("🔗 YouTube URL")
-if st.button("🚀 분석 시작", use_container_width=True, disabled=not agree):
+url = st.text_input("🔗 YouTube URL 입력")
+if st.button("🚀 정밀 분석 시작", use_container_width=True, disabled=not agree):
     if url: run_forensic_main(url)
     else: st.warning("URL을 입력하세요.")
 
