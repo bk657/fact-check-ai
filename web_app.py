@@ -478,6 +478,10 @@ def run_forensic_main(url):
                 st.session_state["debug_logs"].append("❌ All queries failed to find news.")
                 final_query = queries[0]
 
+            # [👇 여기가 빠져서 에러가 난 것입니다. 이 한 줄을 꼭 넣어주세요!]
+            query = final_query 
+
+            news_ev = []; max_match = 0
             # [★핵심 수정] 아래 코드가 없어서 NameError가 났습니다.
             # 최종 선택된 검색어(final_query)를 기존 변수명(query)에 할당합니다.
             query = final_query 
@@ -691,6 +695,7 @@ with st.expander("🔐 관리자 접속 (Admin Access)"):
                 st.rerun()
             else:
                 st.error("Access Denied")
+
 
 
 
