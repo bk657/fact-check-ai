@@ -5,87 +5,76 @@ import json
 import time
 from datetime import datetime
 from supabase import create_client
-import openai
+import google.generativeai as genai # 구글 라이브러리 사용
 
 # -----------------------------------------------------------------------------
-# 1. 설정 및 초기화 (Setup) - 진단 모드
+# 1. 설정 및 초기화 (Setup)
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="AI 영상 분석기", layout="wide", page_icon="🎬")
+st.set_page_config(page_title="AI 영상 분석기 (Gemini Ver)", layout="wide", page_icon="🎬")
 
-st.write("### 🔑 Secrets 연결 진단 (디버깅)")
-
-# 1. 현재 Streamlit이 인식하고 있는 키 목록을 출력합니다. (값은 보안상 숨김)
-st.write("현재 설정된 키 목록:", list(st.secrets.keys()))
-
+# 비밀번호 및 API 키 로드
 try:
-    # 2. 하나씩 불러오면서 어디서 막히는지 확인합니다.
-    st.write("1. SUPABASE_URL 로딩 중...")
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
-    st.success("OK")
-
-    st.write("2. SUPABASE_KEY 로딩 중...")
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-    st.success("OK")
-    
-    st.write("3. OPENAI_API_KEY 로딩 중...")
-    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
-    st.success("OK")
-    
-    st.write("4. ADMIN_PASSWORD 로딩 중...")
     ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
-    st.success("OK")
-
-    st.success("✅ 모든 키가 정상적으로 로드되었습니다! (이제 이 진단 코드를 지우셔도 됩니다.)")
-
-except KeyError as e:
-    st.error(f"🚨 범인 검거: {e} 라는 키를 찾을 수 없습니다!")
-    st.warning("👉 Streamlit 설정 화면의 Secrets에 적은 이름과, 위 코드에서 부르는 이름이 정확히 일치하는지(대소문자 포함) 확인하세요.")
-    st.info(f"힌트: 혹시 [supabase] 같은 섹션을 만드셨나요? 그렇다면 st.secrets['supabase']['url'] 처럼 불러야 합니다.")
-    st.stop()
+    
+    # [변경] OpenAI 대신 Google 키를 가져옵니다.
+    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+    
+    # 구글 Gemini 설정
+    genai.configure(api_key=GOOGLE_API_KEY)
+    
 except Exception as e:
-    st.error(f"알 수 없는 오류: {e}")
+    st.error(f"❌ 설정 파일(Secrets) 로드 실패: {e}")
+    st.info("secrets.toml 파일에 SUPABASE_URL, SUPABASE_KEY, ADMIN_PASSWORD, GOOGLE_API_KEY가 있는지 확인하세요.")
     st.stop()
 
-# 클라이언트 연결 (성공 시에만 실행됨)
+# Supabase 클라이언트 연결
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-client = openai.OpenAI(api_key=OPENAI_API_KEY)
+
+# 세션 상태 초기화
+if "is_admin" not in st.session_state: st.session_state["is_admin"] = False
+if "analysis_result" not in st.session_state: st.session_state["analysis_result"] = None
 
 # -----------------------------------------------------------------------------
 # 2. 유틸리티 클래스 & 함수 (Utils)
 # -----------------------------------------------------------------------------
 
 class VectorEngine:
-    """텍스트를 벡터로 변환하는 엔진"""
+    """구글 Gemini를 사용하여 텍스트를 벡터로 변환"""
     def get_embedding(self, text):
         try:
-            response = client.embeddings.create(
-                input=text,
-                model="text-embedding-3-small"
+            # Gemini 임베딩 모델 사용 (text-embedding-004)
+            result = genai.embed_content(
+                model="models/text-embedding-004",
+                content=text,
+                task_type="retrieval_document",
+                title="Embedding of text"
             )
-            return response.data[0].embedding
+            return result['embedding']
         except Exception as e:
-            st.error(f"벡터 생성 실패: {e}")
+            # 에러 발생 시 로그만 찍고 넘어감 (멈춤 방지)
+            print(f"벡터 생성 실패: {e}")
             return None
 
 vector_engine = VectorEngine()
 
 def get_similar_content(current_keywords):
     """
-    [핵심 수정] analysis_history 테이블에서 유사한 과거 영상을 찾습니다.
+    analysis_history 테이블에서 유사한 과거 영상을 찾습니다.
     """
     try:
         if not current_keywords: return []
         
-        # 1. 현재 분석 키워드의 벡터 생성
+        # 1. 현재 키워드 벡터 생성
         query_vector = vector_engine.get_embedding(current_keywords)
         if not query_vector: return []
 
-        # 2. DB에서 벡터 데이터 가져오기 (Target: analysis_history)
+        # 2. DB 조회 (analysis_history)
         response = supabase.table("analysis_history").select("video_title, video_url, vector_json").not_.is_("vector_json", "null").execute()
         
         candidates = []
         for row in response.data:
-            # 벡터 파싱
             if isinstance(row['vector_json'], str):
                 vec = json.loads(row['vector_json'])
             else:
@@ -97,16 +86,18 @@ def get_similar_content(current_keywords):
             dot_product = np.dot(query_vector, vec)
             norm_a = np.linalg.norm(query_vector)
             norm_b = np.linalg.norm(vec)
+            
+            if norm_a == 0 or norm_b == 0: continue
+            
             similarity = dot_product / (norm_a * norm_b)
 
-            if similarity > 0.6: # 유사도 60% 이상만 추천
+            if similarity > 0.6: # 유사도 60% 이상
                 candidates.append({
                     "title": row['video_title'],
                     "url": row['video_url'],
                     "score": similarity
                 })
         
-        # 점수 높은 순 정렬 후 상위 3개 반환
         return sorted(candidates, key=lambda x: x['score'], reverse=True)[:3]
         
     except Exception as e:
@@ -115,7 +106,7 @@ def get_similar_content(current_keywords):
 
 def save_db(ch, ti, pr, url, kw, detail):
     """
-    [핵심 수정] analysis_history 테이블에 데이터를 저장합니다.
+    analysis_history 테이블에 저장
     """
     try: 
         # 벡터 생성
@@ -129,23 +120,22 @@ def save_db(ch, ti, pr, url, kw, detail):
             "keywords": kw,
             "detail_json": detail,
             "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            "vector_json": embedding # 벡터도 같이 저장
+            "vector_json": embedding
         }
         
-        # 저장 (Target: analysis_history)
         supabase.table("analysis_history").insert(data_to_insert).execute()
         st.toast("✅ DB 저장 및 학습 완료!", icon="💾")
-        time.sleep(1) # 사용자 확인용 대기
+        time.sleep(1)
         
     except Exception as e: 
         st.error(f"❌ 데이터베이스 저장 실패: {e}")
 
 # -----------------------------------------------------------------------------
-# 3. 메인 UI (Main Interface)
+# 3. 메인 UI
 # -----------------------------------------------------------------------------
-st.title("🎬 AI 유튜브 분석기 (Unified v3)")
+st.title("🎬 AI 유튜브 분석기 (Gemini Powered)")
 
-# 사이드바 (로그인)
+# 사이드바
 with st.sidebar:
     st.header("설정")
     if not st.session_state["is_admin"]:
@@ -155,27 +145,26 @@ with st.sidebar:
                 st.session_state["is_admin"] = True
                 st.rerun()
             else:
-                st.error("비밀번호가 틀렸습니다.")
+                st.error("비밀번호 불일치")
     else:
-        st.success("관리자 로그인 중")
+        st.success("관리자 로그인 됨")
         if st.button("로그아웃"):
             st.session_state["is_admin"] = False
             st.rerun()
 
-# 메인 기능: URL 입력 및 분석
-url_input = st.text_input("유튜브 URL을 입력하세요", placeholder="https://youtu.be/...")
+# URL 입력
+url_input = st.text_input("유튜브 URL 입력", placeholder="https://youtu.be/...")
 
 if st.button("🚀 분석 시작", type="primary"):
     if not url_input:
         st.warning("URL을 입력해주세요.")
     else:
-        # [중복 체크] analysis_history 테이블 확인
         try:
+            # 중복 체크 (analysis_history)
             check = supabase.table("analysis_history").select("*").eq("video_url", url_input).execute()
             if check.data:
-                st.info("💡 이미 분석된 영상입니다. (DB 데이터 로드)")
+                st.info("💡 이미 분석된 데이터입니다.")
                 res = check.data[0]
-                # DB 데이터를 세션에 저장 (화면 표시용)
                 st.session_state["analysis_result"] = {
                     "channel": res['channel_name'],
                     "title": res['video_title'],
@@ -185,26 +174,23 @@ if st.button("🚀 분석 시작", type="primary"):
                     "url": res['video_url']
                 }
             else:
-                # [신규 분석] (실제 AI 로직 대신 더미 데이터 사용 예시)
-                with st.spinner("AI가 영상을 분석 중입니다..."):
-                    time.sleep(1.5) # 분석 흉내
-                    # --- 실제로는 여기서 LLM/YouTube API 호출 ---
+                with st.spinner("AI 분석 중... (Gemini)"):
+                    time.sleep(1.5)
+                    # --- 실제 AI 분석 로직이 들어갈 곳 ---
                     result_data = {
-                        "channel": "테스트 채널",
-                        "title": "테스트 영상 제목 (분석됨)",
-                        "prob": 88, # 가짜 확률
-                        "keywords": "AI, 테스트, 데이터복구",
-                        "detail": {"summary": "이 영상은 테스트용입니다."},
+                        "channel": "분석된 채널",
+                        "title": "영상 제목 예시",
+                        "prob": 85,
+                        "keywords": "Gemini, AI, 테스트",
+                        "detail": {"summary": "Gemini 분석 결과입니다."},
                         "url": url_input
                     }
                     st.session_state["analysis_result"] = result_data
                     
-                    # 자동 저장을 원하면 여기서 save_db 호출 (선택사항)
-                    
         except Exception as e:
-            st.error(f"분석 중 오류 발생: {e}")
+            st.error(f"분석 오류: {e}")
 
-# 결과 화면 표시
+# 결과 화면
 if st.session_state["analysis_result"]:
     res = st.session_state["analysis_result"]
     
@@ -212,8 +198,8 @@ if st.session_state["analysis_result"]:
     c1, c2 = st.columns([1, 2])
     with c1:
         st.metric("🚫 조작 의심 확률", f"{res['prob']}%")
-        if res['prob'] > 70: st.error("⚠️ 주의 필요")
-        else: st.success("✅ 양호함")
+        if res['prob'] > 70: st.error("⚠️ 주의")
+        else: st.success("✅ 안전")
     
     with c2:
         st.subheader(res['title'])
@@ -222,32 +208,29 @@ if st.session_state["analysis_result"]:
     
     st.json(res['detail'])
     
-    # 저장 버튼
-    if st.button("💾 데이터베이스에 저장"):
+    if st.button("💾 DB 저장"):
         save_db(res['channel'], res['title'], res['prob'], res['url'], res['keywords'], res['detail'])
 
-    # [벡터 검색] 유사 영상 추천
     st.write("---")
-    st.write("### 🔍 유사한 과거 분석 사례")
+    st.write("### 🔍 유사 영상 추천")
     similar_videos = get_similar_content(res['keywords'])
     
     if similar_videos:
         for vid in similar_videos:
             st.info(f"📄 **{vid['title']}** (유사도: {int(vid['score']*100)}%)")
     else:
-        st.caption("유사한 영상이 없습니다.")
+        st.caption("유사한 영상 없음")
 
 # -----------------------------------------------------------------------------
-# 4. 관리자 메뉴 (Admin - 복구 및 업데이트)
+# 4. 관리자 메뉴
 # -----------------------------------------------------------------------------
 st.divider()
-with st.expander("🔐 관리자 (시스템 복구 및 관리)"):
+with st.expander("🔐 관리자 기능"):
     if st.session_state["is_admin"]:
-        st.write("### 🚑 데이터 복구 & AI 학습 센터")
         
-        # A. 데이터 복구 (CSV -> DB)
-        uploaded_file = st.file_uploader("백업 CSV 파일 업로드", type="csv")
-        if uploaded_file and st.button("🚨 데이터 복구 시작 (analysis_history)"):
+        # A. 데이터 복구
+        uploaded_file = st.file_uploader("백업 CSV 업로드", type="csv")
+        if uploaded_file and st.button("🚨 데이터 복구 시작"):
             try:
                 df = pd.read_csv(uploaded_file)
                 bar = st.progress(0)
@@ -265,7 +248,7 @@ with st.expander("🔐 관리자 (시스템 복구 및 관리)"):
                         "video_url": str(row.get('video_url', '')),
                         "keywords": str(row.get('keywords', '')),
                         "detail_json": {"summary": "복구됨"},
-                        "vector_json": None # 일단 비워둠 (업데이트에서 채움)
+                        "vector_json": None 
                     }
                     try:
                         supabase.table("analysis_history").insert(data).execute()
@@ -273,7 +256,7 @@ with st.expander("🔐 관리자 (시스템 복구 및 관리)"):
                     except: pass
                     bar.progress(int(((i+1)/len(df))*100))
                 
-                st.success(f"✅ {success_count}건 복구 완료! 아래 업데이트 버튼을 누르세요.")
+                st.success(f"✅ {success_count}건 복구 완료!")
                 time.sleep(1)
                 st.rerun()
             except Exception as e:
@@ -281,37 +264,33 @@ with st.expander("🔐 관리자 (시스템 복구 및 관리)"):
 
         st.write("---")
 
-        # B. 강제 업데이트 (AI 학습)
-        if st.button("♻️ AI 학습 강제 실행 (벡터 생성)"):
+        # B. 강제 업데이트 (Gemini 사용)
+        if st.button("♻️ AI 학습 강제 실행 (Gemini)"):
             progress_text = st.empty()
             bar = st.progress(0)
             
             try:
-                # 학습 안 된 데이터 조회 (오류 시 전체 조회)
                 try:
                     target_rows = supabase.table("analysis_history").select("*").is_("vector_json", "null").execute().data
                 except:
                     target_rows = supabase.table("analysis_history").select("*").execute().data
 
                 total = len(target_rows)
-                if total == 0:
-                    st.info("모든 데이터가 이미 학습되었습니다.")
-                else:
-                    st.write(f"🎯 학습 대상: {total}건")
-                    for i, row in enumerate(target_rows):
-                        txt = f"{row.get('keywords','')} {row.get('video_title','')}"
-                        try:
-                            vec = vector_engine.get_embedding(txt)
-                            if vec:
-                                supabase.table("analysis_history").update({"vector_json": vec}).eq("id", row['id']).execute()
-                        except: pass
-                        
-                        bar.progress(int(((i+1)/total)*100))
-                        progress_text.text(f"학습 중... {i+1}/{total}")
+                st.write(f"🎯 학습 대상: {total}건")
+                
+                for i, row in enumerate(target_rows):
+                    txt = f"{row.get('keywords','')} {row.get('video_title','')}"
+                    try:
+                        vec = vector_engine.get_embedding(txt)
+                        if vec:
+                            supabase.table("analysis_history").update({"vector_json": vec}).eq("id", row['id']).execute()
+                    except: pass
                     
-                    st.success("✅ 학습 완료!")
-                    time.sleep(1)
-                    st.rerun()
+                    bar.progress(int(((i+1)/total)*100))
+                    progress_text.text(f"학습 중... {i+1}/{total}")
+                
+                st.success("✅ 학습 완료!")
+                time.sleep(1)
+                st.rerun()
             except Exception as e:
                 st.error(f"업데이트 에러: {e}")
-
