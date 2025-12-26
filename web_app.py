@@ -270,16 +270,17 @@ def analyze_comments(cmts, ctx):
     score = int(sum(1 for w,c in top if w in ctx_set)/len(top)*100) if top else 0
     return [f"{w}({c})" for w,c in top], score, "높음" if score>=60 else "보통" if score>=20 else "낮음"
 
-# [수정] 테이블 이름을 'analysis_history'로 원상복구
+# [수정] 테이블 이름을 'analysis_archive_v2'로 변경했습니다.
 @st.cache_data(ttl=3600)
 def fetch_db_vectors():
     try:
-        res = supabase.table("analysis_history").select("video_title, fake_prob, vector_json").execute()
+        # v2 테이블 조회
+        res = supabase.table("analysis_archive_v2").select("video_title, fake_prob, vector_json").execute()
         if not res.data: return [], [], 0
         dt_vecs, df_vecs = [], []
         for row in res.data:
             if row.get('vector_json'):
-                vec = json.loads(row['vector_json'])
+                vec = json.loads(row['vector_json']) if isinstance(row['vector_json'], str) else row['vector_json']
                 if row['fake_prob'] < 40: dt_vecs.append(vec)
                 elif row['fake_prob'] > 60: df_vecs.append(vec)
         return dt_vecs, df_vecs, len(res.data)
@@ -291,7 +292,7 @@ def train_engine_wrapper():
     vector_engine.train_static(STATIC_TRUTH, STATIC_FAKE)
     return count, [], []
 
-# [수정] 테이블 이름을 'analysis_history'로 원상복구
+# [수정] 테이블 이름을 'analysis_archive_v2'로 변경했습니다.
 def save_db(ch, ti, pr, url, kw, detail):
     try: 
         embedding = vector_engine.get_embedding(kw + " " + ti)
@@ -300,7 +301,8 @@ def save_db(ch, ti, pr, url, kw, detail):
             "keywords":kw, "detail_json":detail, "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             "vector_json": embedding
         }
-        supabase.table("analysis_history").insert(data_to_insert).execute()
+        # v2 테이블에 저장
+        supabase.table("analysis_archive_v2").insert(data_to_insert).execute()
         st.toast("✅ DB 저장 완료!", icon="💾")
     except Exception as e: 
         st.error(f"❌ 데이터베이스 저장 실패: {e}")
@@ -525,31 +527,41 @@ except Exception as e: st.error(f"❌ DB Error: {e}")
 st.divider()
 with st.expander("🔐 관리자 (Admin & B2B Report)"):
     if st.session_state["is_admin"]:
-        st.success("Admin Logged In - 디버깅 모드")
+        st.success("Admin Logged In (Connected to: analysis_archive_v2)")
         
-        st.write("### 🚑 긴급 데이터 복구 (정밀 진단)")
+        # 새 테이블 데이터 조회
+        try:
+            response = supabase.table("analysis_archive_v2").select("*").order("id", desc=True).execute()
+            data = response.data
+        except: data = []
+
+        # 1. B2B 리포트
+        st.write("### 📊 리포트")
+        if st.button("B2B 리포트 생성"):
+            try:
+                rpt = generate_b2b_report(pd.DataFrame(data))
+                if not rpt.empty:
+                    st.dataframe(rpt, use_container_width=True)
+                    st.download_button("📥 CSV 다운로드", rpt.to_csv().encode('utf-8-sig'), "b2b_report.csv", "text/csv")
+            except: st.error("데이터 부족")
+        
+        st.write("---")
+        
+        # 2. [핵심] 새 테이블로 데이터 이사 (CSV 복구)
+        st.write("### 🚑 데이터 이사 (CSV 복구)")
         uploaded_file = st.file_uploader("백업 파일(export.csv)을 여기에 올리세요", type="csv")
         
         if uploaded_file is not None:
-            if st.button("🚨 데이터 복구 시작 (클릭)", type="primary"):
-                # 1. 파일 읽기 진단
+            if st.button("🚨 새 DB로 복구 시작", type="primary"):
                 try:
                     df_restore = pd.read_csv(uploaded_file)
-                    st.info(f"📂 파일 읽기 성공: 총 {len(df_restore)}개의 행이 발견되었습니다.")
-                    st.dataframe(df_restore.head(3)) # 데이터가 제대로 읽혔는지 눈으로 확인
-                except Exception as e:
-                    st.error(f"❌ 파일 읽기 실패: {e}")
-                    st.stop()
-
-                progress_text = st.empty()
-                restore_bar = st.progress(0)
-                success_cnt = 0
-                fail_cnt = 0
-                
-                # 2. 한 줄씩 넣으면서 에러 확인
-                for i, row in df_restore.iterrows():
-                    try:
-                        # 데이터 준비
+                    progress_text = st.empty()
+                    restore_bar = st.progress(0)
+                    success_cnt = 0
+                    
+                    for i, row in df_restore.iterrows():
+                        if pd.isna(row.get('video_title')): continue
+                        
                         restore_data = {
                             "analysis_date": str(row.get('analysis_date', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))),
                             "channel_name": str(row.get('channel_name', 'Unknown')),
@@ -559,78 +571,61 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
                             "keywords": str(row.get('keywords', '')),
                             "detail_json": {"final_summary": "복구된 데이터"},
                             "vector_json": None 
-                            # id는 넣지 않습니다! (DB가 알아서 1,2,3... 생성하게 둠 -> 충돌 방지)
                         }
                         
-                        # 실제 저장 시도
-                        result = supabase.table("analysis_history").insert(restore_data).execute()
-                        success_cnt += 1
+                        # [중요] 새 테이블(v2)에 넣습니다.
+                        try:
+                            supabase.table("analysis_archive_v2").insert(restore_data).execute()
+                            success_cnt += 1
+                        except Exception as e:
+                            print(f"Row {i} Insert Fail: {e}")
                         
-                    except Exception as e:
-                        fail_cnt += 1
-                        # [중요] 첫 번째 에러는 화면에 크게 띄웁니다.
-                        if fail_cnt == 1:
-                            st.error(f"🚨 첫 번째 저장 실패 발생! (Row {i})")
-                            st.error(f"에러 메시지: {e}")
-                            st.json(restore_data) # 어떤 데이터를 넣으려다 실패했는지 보여줌
-                        print(f"Row {i} Fail: {e}")
-
-                    # 진행률
-                    restore_bar.progress(int(((i + 1) / len(df_restore)) * 100))
-                
-                st.write("---")
-                if fail_cnt > 0:
-                    st.error(f"❌ 복구 결과: 성공 {success_cnt}건 / 실패 {fail_cnt}건")
-                    st.warning("위의 빨간색 에러 메시지를 확인해서 알려주세요!")
-                else:
-                    st.success(f"✅ {success_cnt}건 완벽하게 복구 성공!")
-                    st.info("이제 아래의 [데이터 업데이트] 버튼이 뜰 것입니다.")
+                        restore_bar.progress(int(((i + 1) / len(df_restore)) * 100))
+                    
+                    st.success(f"✅ {success_cnt}건 새 DB로 이사 완료! 잠시 후 새로고침 됩니다.")
+                    time.sleep(2)
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"복구 실패: {e}")
 
         st.write("---")
 
-        # 3. 구형 데이터 업데이트
+        # 3. 데이터 업데이트 (새 테이블 기준)
         st.write("### 🔧 시스템 관리")
         try:
-            # 벡터가 비어있는지 확인
-            null_vecs = supabase.table("analysis_history").select("*").is_("vector_json", "null").execute()
-            missing_count = len(null_vecs.data) # count 방식 변경
-            st.write(f"현재 DB 상태 확인: 학습 필요한 데이터 {missing_count}개 발견") # 디버깅용 출력
-        except Exception as e:
-            st.error(f"DB 조회 에러: {e}")
-            missing_count = 0
+            null_vecs = supabase.table("analysis_archive_v2").select("id", count='exact').is_("vector_json", "null").execute()
+            missing_count = null_vecs.count
+        except: missing_count = 0
 
         if missing_count > 0:
+            st.warning(f"⚠️ 학습 미반영 데이터 {missing_count}건")
             if st.button(f"♻️ 데이터 업데이트 ({missing_count}건)"):
-                st.write("업데이트 시작...")
                 prog_text = st.empty()
                 bar = st.progress(0)
-                old_rows = supabase.table("analysis_history").select("*").is_("vector_json", "null").execute().data
+                # v2 테이블 조회
+                old_rows = supabase.table("analysis_archive_v2").select("*").is_("vector_json", "null").execute().data
                 
                 for i, row in enumerate(old_rows):
-                    # 제목 + 키워드로 벡터 생성
                     txt = f"{row.get('keywords','')} {row.get('video_title','')}"
                     try:
                         vec = vector_engine.get_embedding(txt)
-                        supabase.table("analysis_history").update({"vector_json": vec}).eq("id", row['id']).execute()
+                        # v2 테이블 업데이트
+                        supabase.table("analysis_archive_v2").update({"vector_json": vec}).eq("id", row['id']).execute()
                     except: continue
-                    
                     bar.progress(int(((i+1)/missing_count)*100))
-                    prog_text.text(f"학습 처리 중... {i+1}/{missing_count}")
+                    prog_text.text(f"처리 중... {i+1}/{missing_count}")
                     time.sleep(0.5)
-                
-                st.success("✅ 모든 데이터 학습 완료!")
+                st.success("완료!")
                 time.sleep(1)
                 st.rerun()
         else:
             st.success("✅ 모든 데이터가 최신 상태입니다.")
 
-        st.write("---")
-        
         if st.button("Logout"): st.session_state["is_admin"]=False; st.rerun()
     else:
         pwd = st.text_input("Password", type="password")
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
-
 
