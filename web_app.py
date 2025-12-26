@@ -538,7 +538,7 @@ def generate_b2b_report(df):
     return pd.DataFrame(res).sort_values("Avg Risk", ascending=False)
 
 # --- [Layout Main] ---
-st.title("⚖️유튜브 가짜뉴스 판독기 (Triple Engine)")
+st.title("⚖️유튜브 가짜뉴스 판독기 (Fake News)")
 
 with st.container(border=True):
     with st.expander("ℹ️ 서비스 이용 안내 및 면책 조항 (Disclaimer)"):
@@ -632,4 +632,5 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
