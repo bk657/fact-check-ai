@@ -152,7 +152,6 @@ class VectorEngine:
     def get_embedding(self, text):
         try:
             genai.configure(api_key=GOOGLE_API_KEY_A)
-            # 텍스트가 너무 짧으면 노이즈가 심하므로 최소한의 보정
             if not text or len(text) < 2: return [0.0] * 768
             
             result = genai.embed_content(
@@ -167,7 +166,7 @@ class VectorEngine:
         self.truth_vectors = truth_vecs
         self.fake_vectors = fake_vecs
 
-    # [🚨 복구 완료] 아까 빠졌던 함수입니다. 이게 있어야 에러가 안 납니다!
+    # [중요] 아까 누락되었던 함수 복구 완료
     def train_static(self, truth_text, fake_text):
         self.truth_vectors.extend([self.get_embedding(t) for t in truth_text])
         self.fake_vectors.extend([self.get_embedding(t) for t in fake_text])
@@ -182,36 +181,50 @@ class VectorEngine:
 
     def analyze(self, raw_context):
         """
-        [Vector Framing 기법 적용]
-        단순 문맥 하나로 비교하지 않고, '가짜 성향'과 '진실 성향'으로 
-        프레이밍된 2개의 쿼리를 각각 생성하여 전용 DB와 대조합니다.
+        [Contrast Filter 적용]
+        미세한 차이를 증폭시켜 '주제'가 아닌 '성향'을 뚜렷하게 구분합니다.
         """
         
-        # 1. [가짜 프레이밍] 
-        # "이 내용이 폭로/의혹이라면?" 가정하고 가짜 DB와 매칭
+        # 1. 프레이밍 쿼리 생성
         fake_query = f"충격 단독 폭로 의혹 논란: {raw_context}"
         vec_f_query = self.get_embedding(fake_query)
         
-        # 2. [진실 프레이밍]
-        # "이 내용이 팩트체크/해명이라면?" 가정하고 진실 DB와 매칭
         truth_query = f"공식 입장 팩트체크 사실 검증: {raw_context}"
         vec_t_query = self.get_embedding(truth_query)
         
-        # 3. 각각의 DB(진영)에서 최고 유사도 찾기
+        # 2. 유사도 측정
         if not self.truth_vectors: score_t = 0
         else: score_t = max([self.cosine_similarity(vec_t_query, v) for v in self.truth_vectors] or [0])
         
         if not self.fake_vectors: score_f = 0
         else: score_f = max([self.cosine_similarity(vec_f_query, v) for v in self.fake_vectors] or [0])
         
-        # 4. Calibration (순수 유사도 반환, 인위적 조작 없음)
-        # 단, 노이즈 제거를 위해 0.5 미만은 의미 없는 값으로 간주
-        def clean_score(s):
-            if s < 0.5: return 0.0 # 관련 없음
-            return s # 있는 그대로 반환
+        # -------------------------------------------------------------
+        # [핵심] 콘트라스트 필터 (Contrast Filter)
+        # 주제(Topic) 점수는 빼고, 차이(Gap)를 증폭합니다.
+        # -------------------------------------------------------------
+        
+        gap = score_t - score_f
+        
+        # A. 차이가 너무 작으면(3% 미만) -> "판단 보류" (둘 다 낮춤)
+        # (예: 0.94 vs 0.93 -> 둘 다 0.1로 만듦. 벡터로는 구분 못한다는 뜻)
+        if abs(gap) < 0.03:
+            return score_t * 0.1, score_f * 0.1
             
-        return clean_score(score_t), clean_score(score_f)
-
+        # B. 유의미한 차이가 있으면 -> "격차 증폭" (20배 뻥튀기)
+        # (예: 0.94 vs 0.92 -> 차이 0.02 * 20 = 0.4 포인트)
+        # 진실: 0.94 + 0.4 = 1.0 (최대)
+        # 가짜: 0.92 - 0.4 = 0.52
+        boost = abs(gap) * 20 
+        
+        if gap > 0: # 진실 우세
+            final_t = min(1.0, score_t + boost)
+            final_f = max(0.0, score_f - boost)
+        else: # 가짜 우세
+            final_t = max(0.0, score_t - boost)
+            final_f = min(1.0, score_f + boost)
+            
+        return final_t, final_f
 vector_engine = VectorEngine()
 
 def get_keywords(title, trans):
@@ -691,6 +704,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
