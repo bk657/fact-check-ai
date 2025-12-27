@@ -483,7 +483,7 @@ def run_forensic_main(url):
             
             my_bar.progress(40, "키워드 추출 및 문맥 분석 중...")
             
-            # [수정] queries 뿐만 아니라 vector_context도 받습니다.
+            # [확인됨] 여기서 vector_context를 잘 받아오고 있습니다. (Good!)
             queries, vector_context, _ = get_keywords(meta['제목'], full_text)
             
             news_items = []
@@ -493,7 +493,6 @@ def run_forensic_main(url):
                 if items: news_items = items; final_query = q; break
             
             my_bar.progress(60, "팩트체크 대조 분석 중...")
-            # [수정] 5개까지 검증
             news_ev = []; max_match = 0
             for item in news_items[:5]:
                 s, r, src, r_url = verify_news(summary, item['link'], item['title'])
@@ -505,6 +504,7 @@ def run_forensic_main(url):
             top_kw, rel_score, rel_msg = analyze_comments(cmts, full_text)
             red_cnt, _ = check_red_flags(cmts)
             
+            # [수정 1] 단순 제목이 아니라, AI가 요약한 '문맥(Context)'으로 분석합니다.
             ts, fs = vector_engine.analyze(vector_context)
             t_impact, f_impact = int(ts*30)*-1, int(fs*30)
             
@@ -540,15 +540,16 @@ def run_forensic_main(url):
                 "score_breakdown": score_bd, "news_evidence": news_ev,
                 "cmt_count": len(cmts), "cmt_rel": f"{rel_score}% ({rel_msg})", "red_cnt": red_cnt, "top_cmt_kw": top_kw,
                 "ai_reason": ai_reason, "ts": ts, "fs": fs,
-                "final_summary": final_summary # 저장
+                "final_summary": final_summary
             }
             
-            save_db(meta['채널명'], meta['제목'], final_prob, url, final_query, report)
+            # [수정 2] 저장할 때 vector_context를 맨 뒤에 꼭 넘겨줘야 합니다!
+            save_db(meta['채널명'], meta['제목'], final_prob, url, final_query, report, vector_context)
+            
             my_bar.empty()
             render_report_full_ui(final_prob, db_count, meta['제목'], meta['채널명'], report, is_cached=False)
             
         except Exception as e: st.error(f"Error: {e}")
-
 @st.cache_data(ttl=3600) # [핵심] 1시간 동안 메모리에 저장해둠 (새로고침해도 로딩 안 걸림)
 def fetch_db_vectors():
     # DB에서 'vector_json' 컬럼도 같이 가져옴
@@ -695,6 +696,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
