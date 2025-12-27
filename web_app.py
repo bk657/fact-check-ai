@@ -7,6 +7,7 @@ import random
 import math
 import os
 import json
+import numpy as np # 필수 라이브러리
 from collections import Counter
 from datetime import datetime
 
@@ -19,7 +20,7 @@ import pandas as pd
 import altair as alt
 from bs4 import BeautifulSoup
 
-# --- [1. 시스템 설정 및 CSS 최적화] ---
+# --- [1. 시스템 설정] ---
 st.set_page_config(page_title="유튜브 가짜뉴스 판독기 (Triple Engine)", layout="wide", page_icon="🛡️")
 
 st.markdown("""
@@ -36,7 +37,6 @@ st.markdown("""
 if "is_admin" not in st.session_state: st.session_state["is_admin"] = False
 if "debug_logs" not in st.session_state: st.session_state["debug_logs"] = []
 
-# 🌟 Secrets 로드
 try:
     YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
@@ -105,7 +105,6 @@ def call_triple_survivor(prompt, is_json=False):
     logs = []
     response_format = {"type": "json_object"} if is_json else None
     
-    # Mistral
     for model_name in MISTRAL_MODELS:
         try:
             resp = mistral_client.chat.complete(
@@ -119,7 +118,6 @@ def call_triple_survivor(prompt, is_json=False):
             logs.append(f"❌ Mistral Failed: {str(e)[:20]}")
             continue
 
-    # Gemini A & B
     generation_config = {"response_mime_type": "application/json"} if is_json else {}
     for key_name, key_val in [("Key A", GOOGLE_API_KEY_A), ("Key B", GOOGLE_API_KEY_B)]:
         logs.append(f"⚠️ Mistral Failed -> Gemini {key_name} 투입")
@@ -136,40 +134,17 @@ def call_triple_survivor(prompt, is_json=False):
             
     return None, "All Failed", logs
 
-# --- [5. Data & Engine] ---
-WEIGHT_ALGO = 0.85
-WEIGHT_AI = 0.15
-OFFICIAL_CHANNELS = ['MBC','KBS','SBS','EBS','YTN','JTBC','TVCHOSUN','MBN','CHANNEL A','연합뉴스','YONHAP','한겨레','경향','조선','중앙','동아']
-STATIC_TRUTH = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "선거 출마 선언"]
-STATIC_FAKE = ["충격 폭로 경악", "긴급 속보 소름", "구속 영장 발부", "사형 집행", "위독설"]
-
-import numpy as np
-
+# --- [5. Data & Engine (VectorEngine)] ---
 class VectorEngine:
     def __init__(self):
         self.truth_vectors = []
         self.fake_vectors = []
         self.model_name = "models/text-embedding-004"
         
-        # [획기적 변화] "절대 좌표 (Absolute Anchors)" 정의
-        # DB 데이터가 부족하거나 오염되어도, 이 기준점은 변하지 않습니다.
-        # 인명/지명(Subject)을 뺀 '서술어/수식어(Predicate)' 위주로 구성합니다.
+        # [절대 앵커] - 스타일 분석의 기준점
+        self.fake_anchor_text = "충격 단독 속보 경악 실체 폭로 긴급 체포 구속 수사 결국 사망 뇌사 심정지 대통령 격노 뒤집어진 상황 눈물 바다 오열 통곡 전재산 탕진 빚더미 이혼 파경 별거 불화 숨겨진 자식 아이 출산 비밀 충격적인 근황 소름 돋는 방송 퇴출 영구 제명 미친 반전 실제 상황 의사 소견 진단 사형 집행"
+        self.truth_anchor_text = "공식 입장 발표 사실 무근 법적 대응 예고 선처 없다 허위 사실 유포 강경 대응 단독 보도 팩트 체크 기자 회견 전문 공개 오보로 밝혀져 해프닝 검찰 조사 결과 무혐의 재판부 판결 선고 공판 공식 보도 자료 배포 사실 확인 결과 아님 루머 일축 근거 없음 해명 인터뷰 진행 관계자 확인"
         
-        self.fake_anchor_text = """
-        충격 단독 속보 경악 실체 폭로 긴급 체포 구속 수사 결국 사망 뇌사 심정지
-        대통령 격노 뒤집어진 상황 눈물 바다 오열 통곡 전재산 탕진 빚더미
-        이혼 파경 별거 불화 숨겨진 자식 아이 출산 비밀 충격적인 근황 소름 돋는
-        방송 퇴출 영구 제명 미친 반전 실제 상황 의사 소견 진단 사형 집행
-        """
-        
-        self.truth_anchor_text = """
-        공식 입장 발표 사실 무근 법적 대응 예고 선처 없다 허위 사실 유포 강경 대응
-        단독 보도 팩트 체크 기자 회견 전문 공개 오보로 밝혀져 해프닝
-        검찰 조사 결과 무혐의 재판부 판결 선고 공판 공식 보도 자료 배포
-        사실 확인 결과 아님 루머 일축 근거 없음 해명 인터뷰 진행 관계자 확인
-        """
-        
-        # 앵커 벡터는 미리 계산해둡니다 (캐싱 효과)
         self.fake_anchor_vec = None
         self.truth_anchor_vec = None
 
@@ -190,7 +165,7 @@ class VectorEngine:
         self.truth_vectors = [np.array(v) for v in truth_vecs]
         self.fake_vectors = [np.array(v) for v in fake_vecs]
         
-        # 앵커 벡터 초기화 (최초 1회)
+        # 앵커 벡터 초기화
         if self.fake_anchor_vec is None:
             self.fake_anchor_vec = self.get_embedding(self.fake_anchor_text)
             self.truth_anchor_vec = self.get_embedding(self.truth_anchor_text)
@@ -199,7 +174,6 @@ class VectorEngine:
         self.truth_vectors.extend([self.get_embedding(t) for t in truth_text])
         self.fake_vectors.extend([self.get_embedding(t) for t in fake_text])
         
-        # 앵커 벡터 초기화 (안 되어 있을 경우)
         if self.fake_anchor_vec is None:
             self.fake_anchor_vec = self.get_embedding(self.fake_anchor_text)
             self.truth_anchor_vec = self.get_embedding(self.truth_anchor_text)
@@ -213,65 +187,67 @@ class VectorEngine:
 
     def analyze(self, query_context):
         """
-        [Absolute Anchor System]
-        DB 유사도(30%) + 절대 앵커 유사도(70%) = 최종 점수
+        [Winner Takes All (승자 독식) 알고리즘]
+        앵커 점수에서 이긴 쪽이 점수를 독식하고, 패자의 점수는 강제로 깎아버립니다.
         """
         query_vec = self.get_embedding(query_context)
         
-        # 1. [DB 유사도] 기존 방식 (Max Pooling)
-        # 서장훈 이슈가 DB에 많으면 여기서 점수가 둘 다 높게 나옵니다.
+        # 1. 절대 앵커 유사도 계산 (스타일 분석)
+        anchor_t = self.cosine_similarity(query_vec, self.truth_anchor_vec)
+        anchor_f = self.cosine_similarity(query_vec, self.fake_anchor_vec)
+        
+        # 2. DB 유사도 (참고용)
         if not self.truth_vectors: db_t = 0.0
         else: db_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
         
         if not self.fake_vectors: db_f = 0.0
         else: db_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
         
-        # 2. [절대 앵커 유사도] 획기적인 방식
-        # "서장훈" 이름 떼고, "말투"만 봅니다.
-        anchor_t = self.cosine_similarity(query_vec, self.truth_anchor_vec)
-        anchor_f = self.cosine_similarity(query_vec, self.fake_anchor_vec)
+        # 3. [핵심] 승자 독식 로직
+        # 앵커 점수가 더 신뢰도가 높으므로 앵커를 기준으로 승자를 정합니다.
         
-        # 3. [하이브리드 합산] (앵커 가중치 70% 부여)
-        # DB가 헷갈려도(50:50), 앵커가 확실하면(10:90) 결과는 가짜로 기웁니다.
-        final_raw_t = (db_t * 0.3) + (anchor_t * 0.7)
-        final_raw_f = (db_f * 0.3) + (anchor_f * 0.7)
+        final_t = 0.0
+        final_f = 0.0
         
-        # 4. [격차 증폭] 
-        # 이제 격차가 벌어졌으니, 더 확실하게 보여주기 위해 스케일링합니다.
+        # 가짜 앵커랑 더 비슷하면? -> 가짜 점수 대폭 상향, 진실 점수 킬(Kill)
+        if anchor_f > anchor_t:
+            final_f = 0.8 + (anchor_f * 0.2) # 기본 80점 깔고 들어감
+            final_t = 0.2 * anchor_t # 진실 점수는 20%만 반영 (페널티)
         
-        # Softmax 스타일 변환
-        exp_t = np.exp(final_raw_t * 10) 
-        exp_f = np.exp(final_raw_f * 10)
+        # 진실 앵커랑 더 비슷하면? -> 진실 점수 대폭 상향
+        elif anchor_t > anchor_f:
+            final_t = 0.8 + (anchor_t * 0.2)
+            final_f = 0.2 * anchor_f
+            
+        else: # 정말 똑같으면 (드문 경우)
+            final_t = 0.5
+            final_f = 0.5
+            
+        # DB 점수 살짝 섞어서 보정 (10% 비중)
+        # 하지만 승패를 뒤집진 못하게 함
+        final_t = (final_t * 0.9) + (db_t * 0.1)
+        final_f = (final_f * 0.9) + (db_f * 0.1)
         
-        total = exp_t + exp_f
-        if total == 0: return 0.0, 0.0
-        
-        return (exp_t / total), (exp_f / total)
-        
+        return final_t, final_f
+
 vector_engine = VectorEngine()
 
+# --- [나머지 함수들] ---
 def get_keywords(title, trans):
     prompt = f"""
     You are a Fact-Check Investigator.
     [Input] Title: {title}, Transcript: {trans[:10000]}
-    
     [Task]
     1. Generate 3 Google News search queries (Short & Specific).
-    2. Summarize the 'Core Claims' (3 sentences) for vector context.
-    
-    [Output JSON]
-    {{ "queries": ["q1", "q2", "q3"], "vector_context": "summary..." }}
+    2. Summarize the 'Core Claims' of this video in 3 sentences for vector context.
+    [Output JSON] {{ "queries": ["q1", "q2", "q3"], "vector_context": "summary..." }}
     """
     res, model, logs = call_triple_survivor(prompt, is_json=True)
     st.session_state["debug_logs"].extend([f"[Key] {l}" for l in logs])
-    
     parsed = parse_llm_json(res)
-    default_queries = [title, title + " 팩트체크", "뉴스"]
-    default_context = title + " " + trans[:200]
-    
-    if parsed:
-        return parsed.get('queries', default_queries), parsed.get('vector_context', default_context), model
-    return default_queries, default_context, model
+    default = [title, title+" 팩트체크", "뉴스"]
+    if parsed: return parsed.get('queries', default), parsed.get('vector_context', title), model
+    return default, title, model
 
 def scrape_news(url):
     try:
@@ -306,7 +282,6 @@ def generate_comprehensive_summary(title, final_prob, news_ev, red_cnt, ai_reaso
     최종 확률: {final_prob}% ({risk_text})
     뉴스 대조: {len(news_ev)}개
     AI 판단: {ai_reason}
-    
     위 데이터를 바탕으로 사용자에게 정중한 최종 종합 리포트(4문장 이내)를 작성하세요.
     """
     res, _, _ = call_triple_survivor(prompt, is_json=False)
@@ -356,10 +331,15 @@ def analyze_comments(cmts, ctx):
     score = int(sum(1 for w,c in top if w in ctx_set)/len(top)*100) if top else 0
     return [f"{w}({c})" for w,c in top], score, "높음" if score>=60 else "보통" if score>=20 else "낮음"
 
+# [수정] DB 저장 시 numpy array를 list로 변환하여 에러 방지
 def save_db(ch, ti, pr, url, kw, detail, vec_ctx):
     try: 
         embedding = vector_engine.get_embedding(vec_ctx)
         
+        # [핵심 수정] numpy array -> list 변환 (JSON 직렬화 오류 해결)
+        if isinstance(embedding, np.ndarray):
+            embedding = embedding.tolist()
+            
         supabase.table("analysis_history").insert({
             "channel_name":ch, "video_title":ti, "fake_prob":pr, "video_url":url, 
             "keywords":kw, 
@@ -418,7 +398,7 @@ def render_report_full_ui(prob, db_count, title, channel, data, is_cached=False)
             st.warning("관련된 신뢰할 수 있는 뉴스 기사를 찾지 못했습니다.")
 
     with tab_data:
-        st.write("###### [증거 1] 데이터 유사도 분석")
+        st.write("###### [증거 1] 데이터 유사도 분석 (승자 독식 모델)")
         c1, c2 = st.columns(2)
         with c1: st.markdown(colored_bar_html("진실 데이터 유사도", data.get('ts', 0), "#4CAF50"), unsafe_allow_html=True)
         with c2: st.markdown(colored_bar_html("가짜 데이터 유사도", data.get('fs', 0), "#F44336"), unsafe_allow_html=True)
@@ -465,6 +445,7 @@ def render_intelligence_distribution(current_prob):
         st.altair_chart(base + rule, use_container_width=True)
     except: pass
 
+# --- [Main Analysis Logic] ---
 def run_forensic_main(url):
     st.session_state["debug_logs"] = []
     my_bar = st.progress(0, text="분석 엔진 가동 중...")
@@ -503,22 +484,19 @@ def run_forensic_main(url):
             my_bar.progress(40, "키워드 추출 및 문맥 분석 중...")
             queries, vector_context, _ = get_keywords(meta['제목'], full_text)
             
-            # [핵심 수정 1] 몇 번째 키워드에서 걸렸는지 확인 (Tier System)
             news_items = []
             final_query = queries[0]
-            query_tier = 0 # 0: 1순위(정확), 1: 2순위(유사), 2: 3순위(광의)
+            query_tier = 0
             
             for i, q in enumerate(queries):
                 items = fetch_news(q)
                 if items: 
                     news_items = items
                     final_query = q
-                    query_tier = i # 적중한 순위 저장
+                    query_tier = i
                     break
             
-            # [시각화] 어떤 키워드가 적중했는지, 가중치는 얼마인지 로그에 표시
-            tier_labels = ["🎯 1순위(핵심)", "⚠️ 2순위(관련)", "🌐 3순위(광의)"]
-            st.toast(f"뉴스 검색 적중: {tier_labels[query_tier]} - '{final_query}'", icon="🔎")
+            st.toast(f"뉴스 검색 적중: {final_query}", icon="🔎")
             
             my_bar.progress(60, "팩트체크 대조 분석 중...")
             news_ev = []; max_match = 0
@@ -532,22 +510,18 @@ def run_forensic_main(url):
             top_kw, rel_score, rel_msg = analyze_comments(cmts, full_text)
             red_cnt, _ = check_red_flags(cmts)
             
+            # [핵심] 제목(Title) + 문맥(Context)을 합쳐서 분석
+            # (절대 앵커 시스템이 작동하여 '충격', '폭로' 등의 단어에 반응)
             hybrid_query = f"{meta['제목']} {vector_context}"
-            ts, fs = vector_engine.analyze(vector_context)
+            ts, fs = vector_engine.analyze(hybrid_query)
             t_impact, f_impact = int(ts*30)*-1, int(fs*30)
             
-            # [핵심 수정 2] 순위에 따른 점수 가중치 적용 (Penalty)
-            # 1순위: 100% 반영 / 2순위: 50% 반영 / 3순위: 20% 반영
             tier_weight = 1.0 if query_tier == 0 else 0.5 if query_tier == 1 else 0.2
-            
-            # 원래 뉴스 점수 계산
             raw_news_score = -40 if max_match>=80 else -15 if max_match>=70 else 10 if max_match>=60 else 30
             if not news_ev: raw_news_score = 0
-            
-            # 가중치 적용 (안전 점수(-40)가 2순위면 -20, 3순위면 -8로 약해짐)
             news_score = int(raw_news_score * tier_weight)
             
-            if check_official(meta['채널명']): news_score = -50 # 공식 채널은 무조건 안전
+            if check_official(meta['채널명']): news_score = -50
             
             agitation = count_agitation(meta['제목'])
             bait = 10 if agitation > 0 else -5
@@ -566,7 +540,7 @@ def run_forensic_main(url):
                 ["기본 점수", 50, "Base Score"],
                 ["진실 데이터 유사도", t_impact, "Truth Corpus Similarity"],
                 ["가짜 데이터 유사도", f_impact, "Fake Corpus Similarity"],
-                [f"뉴스 팩트체크 ({tier_labels[query_tier]})", news_score, f"Journalism Match (Weight: {int(tier_weight*100)}%)"], # 상세 내용 표시
+                [f"뉴스 팩트체크", news_score, f"Journalism Match (Weight: {int(tier_weight*100)}%)"],
                 ["여론 및 어그로", min(20, red_cnt*3) + bait, "Sentiment & Clickbait"],
                 ["AI 판결 (가중치)", ai_score, "LLM Judge"]
             ]
@@ -589,7 +563,6 @@ def run_forensic_main(url):
 @st.cache_data(ttl=3600) 
 def fetch_db_vectors():
     try:
-        # [수정] 벡터가 NULL이 아닌 데이터만 가져옵니다 (유사도 오류 방지)
         res = supabase.table("analysis_history").select("video_title, fake_prob, vector_json").not_.is_("vector_json", "null").execute()
         if not res.data: return [], [], 0
         
@@ -727,13 +700,3 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
-
-
-
-
-
-
-
-
-
-
