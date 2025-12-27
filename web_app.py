@@ -407,21 +407,17 @@ def render_intelligence_distribution(current_prob):
         st.altair_chart(base + rule, use_container_width=True)
     except: pass
 
-# --- [Main Analysis Logic] ---
 def run_forensic_main(url):
     st.session_state["debug_logs"] = []
     my_bar = st.progress(0, text="분석 엔진 가동 중...")
     
-    # 1. 학습 데이터 로드 (벡터는 캐시 사용, 카운트는 실시간)
+    # 1. 학습 데이터 로드
     _, dt_vecs, df_vecs = train_engine_wrapper()
-    
-    # [수정] 카운트 정확도 향상 (직접 쿼리)
     try:
         res = supabase.table("analysis_history").select("id", count="exact", head=True).execute()
         db_count = res.count
     except: db_count = 0
     
-    # 2. 엔진에 벡터 주입 (캐시 데이터가 있을 경우)
     vector_engine.truth_vectors = dt_vecs
     vector_engine.fake_vectors = df_vecs
     
@@ -447,15 +443,24 @@ def run_forensic_main(url):
             summary = full_text[:800] + "..."
             
             my_bar.progress(40, "키워드 추출 및 문맥 분석 중...")
-            
-            # [수정] queries와 vector_context 분리 추출
             queries, vector_context, _ = get_keywords(meta['제목'], full_text)
             
+            # [핵심 수정 1] 몇 번째 키워드에서 걸렸는지 확인 (Tier System)
             news_items = []
             final_query = queries[0]
-            for q in queries:
+            query_tier = 0 # 0: 1순위(정확), 1: 2순위(유사), 2: 3순위(광의)
+            
+            for i, q in enumerate(queries):
                 items = fetch_news(q)
-                if items: news_items = items; final_query = q; break
+                if items: 
+                    news_items = items
+                    final_query = q
+                    query_tier = i # 적중한 순위 저장
+                    break
+            
+            # [시각화] 어떤 키워드가 적중했는지, 가중치는 얼마인지 로그에 표시
+            tier_labels = ["🎯 1순위(핵심)", "⚠️ 2순위(관련)", "🌐 3순위(광의)"]
+            st.toast(f"뉴스 검색 적중: {tier_labels[query_tier]} - '{final_query}'", icon="🔎")
             
             my_bar.progress(60, "팩트체크 대조 분석 중...")
             news_ev = []; max_match = 0
@@ -469,15 +474,22 @@ def run_forensic_main(url):
             top_kw, rel_score, rel_msg = analyze_comments(cmts, full_text)
             red_cnt, _ = check_red_flags(cmts)
             
-            # [핵심 수정 2] 문맥(Context)과 제목(Title)을 합쳐서 넓게 검색! (Hybrid)
-            # 이렇게 하면 제목 위주의 옛날 데이터 + 문맥 위주의 최신 데이터를 모두 잡습니다.
             hybrid_query = f"{meta['제목']} {vector_context}"
             ts, fs = vector_engine.analyze(hybrid_query)
             t_impact, f_impact = int(ts*30)*-1, int(fs*30)
             
-            news_score = -40 if max_match>=80 else -15 if max_match>=70 else 10 if max_match>=60 else 30
-            if not news_ev: news_score = 0
-            if check_official(meta['채널명']): news_score = -50
+            # [핵심 수정 2] 순위에 따른 점수 가중치 적용 (Penalty)
+            # 1순위: 100% 반영 / 2순위: 50% 반영 / 3순위: 20% 반영
+            tier_weight = 1.0 if query_tier == 0 else 0.5 if query_tier == 1 else 0.2
+            
+            # 원래 뉴스 점수 계산
+            raw_news_score = -40 if max_match>=80 else -15 if max_match>=70 else 10 if max_match>=60 else 30
+            if not news_ev: raw_news_score = 0
+            
+            # 가중치 적용 (안전 점수(-40)가 2순위면 -20, 3순위면 -8로 약해짐)
+            news_score = int(raw_news_score * tier_weight)
+            
+            if check_official(meta['채널명']): news_score = -50 # 공식 채널은 무조건 안전
             
             agitation = count_agitation(meta['제목'])
             bait = 10 if agitation > 0 else -5
@@ -496,7 +508,7 @@ def run_forensic_main(url):
                 ["기본 점수", 50, "Base Score"],
                 ["진실 데이터 유사도", t_impact, "Truth Corpus Similarity"],
                 ["가짜 데이터 유사도", f_impact, "Fake Corpus Similarity"],
-                ["뉴스 팩트체크", news_score, "Journalism Match"],
+                [f"뉴스 팩트체크 ({tier_labels[query_tier]})", news_score, f"Journalism Match (Weight: {int(tier_weight*100)}%)"], # 상세 내용 표시
                 ["여론 및 어그로", min(20, red_cnt*3) + bait, "Sentiment & Clickbait"],
                 ["AI 판결 (가중치)", ai_score, "LLM Judge"]
             ]
@@ -657,3 +669,4 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
