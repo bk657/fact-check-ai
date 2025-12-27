@@ -135,7 +135,9 @@ def call_triple_survivor(prompt, is_json=False):
     return None, "All Failed", logs
 
 # --- [5. Data & Engine] ---
-# [🚨 복구 완료] 누락되었던 전역 변수 복구
+# [🚨 복구 완료] 누락되었던 가중치 및 설정 변수 복구
+WEIGHT_ALGO = 0.85
+WEIGHT_AI = 0.15
 OFFICIAL_CHANNELS = ['MBC','KBS','SBS','EBS','YTN','JTBC','TVCHOSUN','MBN','CHANNEL A','연합뉴스','YONHAP','한겨레','경향','조선','중앙','동아']
 STATIC_TRUTH = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "선거 출마 선언"]
 STATIC_FAKE = ["충격 폭로 경악", "긴급 속보 소름", "구속 영장 발부", "사형 집행", "위독설"]
@@ -330,7 +332,8 @@ def analyze_comments(cmts, ctx):
 def save_db(ch, ti, pr, url, kw, detail, vec_ctx):
     try: 
         embedding = vector_engine.get_embedding(vec_ctx)
-        # [핵심 수정] JSON 직렬화 오류 방지
+        
+        # numpy array -> list 변환 (JSON 직렬화 오류 방지)
         if isinstance(embedding, np.ndarray):
             embedding = embedding.tolist()
             
@@ -574,7 +577,7 @@ def fetch_db_vectors():
 def train_engine_wrapper():
     dt_vecs, df_vecs, count = fetch_db_vectors()
     
-    # [수정] 전역 변수를 인자로 전달
+    # [수정] 전역 변수 전달
     vector_engine.train_static(STATIC_TRUTH, STATIC_FAKE)
     
     return count, dt_vecs, df_vecs
