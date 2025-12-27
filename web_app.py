@@ -134,7 +134,12 @@ def call_triple_survivor(prompt, is_json=False):
             
     return None, "All Failed", logs
 
-# --- [5. Data & Engine (VectorEngine)] ---
+# --- [5. Data & Engine] ---
+# [🚨 복구 완료] 누락되었던 전역 변수 복구
+OFFICIAL_CHANNELS = ['MBC','KBS','SBS','EBS','YTN','JTBC','TVCHOSUN','MBN','CHANNEL A','연합뉴스','YONHAP','한겨레','경향','조선','중앙','동아']
+STATIC_TRUTH = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "선거 출마 선언"]
+STATIC_FAKE = ["충격 폭로 경악", "긴급 속보 소름", "구속 영장 발부", "사형 집행", "위독설"]
+
 class VectorEngine:
     def __init__(self):
         self.truth_vectors = []
@@ -188,7 +193,6 @@ class VectorEngine:
     def analyze(self, query_context):
         """
         [Winner Takes All (승자 독식) 알고리즘]
-        앵커 점수에서 이긴 쪽이 점수를 독식하고, 패자의 점수는 강제로 깎아버립니다.
         """
         query_vec = self.get_embedding(query_context)
         
@@ -204,27 +208,19 @@ class VectorEngine:
         else: db_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
         
         # 3. [핵심] 승자 독식 로직
-        # 앵커 점수가 더 신뢰도가 높으므로 앵커를 기준으로 승자를 정합니다.
-        
         final_t = 0.0
         final_f = 0.0
         
-        # 가짜 앵커랑 더 비슷하면? -> 가짜 점수 대폭 상향, 진실 점수 킬(Kill)
         if anchor_f > anchor_t:
-            final_f = 0.8 + (anchor_f * 0.2) # 기본 80점 깔고 들어감
-            final_t = 0.2 * anchor_t # 진실 점수는 20%만 반영 (페널티)
-        
-        # 진실 앵커랑 더 비슷하면? -> 진실 점수 대폭 상향
+            final_f = 0.8 + (anchor_f * 0.2)
+            final_t = 0.2 * anchor_t
         elif anchor_t > anchor_f:
             final_t = 0.8 + (anchor_t * 0.2)
             final_f = 0.2 * anchor_f
-            
-        else: # 정말 똑같으면 (드문 경우)
+        else: 
             final_t = 0.5
             final_f = 0.5
             
-        # DB 점수 살짝 섞어서 보정 (10% 비중)
-        # 하지만 승패를 뒤집진 못하게 함
         final_t = (final_t * 0.9) + (db_t * 0.1)
         final_f = (final_f * 0.9) + (db_f * 0.1)
         
@@ -331,12 +327,10 @@ def analyze_comments(cmts, ctx):
     score = int(sum(1 for w,c in top if w in ctx_set)/len(top)*100) if top else 0
     return [f"{w}({c})" for w,c in top], score, "높음" if score>=60 else "보통" if score>=20 else "낮음"
 
-# [수정] DB 저장 시 numpy array를 list로 변환하여 에러 방지
 def save_db(ch, ti, pr, url, kw, detail, vec_ctx):
     try: 
         embedding = vector_engine.get_embedding(vec_ctx)
-        
-        # [핵심 수정] numpy array -> list 변환 (JSON 직렬화 오류 해결)
+        # [핵심 수정] JSON 직렬화 오류 방지
         if isinstance(embedding, np.ndarray):
             embedding = embedding.tolist()
             
@@ -511,7 +505,6 @@ def run_forensic_main(url):
             red_cnt, _ = check_red_flags(cmts)
             
             # [핵심] 제목(Title) + 문맥(Context)을 합쳐서 분석
-            # (절대 앵커 시스템이 작동하여 '충격', '폭로' 등의 단어에 반응)
             hybrid_query = f"{meta['제목']} {vector_context}"
             ts, fs = vector_engine.analyze(hybrid_query)
             t_impact, f_impact = int(ts*30)*-1, int(fs*30)
@@ -581,9 +574,7 @@ def fetch_db_vectors():
 def train_engine_wrapper():
     dt_vecs, df_vecs, count = fetch_db_vectors()
     
-    vector_engine.truth_vectors = dt_vecs
-    vector_engine.fake_vectors = df_vecs
-    
+    # [수정] 전역 변수를 인자로 전달
     vector_engine.train_static(STATIC_TRUTH, STATIC_FAKE)
     
     return count, dt_vecs, df_vecs
