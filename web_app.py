@@ -456,8 +456,20 @@ def run_forensic_main(url):
     st.session_state["debug_logs"] = []
     my_bar = st.progress(0, text="분석 엔진 가동 중...")
     
-    # 0. 학습 데이터 로드
-    db_count, dt, df = train_engine_wrapper()
+    # ---------------------------------------------------------------
+    # [수정 전] 캐시된 데이터에서 개수(db_count)를 그대로 가져옴 (그래서 고정됨)
+    # db_count, dt, df = train_engine_wrapper() 
+    
+    # [수정 후] 벡터(dt, df)는 캐시를 쓰고, '개수'는 실시간으로 조회합니다!
+    _, dt, df = train_engine_wrapper() 
+    
+    try:
+        # DB에 "지금 몇 개야?" 하고 직접 물어보는 코드 (head=True라 빠름)
+        res = supabase.table("analysis_history").select("id", count="exact", head=True).execute()
+        db_count = res.count
+    except:
+        db_count = 0 # 에러나면 0
+    # ---------------------------------------------------------------
     
     vid = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
     if not vid: st.error("올바른 유튜브 URL이 아닙니다."); return
@@ -696,6 +708,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
