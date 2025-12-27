@@ -147,9 +147,31 @@ import numpy as np
 
 class VectorEngine:
     def __init__(self):
-        self.truth_vectors = [] # 개별 벡터 리스트 유지
-        self.fake_vectors = []  # 개별 벡터 리스트 유지
-        self.model_name = "models/text-embedding-004" 
+        self.truth_vectors = []
+        self.fake_vectors = []
+        self.model_name = "models/text-embedding-004"
+        
+        # [획기적 변화] "절대 좌표 (Absolute Anchors)" 정의
+        # DB 데이터가 부족하거나 오염되어도, 이 기준점은 변하지 않습니다.
+        # 인명/지명(Subject)을 뺀 '서술어/수식어(Predicate)' 위주로 구성합니다.
+        
+        self.fake_anchor_text = """
+        충격 단독 속보 경악 실체 폭로 긴급 체포 구속 수사 결국 사망 뇌사 심정지
+        대통령 격노 뒤집어진 상황 눈물 바다 오열 통곡 전재산 탕진 빚더미
+        이혼 파경 별거 불화 숨겨진 자식 아이 출산 비밀 충격적인 근황 소름 돋는
+        방송 퇴출 영구 제명 미친 반전 실제 상황 의사 소견 진단 사형 집행
+        """
+        
+        self.truth_anchor_text = """
+        공식 입장 발표 사실 무근 법적 대응 예고 선처 없다 허위 사실 유포 강경 대응
+        단독 보도 팩트 체크 기자 회견 전문 공개 오보로 밝혀져 해프닝
+        검찰 조사 결과 무혐의 재판부 판결 선고 공판 공식 보도 자료 배포
+        사실 확인 결과 아님 루머 일축 근거 없음 해명 인터뷰 진행 관계자 확인
+        """
+        
+        # 앵커 벡터는 미리 계산해둡니다 (캐싱 효과)
+        self.fake_anchor_vec = None
+        self.truth_anchor_vec = None
 
     def get_embedding(self, text):
         try:
@@ -165,16 +187,22 @@ class VectorEngine:
         except: return np.zeros(768)
 
     def load_pretrained_vectors(self, truth_vecs, fake_vecs):
-        """
-        [핵심 변경]
-        평균(Centroid)을 구하지 않고, 있는 그대로 다 저장합니다. (Raw Data)
-        """
         self.truth_vectors = [np.array(v) for v in truth_vecs]
         self.fake_vectors = [np.array(v) for v in fake_vecs]
+        
+        # 앵커 벡터 초기화 (최초 1회)
+        if self.fake_anchor_vec is None:
+            self.fake_anchor_vec = self.get_embedding(self.fake_anchor_text)
+            self.truth_anchor_vec = self.get_embedding(self.truth_anchor_text)
 
     def train_static(self, truth_text, fake_text):
         self.truth_vectors.extend([self.get_embedding(t) for t in truth_text])
         self.fake_vectors.extend([self.get_embedding(t) for t in fake_text])
+        
+        # 앵커 벡터 초기화 (안 되어 있을 경우)
+        if self.fake_anchor_vec is None:
+            self.fake_anchor_vec = self.get_embedding(self.fake_anchor_text)
+            self.truth_anchor_vec = self.get_embedding(self.truth_anchor_text)
 
     def cosine_similarity(self, v1, v2):
         if np.all(v1 == 0) or np.all(v2 == 0): return 0.0
@@ -185,42 +213,38 @@ class VectorEngine:
 
     def analyze(self, query_context):
         """
-        [Best Match (Max-Pooling) Algorithm]
-        평균이 아니라, DB 내에서 '가장 비슷한 단 하나의 데이터'를 찾습니다.
+        [Absolute Anchor System]
+        DB 유사도(30%) + 절대 앵커 유사도(70%) = 최종 점수
         """
         query_vec = self.get_embedding(query_context)
         
-        # 1. 진실 DB 중 가장 비슷한 놈 찾기 (Max Score)
-        if not self.truth_vectors: max_t = 0.0
-        else: max_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors])
+        # 1. [DB 유사도] 기존 방식 (Max Pooling)
+        # 서장훈 이슈가 DB에 많으면 여기서 점수가 둘 다 높게 나옵니다.
+        if not self.truth_vectors: db_t = 0.0
+        else: db_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
         
-        # 2. 가짜 DB 중 가장 비슷한 놈 찾기 (Max Score)
-        if not self.fake_vectors: max_f = 0.0
-        else: max_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors])
+        if not self.fake_vectors: db_f = 0.0
+        else: db_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
         
-        # -------------------------------------------------------------
-        # [3. 격차 증폭 (Contrast Boosting)]
-        # 주제 점수(Base)를 제거하고 차이를 극대화합니다.
-        # -------------------------------------------------------------
+        # 2. [절대 앵커 유사도] 획기적인 방식
+        # "서장훈" 이름 떼고, "말투"만 봅니다.
+        anchor_t = self.cosine_similarity(query_vec, self.truth_anchor_vec)
+        anchor_f = self.cosine_similarity(query_vec, self.fake_anchor_vec)
         
-        # 둘 다 유사도가 낮으면(관련 데이터 없음) 0점
-        if max_t < 0.4 and max_f < 0.4:
-            return 0.0, 0.0
-            
-        gap = max_t - max_f
+        # 3. [하이브리드 합산] (앵커 가중치 70% 부여)
+        # DB가 헷갈려도(50:50), 앵커가 확실하면(10:90) 결과는 가짜로 기웁니다.
+        final_raw_t = (db_t * 0.3) + (anchor_t * 0.7)
+        final_raw_f = (db_f * 0.3) + (anchor_f * 0.7)
         
-        # 격차가 작으면(5% 미만) -> 둘 다 낮은 점수로 억제 (헷갈림 방지)
-        if abs(gap) < 0.05:
-            return max_t * 0.5, max_f * 0.5 
-            
-        # 격차가 크면 -> 이긴 쪽에 몰아주기 (Softmax Style)
-        # 예: 진실(0.8) vs 가짜(0.5) -> 격차 0.3 -> 진실 100%에 가깝게
+        # 4. [격차 증폭] 
+        # 이제 격차가 벌어졌으니, 더 확실하게 보여주기 위해 스케일링합니다.
         
-        sensitivity = 5.0 # 민감도
-        exp_t = np.exp(max_t * sensitivity)
-        exp_f = np.exp(max_f * sensitivity)
+        # Softmax 스타일 변환
+        exp_t = np.exp(final_raw_t * 10) 
+        exp_f = np.exp(final_raw_f * 10)
         
         total = exp_t + exp_f
+        if total == 0: return 0.0, 0.0
         
         return (exp_t / total), (exp_f / total)
         
@@ -703,6 +727,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
