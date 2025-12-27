@@ -164,7 +164,6 @@ class VectorEngine:
         self.fake_vectors = fake_vecs
 
     def train_static(self, truth_text, fake_text):
-        # 정적 데이터만 학습 (동적 데이터는 DB에서 로드됨)
         self.truth_vectors.extend([self.get_embedding(t) for t in truth_text])
         self.fake_vectors.extend([self.get_embedding(t) for t in fake_text])
 
@@ -177,15 +176,15 @@ class VectorEngine:
 
     def analyze(self, query):
         query_vec = self.get_embedding(query)
-        # 벡터가 없으면 0 처리
         if not self.truth_vectors: raw_t = 0
         else: raw_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
         
         if not self.fake_vectors: raw_f = 0
         else: raw_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
         
+        # [핵심 수정 1] 문턱을 0.75 -> 0.55로 대폭 완화! (유연성 확보)
         def calibrate(score):
-            baseline = 0.75 
+            baseline = 0.55 
             if score < baseline: return 0.0
             return (score - baseline) / (1.0 - baseline)
 
@@ -193,21 +192,17 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# [핵심 수정] 검색어(속도)와 문맥(저장/분석) 이원화
 def get_keywords(title, trans):
     prompt = f"""
     You are a Fact-Check Investigator.
     [Input] Title: {title}, Transcript: {trans[:10000]}
     
     [Task]
-    1. Generate 3 Google News search queries (Short & Specific) to verify facts.
-    2. Summarize the 'Core Claims' of this video in 3 sentences for vector context.
+    1. Generate 3 Google News search queries (Short & Specific).
+    2. Summarize the 'Core Claims' (3 sentences) for vector context.
     
-    [Output JSON Format]
-    {{
-        "queries": ["query1", "query2", "query3"],
-        "vector_context": "The video claims that... (Summarized Context)"
-    }}
+    [Output JSON]
+    {{ "queries": ["q1", "q2", "q3"], "vector_context": "summary..." }}
     """
     res, model, logs = call_triple_survivor(prompt, is_json=True)
     st.session_state["debug_logs"].extend([f"[Key] {l}" for l in logs])
@@ -248,23 +243,16 @@ def judge_final(title, trans, evidences):
 
 def generate_comprehensive_summary(title, final_prob, news_ev, red_cnt, ai_reason, risk_text):
     prompt = f"""
-    당신은 팩트체크 전문 AI 분석가입니다. 아래 데이터를 바탕으로 사용자에게 최종 종합 리포트를 작성해주세요.
+    당신은 팩트체크 전문 AI 분석가입니다.
+    영상 제목: {title}
+    최종 확률: {final_prob}% ({risk_text})
+    뉴스 대조: {len(news_ev)}개
+    AI 판단: {ai_reason}
     
-    [분석 데이터]
-    - 영상 제목: {title}
-    - 최종 가짜뉴스 확률: {final_prob}% ({risk_text})
-    - 뉴스 대조 결과: {len(news_ev)}개의 기사와 대조됨
-    - 선동성 댓글 감지: {red_cnt}개
-    - AI 판단 요약: {ai_reason}
-    
-    [요청사항]
-    1. 이 영상이 왜 {final_prob}% 점수를 받았는지 핵심 이유를 요약하세요.
-    2. 뉴스 증거와의 일치 여부, 제목의 어그로성, 여론 반응을 종합적으로 언급하세요.
-    3. 사용자에게 "믿어도 되는지", "주의해야 하는지" 명확한 행동 가이드를 제시하세요.
-    4. 한국어로 정중하고 전문적인 어조로 작성하세요. (최대 4문장)
+    위 데이터를 바탕으로 사용자에게 정중한 최종 종합 리포트(4문장 이내)를 작성하세요.
     """
     res, _, _ = call_triple_survivor(prompt, is_json=False)
-    return res if res else "종합 분석 결과를 생성하는데 실패했습니다."
+    return res if res else "종합 분석 실패"
 
 def normalize(w): return re.sub(r'은$|는$|이$|가$|을$|를$|의$|에$|로$', '', re.sub(r'[^가-힣0-9]', '', w))
 def get_tokens(t): return [normalize(w) for w in re.findall(r'[가-힣]{2,}', t) if w not in ['충격','속보','뉴스']]
@@ -310,7 +298,6 @@ def analyze_comments(cmts, ctx):
     score = int(sum(1 for w,c in top if w in ctx_set)/len(top)*100) if top else 0
     return [f"{w}({c})" for w,c in top], score, "높음" if score>=60 else "보통" if score>=20 else "낮음"
 
-# [수정] vec_ctx를 받아서 벡터로 저장
 def save_db(ch, ti, pr, url, kw, detail, vec_ctx):
     try: 
         embedding = vector_engine.get_embedding(vec_ctx)
@@ -322,7 +309,6 @@ def save_db(ch, ti, pr, url, kw, detail, vec_ctx):
             "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             "vector_json": json.dumps(embedding)
         }).execute()
-        # 저장 후 캐시를 비워야 다음 로드 때 최신 데이터 반영됨
         st.cache_data.clear() 
     except Exception as e: print(f"DB Error: {e}")
 
@@ -483,8 +469,10 @@ def run_forensic_main(url):
             top_kw, rel_score, rel_msg = analyze_comments(cmts, full_text)
             red_cnt, _ = check_red_flags(cmts)
             
-            # [수정] 문맥(vector_context)을 사용하여 유사도 분석
-            ts, fs = vector_engine.analyze(vector_context)
+            # [핵심 수정 2] 문맥(Context)과 제목(Title)을 합쳐서 넓게 검색! (Hybrid)
+            # 이렇게 하면 제목 위주의 옛날 데이터 + 문맥 위주의 최신 데이터를 모두 잡습니다.
+            hybrid_query = f"{meta['제목']} {vector_context}"
+            ts, fs = vector_engine.analyze(hybrid_query)
             t_impact, f_impact = int(ts*30)*-1, int(fs*30)
             
             news_score = -40 if max_match>=80 else -15 if max_match>=70 else 10 if max_match>=60 else 30
@@ -521,11 +509,9 @@ def run_forensic_main(url):
                 "final_summary": final_summary
             }
             
-            # [수정] 문맥(vector_context)도 함께 저장
             save_db(meta['채널명'], meta['제목'], final_prob, url, final_query, report, vector_context)
             
             my_bar.empty()
-            # [수정] 화면 표시 카운트 +1
             render_report_full_ui(final_prob, db_count + 1, meta['제목'], meta['채널명'], report, is_cached=False)
             
         except Exception as e: st.error(f"Error: {e}")
