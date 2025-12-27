@@ -165,7 +165,6 @@ class VectorEngine:
             return np.array(result['embedding'])
         except: return np.zeros(768)
 
-    # [핵심] 캐시로 인해 초기화가 안 될 수 있으므로, 실행 시마다 호출하는 함수 추가
     def ensure_anchors(self):
         if self.fake_anchor_vec is None or self.truth_anchor_vec is None:
             self.fake_anchor_vec = self.get_embedding(self.fake_anchor_text)
@@ -176,7 +175,6 @@ class VectorEngine:
         self.fake_vectors = [np.array(v) for v in fake_vecs]
 
     def train_static(self, truth_text, fake_text):
-        # 앵커 생성 (캐시 안에서 호출되면 스킵될 위험 있음 -> ensure_anchors로 보완)
         self.ensure_anchors()
         self.truth_vectors.extend([self.get_embedding(t) for t in truth_text])
         self.fake_vectors.extend([self.get_embedding(t) for t in fake_text])
@@ -189,37 +187,54 @@ class VectorEngine:
         return dot / (norm_a * norm_b) if norm_a * norm_b != 0 else 0
 
     def analyze(self, query_context):
-        """[승자 독식] 앵커 점수가 높은 쪽이 100% 점수 획득"""
-        self.ensure_anchors() # [안전장치] 앵커가 없으면 지금이라도 만드세요.
-        
+        """
+        [Ultimate Winner Takes All]
+        미세한 차이라도 감지되면 수학적으로 격차를 100배 벌려버립니다.
+        양쪽 점수가 비슷하게 나오는 것을 원천 봉쇄합니다.
+        """
+        self.ensure_anchors()
         query_vec = self.get_embedding(query_context)
         
-        # 1. 앵커 유사도 (절대 평가)
-        anchor_t = self.cosine_similarity(query_vec, self.truth_anchor_vec)
-        anchor_f = self.cosine_similarity(query_vec, self.fake_anchor_vec)
+        # 1. 점수 계산 (앵커 70% + DB 30%)
+        # 앵커 점수
+        a_t = self.cosine_similarity(query_vec, self.truth_anchor_vec)
+        a_f = self.cosine_similarity(query_vec, self.fake_anchor_vec)
         
-        # 2. DB 유사도 (상대 평가)
-        db_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
-        db_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
+        # DB 점수
+        d_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
+        d_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
         
-        # 3. 승자 독식 로직 (앵커 기준)
-        final_t = 0.0
-        final_f = 0.0
+        # 종합 점수 (Raw Score)
+        raw_t = (a_t * 0.7) + (d_t * 0.3)
+        raw_f = (a_f * 0.7) + (d_f * 0.3)
         
-        # 차이가 미세하면(0.02 미만) -> 앵커 판단 보류 -> DB 점수 따라감
-        if abs(anchor_t - anchor_f) < 0.02:
-            final_t = db_t
-            final_f = db_f
-        # 차이가 나면 -> 이긴 쪽이 싹쓸이
-        elif anchor_f > anchor_t:
-            final_f = 0.95 # 가짜 확정
-            final_t = 0.05
-        else:
-            final_t = 0.95 # 진실 확정
-            final_f = 0.05
-            
+        # ---------------------------------------------------------
+        # [핵심] 격차 강제 벌리기 (Power Function)
+        # ---------------------------------------------------------
+        
+        # 1. 일단 정규화 (합이 1.0이 되도록)
+        # 예: 0.92 vs 0.97 -> 0.48 vs 0.52 (차이가 미미함)
+        total = raw_t + raw_f
+        if total < 0.01: return 0.0, 0.0
+        
+        norm_t = raw_t / total
+        norm_f = raw_f / total
+        
+        # 2. 멱수 법칙 적용 (제곱을 해서 큰 놈은 더 크게, 작은 놈은 더 작게)
+        # 0.52의 20제곱 vs 0.48의 20제곱 -> 차이가 엄청나게 벌어짐
+        power = 15 # 민감도 계수 (높을수록 승자독식 강해짐)
+        
+        pow_t = math.pow(norm_t, power)
+        pow_f = math.pow(norm_f, power)
+        
+        # 3. 다시 정규화 (0~100% 스케일로 변환)
+        new_total = pow_t + pow_f
+        if new_total == 0: return 0.5, 0.5
+        
+        final_t = pow_t / new_total
+        final_f = pow_f / new_total
+        
         return final_t, final_f
-
 vector_engine = VectorEngine()
 
 # --- [나머지 함수들] ---
@@ -683,3 +698,4 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
