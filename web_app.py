@@ -145,40 +145,38 @@ STATIC_FAKE = ["충격 폭로 경악", "긴급 속보 소름", "구속 영장 �
 
 class VectorEngine:
     def __init__(self):
-        self.model_name = "models/text-embedding-004"
-        
-        # 1. [핵심] 가짜뉴스 '형태소/패턴' DNA (주제어인 이름/지명은 뺐음)
-        # 이것들이 많이 섞여 있을수록 '가짜 스타일' 점수가 올라갑니다.
-        self.fake_style_corpus = [
-            "충격 속보 경악 실체 폭로", "긴급 체포 구속 수사", "결국 사망 뇌사 심정지",
-            "대통령 격노 뒤집어진 상황", "눈물 바다 오열 통곡", "전재산 탕진 빚더미",
-            "이혼 파경 별거 불화", "충격적인 근황 소름 돋는", "방송 퇴출 영구 제명",
-            "미친 반전 소름 돋는 결말", "긴급 상황 발생 실제 상황", "의사 소견 충격 진단"
-        ]
-        
-        # 2. 진실(정론) 뉴스 '형태소/패턴' DNA
-        self.truth_style_corpus = [
-            "공식 입장 발표 사실 무근", "법적 대응 예고 선처 없다", "허위 사실 유포 강경 대응",
-            "단독 보도 팩트 체크", "기자 회견 전문 공개", "오보로 밝혀져 해프닝",
-            "검찰 조사 결과 무혐의", "재판부 판결 선고 공판", "공식 보도 자료 배포",
-            "사실 확인 결과 아님", "루머 일축 근거 없음", "해명 인터뷰 진행"
-        ]
-        
-        self.fake_vectors = []
-        self.truth_vectors = []
-        
-        # 엔진 초기화 시 패턴 학습 (최초 1회)
-        self.train_styles()
+        self.vectors = [] # (vector, label) 튜플을 저장: label 0=진실, 1=가짜
+        self.model_name = "models/text-embedding-004" 
 
     def get_embedding(self, text):
         try:
             genai.configure(api_key=GOOGLE_API_KEY_A)
             if not text or len(text) < 2: return [0.0] * 768
             result = genai.embed_content(
-                model=self.model_name, content=text, task_type="retrieval_document"
+                model=self.model_name,
+                content=text[:2000],
+                task_type="retrieval_document"
             )
             return result['embedding']
         except: return [0.0] * 768
+
+    def load_pretrained_vectors(self, truth_vecs, fake_vecs):
+        """
+        DB에 있는 데이터를 메모리에 로드합니다.
+        (진실=0, 가짜=1 라벨링)
+        """
+        self.vectors = []
+        for v in truth_vecs:
+            self.vectors.append({'vec': v, 'label': 0}) # 0: Truth
+        for v in fake_vecs:
+            self.vectors.append({'vec': v, 'label': 1}) # 1: Fake
+
+    def train_static(self, truth_text, fake_text):
+        # 정적 데이터도 학습에 포함
+        for t in truth_text:
+            self.vectors.append({'vec': self.get_embedding(t), 'label': 0})
+        for t in fake_text:
+            self.vectors.append({'vec': self.get_embedding(t), 'label': 1})
 
     def cosine_similarity(self, v1, v2):
         if not v1 or not v2: return 0
@@ -187,45 +185,56 @@ class VectorEngine:
         mag2 = sum(b*b for b in v2)**0.5
         return dot / (mag1 * mag2) if mag1*mag2 != 0 else 0
 
-    def train_styles(self):
-        """가짜/진실 패턴 DNA를 벡터화하여 로드합니다."""
-        # 이 과정은 주제(Topic)가 아닌 말투(Tone)를 학습하는 것입니다.
-        self.fake_vectors = [self.get_embedding(t) for t in self.fake_style_corpus]
-        self.truth_vectors = [self.get_embedding(t) for t in self.truth_style_corpus]
-
-    # [중요] 기존 DB 로드 함수는 유지하되, 여기서는 '패턴 분석'에 집중
-    def load_pretrained_vectors(self, truth_vecs, fake_vecs):
-        pass # 스타일 분석 모드에서는 개별 사건 DB보다 패턴 DB가 우선입니다.
-    
-    def train_static(self, t, f): pass # 위와 동일
-
-    def analyze(self, title_only):
+    def analyze(self, query_context):
         """
-        [Style Pattern Matching]
-        내용(Context)을 보지 않고, 오직 제목(Title)의 '형태소 패턴'만 분석합니다.
-        주제(이강인, 유재석 등)가 빠진 '껍데기'만 비교하여 가짜 냄새를 맡습니다.
+        [KNN 다수결 알고리즘]
+        가장 유사한 Top 10개의 데이터를 뽑아서, 그 중 '가짜'가 몇 개인지 셉니다.
         """
-        query_vec = self.get_embedding(title_only)
+        if not self.vectors: return 0.5, 0.5 # 데이터 없으면 중립
         
-        # 1. 가짜뉴스 패턴들과의 평균 유사도 (얼마나 자극적인가?)
-        fake_score = sum([self.cosine_similarity(query_vec, v) for v in self.fake_vectors]) / len(self.fake_vectors)
+        query_vec = self.get_embedding(query_context)
         
-        # 2. 정론 뉴스 패턴들과의 평균 유사도 (얼마나 건조한가?)
-        truth_score = sum([self.cosine_similarity(query_vec, v) for v in self.truth_vectors]) / len(self.truth_vectors)
-        
-        # 3. 스코어 보정 (벡터 특성상 0.3~0.5 구간에 몰리므로 확장)
-        # 가짜 패턴이랑 40% 이상 닮았으면 매우 위험한 것임
-        def scale(s):
-            return min(1.0, max(0.0, (s - 0.25) * 4)) # 0.25~0.5 구간을 0~100%로 확장
+        # 1. 모든 데이터와의 거리 계산
+        scored_vectors = []
+        for item in self.vectors:
+            score = self.cosine_similarity(query_vec, item['vec'])
+            scored_vectors.append({'score': score, 'label': item['label']})
             
-        final_f = scale(fake_score)
-        final_t = scale(truth_score)
+        # 2. 유사도 높은 순으로 정렬
+        scored_vectors.sort(key=lambda x: x['score'], reverse=True)
         
-        # 4. 상대 평가 (둘 중 더 강한 쪽의 특성 부각)
-        total = final_f + final_t
-        if total < 0.1: return 0.0, 0.0 # 둘 다 아니면 중립
+        # 3. Top K (상위 10개) 추출
+        K = 10 
+        top_k = scored_vectors[:K]
         
-        return (final_t / total), (final_f / total)
+        if not top_k: return 0.5, 0.5
+        
+        # 4. 투표 (Majority Vote) & 가중치 적용
+        # 단순히 개수만 세는 게 아니라, 유사도가 높을수록 투표권(가중치)을 더 줍니다.
+        vote_truth = 0.0
+        vote_fake = 0.0
+        
+        for item in top_k:
+            # 유사도가 0.6 미만이면 투표권 박탈 (노이즈 제거)
+            if item['score'] < 0.6: continue
+            
+            # 가중치 = 유사도의 제곱 (비슷할수록 영향력 급상승)
+            weight = item['score'] ** 2
+            
+            if item['label'] == 0: # Truth
+                vote_truth += weight
+            else: # Fake
+                vote_fake += weight
+                
+        # 5. 최종 비율 계산
+        total_vote = vote_truth + vote_fake
+        
+        if total_vote == 0: return 0.0, 0.0 # 유의미한 이웃이 없음
+        
+        final_t = vote_truth / total_vote
+        final_f = vote_fake / total_vote
+        
+        return final_t, final_f
         
 vector_engine = VectorEngine()
 
@@ -512,7 +521,7 @@ def run_forensic_main(url):
             red_cnt, _ = check_red_flags(cmts)
             
             hybrid_query = f"{meta['제목']} {vector_context}"
-            ts, fs = vector_engine.analyze(meta['제목'])
+            ts, fs = vector_engine.analyze(vector_context)
             t_impact, f_impact = int(ts*30)*-1, int(fs*30)
             
             # [핵심 수정 2] 순위에 따른 점수 가중치 적용 (Penalty)
@@ -706,6 +715,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
