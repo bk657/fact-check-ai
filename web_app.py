@@ -143,96 +143,95 @@ OFFICIAL_CHANNELS = ['MBC','KBS','SBS','EBS','YTN','JTBC','TVCHOSUN','MBN','CHAN
 STATIC_TRUTH = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "선거 출마 선언"]
 STATIC_FAKE = ["충격 폭로 경악", "긴급 속보 소름", "구속 영장 발부", "사형 집행", "위독설"]
 
+import numpy as np # 벡터 연산을 위해 numpy가 필요합니다 (필수)
+
 class VectorEngine:
     def __init__(self):
-        self.vectors = [] # (vector, label) 튜플을 저장: label 0=진실, 1=가짜
+        self.truth_centroid = None # 진실 데이터들의 평균 좌표 (무게중심)
+        self.fake_centroid = None  # 가짜 데이터들의 평균 좌표 (무게중심)
         self.model_name = "models/text-embedding-004" 
 
     def get_embedding(self, text):
         try:
             genai.configure(api_key=GOOGLE_API_KEY_A)
-            if not text or len(text) < 2: return [0.0] * 768
+            if not text or len(text) < 2: return np.zeros(768)
+            
             result = genai.embed_content(
                 model=self.model_name,
                 content=text[:2000],
                 task_type="retrieval_document"
             )
-            return result['embedding']
-        except: return [0.0] * 768
+            return np.array(result['embedding']) # 계산을 위해 numpy 배열로 변환
+        except: return np.zeros(768)
 
     def load_pretrained_vectors(self, truth_vecs, fake_vecs):
         """
-        DB에 있는 데이터를 메모리에 로드합니다.
-        (진실=0, 가짜=1 라벨링)
+        [핵심 알고리즘]
+        개별 데이터를 저장하는 게 아니라, '진실의 평균'과 '거짓의 평균'을 계산합니다.
+        이렇게 하면 '주제'는 사라지고 '스타일/형태소'만 남습니다.
         """
-        self.vectors = []
-        for v in truth_vecs:
-            self.vectors.append({'vec': v, 'label': 0}) # 0: Truth
-        for v in fake_vecs:
-            self.vectors.append({'vec': v, 'label': 1}) # 1: Fake
+        if truth_vecs:
+            # 모든 진실 벡터를 더해서 개수로 나눔 (평균 위치 계산)
+            self.truth_centroid = np.mean(truth_vecs, axis=0)
+        else:
+            self.truth_centroid = np.zeros(768)
+
+        if fake_vecs:
+            # 모든 가짜 벡터를 더해서 개수로 나눔
+            self.fake_centroid = np.mean(fake_vecs, axis=0)
+        else:
+            self.fake_centroid = np.zeros(768)
 
     def train_static(self, truth_text, fake_text):
-        # 정적 데이터도 학습에 포함
-        for t in truth_text:
-            self.vectors.append({'vec': self.get_embedding(t), 'label': 0})
-        for t in fake_text:
-            self.vectors.append({'vec': self.get_embedding(t), 'label': 1})
+        # 정적 데이터도 평균 계산에 포함시키기 위해 임시 리스트 생성
+        t_vecs = [self.get_embedding(t) for t in truth_text]
+        f_vecs = [self.get_embedding(t) for t in fake_text]
+        
+        # 기존 중심점이 있으면 합쳐서 다시 평균 (가중 평균)
+        if self.truth_centroid is not None and np.any(self.truth_centroid):
+            t_vecs.append(self.truth_centroid)
+        if self.fake_centroid is not None and np.any(self.fake_centroid):
+            f_vecs.append(self.fake_centroid)
+            
+        self.truth_centroid = np.mean(t_vecs, axis=0)
+        self.fake_centroid = np.mean(f_vecs, axis=0)
 
     def cosine_similarity(self, v1, v2):
-        if not v1 or not v2: return 0
-        dot = sum(a*b for a,b in zip(v1,v2))
-        mag1 = sum(a*a for a in v1)**0.5
-        mag2 = sum(b*b for b in v2)**0.5
-        return dot / (mag1 * mag2) if mag1*mag2 != 0 else 0
+        if np.all(v1 == 0) or np.all(v2 == 0): return 0.0
+        dot = np.dot(v1, v2)
+        norm_a = np.linalg.norm(v1)
+        norm_b = np.linalg.norm(v2)
+        return dot / (norm_a * norm_b) if norm_a * norm_b != 0 else 0
 
     def analyze(self, query_context):
         """
-        [KNN 다수결 알고리즘]
-        가장 유사한 Top 10개의 데이터를 뽑아서, 그 중 '가짜'가 몇 개인지 셉니다.
+        [Centroid Distance Method]
+        입력된 영상이 '진실의 중심'에 가까운지, '거짓의 중심'에 가까운지 측정합니다.
         """
-        if not self.vectors: return 0.5, 0.5 # 데이터 없으면 중립
-        
         query_vec = self.get_embedding(query_context)
         
-        # 1. 모든 데이터와의 거리 계산
-        scored_vectors = []
-        for item in self.vectors:
-            score = self.cosine_similarity(query_vec, item['vec'])
-            scored_vectors.append({'score': score, 'label': item['label']})
+        # 1. 중심점과의 거리(유사도) 계산
+        # (이 점수는 주제 점수가 아니라, 해당 진영의 '평균적 스타일'과의 유사도입니다)
+        score_to_truth = self.cosine_similarity(query_vec, self.truth_centroid)
+        score_to_fake = self.cosine_similarity(query_vec, self.fake_centroid)
+        
+        # 2. 결과 보정 (격차 강조)
+        # 벡터 공간에서는 거리가 미세하게 차이나므로, 이를 백분율로 확 벌려줍니다.
+        
+        # 둘 다 관련성이 너무 없으면(0.4 미만) 0점 처리
+        if score_to_truth < 0.4 and score_to_fake < 0.4:
+            return 0.0, 0.0
             
-        # 2. 유사도 높은 순으로 정렬
-        scored_vectors.sort(key=lambda x: x['score'], reverse=True)
+        # [Softmax와 유사한 비율 계산]
+        # 예: 진실(0.7), 가짜(0.8) -> 가짜 쪽으로 더 쏠리게 계산
+        # exp 함수를 써서 큰 값을 더 크게 만듭니다.
+        exp_t = np.exp(score_to_truth * 10) # 민감도 조절 (x10)
+        exp_f = np.exp(score_to_fake * 10)
         
-        # 3. Top K (상위 10개) 추출
-        K = 10 
-        top_k = scored_vectors[:K]
+        total = exp_t + exp_f
         
-        if not top_k: return 0.5, 0.5
-        
-        # 4. 투표 (Majority Vote) & 가중치 적용
-        # 단순히 개수만 세는 게 아니라, 유사도가 높을수록 투표권(가중치)을 더 줍니다.
-        vote_truth = 0.0
-        vote_fake = 0.0
-        
-        for item in top_k:
-            # 유사도가 0.6 미만이면 투표권 박탈 (노이즈 제거)
-            if item['score'] < 0.6: continue
-            
-            # 가중치 = 유사도의 제곱 (비슷할수록 영향력 급상승)
-            weight = item['score'] ** 2
-            
-            if item['label'] == 0: # Truth
-                vote_truth += weight
-            else: # Fake
-                vote_fake += weight
-                
-        # 5. 최종 비율 계산
-        total_vote = vote_truth + vote_fake
-        
-        if total_vote == 0: return 0.0, 0.0 # 유의미한 이웃이 없음
-        
-        final_t = vote_truth / total_vote
-        final_f = vote_fake / total_vote
+        final_t = exp_t / total
+        final_f = exp_f / total
         
         return final_t, final_f
         
@@ -715,6 +714,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
