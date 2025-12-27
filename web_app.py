@@ -152,13 +152,13 @@ class VectorEngine:
     def get_embedding(self, text):
         try:
             genai.configure(api_key=GOOGLE_API_KEY_A)
-            # [핵심] 텍스트가 너무 짧으면 노이즈가 심하므로 최소한의 보정
+            # 텍스트가 너무 짧으면 노이즈가 심하므로 최소한의 보정
             if not text or len(text) < 2: return [0.0] * 768
             
             result = genai.embed_content(
                 model=self.model_name,
                 content=text[:2000],
-                task_type="retrieval_document" # 검색에 최적화된 모드
+                task_type="retrieval_document"
             )
             return result['embedding']
         except: return [0.0] * 768
@@ -166,6 +166,11 @@ class VectorEngine:
     def load_pretrained_vectors(self, truth_vecs, fake_vecs):
         self.truth_vectors = truth_vecs
         self.fake_vectors = fake_vecs
+
+    # [🚨 복구 완료] 아까 빠졌던 함수입니다. 이게 있어야 에러가 안 납니다!
+    def train_static(self, truth_text, fake_text):
+        self.truth_vectors.extend([self.get_embedding(t) for t in truth_text])
+        self.fake_vectors.extend([self.get_embedding(t) for t in fake_text])
 
     def cosine_similarity(self, v1, v2):
         if not v1 or not v2: return 0
@@ -686,5 +691,6 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
