@@ -151,44 +151,61 @@ class VectorEngine:
 
     def get_embedding(self, text):
         try:
+            genai.configure(api_key=GOOGLE_API_KEY_A)
+            # [핵심] 텍스트가 너무 짧으면 노이즈가 심하므로 최소한의 보정
+            if not text or len(text) < 2: return [0.0] * 768
+            
             result = genai.embed_content(
                 model=self.model_name,
                 content=text[:2000],
-                task_type="retrieval_document"
+                task_type="retrieval_document" # 검색에 최적화된 모드
             )
             return result['embedding']
-        except: return [0] * 768
+        except: return [0.0] * 768
 
     def load_pretrained_vectors(self, truth_vecs, fake_vecs):
         self.truth_vectors = truth_vecs
         self.fake_vectors = fake_vecs
-
-    def train_static(self, truth_text, fake_text):
-        self.truth_vectors.extend([self.get_embedding(t) for t in truth_text])
-        self.fake_vectors.extend([self.get_embedding(t) for t in fake_text])
 
     def cosine_similarity(self, v1, v2):
         if not v1 or not v2: return 0
         dot = sum(a*b for a,b in zip(v1,v2))
         mag1 = sum(a*a for a in v1)**0.5
         mag2 = sum(b*b for b in v2)**0.5
-        return dot / (mag1 * mag2) if mag1*mag2 != 0 else 0
+        if mag1 * mag2 == 0: return 0
+        return dot / (mag1 * mag2)
 
-    def analyze(self, query):
-        query_vec = self.get_embedding(query)
-        if not self.truth_vectors: raw_t = 0
-        else: raw_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
+    def analyze(self, raw_context):
+        """
+        [Vector Framing 기법 적용]
+        단순 문맥 하나로 비교하지 않고, '가짜 성향'과 '진실 성향'으로 
+        프레이밍된 2개의 쿼리를 각각 생성하여 전용 DB와 대조합니다.
+        """
         
-        if not self.fake_vectors: raw_f = 0
-        else: raw_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
+        # 1. [가짜 프레이밍] 
+        # "이 내용이 폭로/의혹이라면?" 가정하고 가짜 DB와 매칭
+        fake_query = f"충격 단독 폭로 의혹 논란: {raw_context}"
+        vec_f_query = self.get_embedding(fake_query)
         
-        # [핵심 수정 1] 문턱을 0.75 -> 0.55로 대폭 완화! (유연성 확보)
-        def calibrate(score):
-            baseline = 0.55 
-            if score < baseline: return 0.0
-            return (score - baseline) / (1.0 - baseline)
-
-        return calibrate(raw_t), calibrate(raw_f)
+        # 2. [진실 프레이밍]
+        # "이 내용이 팩트체크/해명이라면?" 가정하고 진실 DB와 매칭
+        truth_query = f"공식 입장 팩트체크 사실 검증: {raw_context}"
+        vec_t_query = self.get_embedding(truth_query)
+        
+        # 3. 각각의 DB(진영)에서 최고 유사도 찾기
+        if not self.truth_vectors: score_t = 0
+        else: score_t = max([self.cosine_similarity(vec_t_query, v) for v in self.truth_vectors] or [0])
+        
+        if not self.fake_vectors: score_f = 0
+        else: score_f = max([self.cosine_similarity(vec_f_query, v) for v in self.fake_vectors] or [0])
+        
+        # 4. Calibration (순수 유사도 반환, 인위적 조작 없음)
+        # 단, 노이즈 제거를 위해 0.5 미만은 의미 없는 값으로 간주
+        def clean_score(s):
+            if s < 0.5: return 0.0 # 관련 없음
+            return s # 있는 그대로 반환
+            
+        return clean_score(score_t), clean_score(score_f)
 
 vector_engine = VectorEngine()
 
@@ -669,4 +686,5 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
