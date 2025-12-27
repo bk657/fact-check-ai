@@ -170,13 +170,10 @@ class VectorEngine:
             return [0] * 768
 
     def load_pretrained_vectors(self, truth_vecs, fake_vecs):
-        # [NEW] DB에서 가져온 벡터를 바로 로드 (API 호출 X, 속도 0.001초)
         self.truth_vectors = truth_vecs
         self.fake_vectors = fake_vecs
 
     def train_static(self, truth_text, fake_text):
-        # [NEW] 고정된 기본 데이터(Static Corpus)만 API로 변환 (최초 1회만 캐싱됨)
-        # 이 부분은 Streamlit 캐싱을 이용해 속도를 높일 겁니다.
         self.truth_vectors.extend([self.get_embedding(t) for t in truth_text])
         self.fake_vectors.extend([self.get_embedding(t) for t in fake_text])
 
@@ -189,16 +186,19 @@ class VectorEngine:
         return dot / (mag1 * mag2)
 
     def analyze(self, query):
-        query_vec = self.get_embedding(query) # 검색어는 실시간 변환 필요
+        query_vec = self.get_embedding(query) 
         
-        # Contrast Filter 적용
         def calibrate(score):
             baseline = 0.75 
             if score < baseline: return 0.0
             return (score - baseline) / (1.0 - baseline)
 
-        raw_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
-        raw_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
+        # 벡터 데이터가 없으면 0 리턴 방지
+        if not self.truth_vectors: raw_t = 0
+        else: raw_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
+        
+        if not self.fake_vectors: raw_f = 0
+        else: raw_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
         
         return calibrate(raw_t), calibrate(raw_f)
 
@@ -225,13 +225,11 @@ def get_keywords(title, trans):
     
     parsed = parse_llm_json(res)
     
-    # 기본값 설정
     default_queries = [title, title + " 팩트체크", "뉴스"]
     default_context = title + " " + trans[:200]
     
     if parsed:
         queries = parsed.get('queries', default_queries)
-        # [핵심] 여기서 vector_context를 따로 챙깁니다!
         context = parsed.get('vector_context', default_context)
         return queries, context, model
         
@@ -329,42 +327,35 @@ def analyze_comments(cmts, ctx):
     score = int(sum(1 for w,c in top if w in ctx_set)/len(top)*100) if top else 0
     return [f"{w}({c})" for w,c in top], score, "높음" if score>=60 else "보통" if score>=20 else "낮음"
 
-# [수정] 인자에 vec_ctx 추가
 def save_db(ch, ti, pr, url, kw, detail, vec_ctx):
     try: 
-        # [핵심 업그레이드] 
-        # 이제 '키워드(kw)'가 아니라 '핵심 요약(vec_ctx)'을 벡터로 만듭니다.
-        # AI가 훨씬 더 정확하게 유사도를 찾을 수 있게 됩니다.
         embedding = vector_engine.get_embedding(vec_ctx)
         
         supabase.table("analysis_history").insert({
             "channel_name":ch, "video_title":ti, "fake_prob":pr, "video_url":url, 
-            "keywords":kw, # 검색어는 텍스트로만 저장 (참고용)
+            "keywords":kw, 
             "detail_json":json.dumps(detail, ensure_ascii=False),
             "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             "vector_json": json.dumps(embedding)
         }).execute()
     except Exception as e: print(f"DB Error: {e}")
 
-# --- [UI 렌더링 함수 (Conclusion First)] ---
+# --- [UI 렌더링 함수] ---
 def render_report_full_ui(prob, db_count, title, channel, data, is_cached=False):
     st.divider()
     if is_cached: st.info(f"💾 과거 분석 기록 호출됨 (총 DB 데이터: {db_count}개)")
     
     risk_text, risk_color = determine_risk_level(prob)
     
-    # 1. [HERO SECTION] Score & Risk (최상단)
     c1, c2, c3 = st.columns([2, 2, 1])
     with c1: st.metric("🔥 가짜뉴스 확률", f"{prob}%")
     with c2: st.markdown(f"<div style='text-align:center; padding:10px; border-radius:10px; background-color:{risk_color}; color:white; font-weight:bold; font-size:1.1rem; margin-top:5px;'>{risk_text}</div>", unsafe_allow_html=True)
     with c3: st.metric("🗄️ 누적 DB", f"{db_count}건")
     
-    # 2. [FINAL SUMMARY] AI 종합 리포트 (바로 아래 배치)
     st.subheader("📝 AI 최종 종합 리포트")
     with st.container(border=True):
         st.markdown(f"**📢 AI Analyst Comment:**\n\n{data.get('final_summary', '분석 데이터가 생성되지 않았습니다.')}")
 
-    # 3. [VIDEO INFO] 영상 기본 정보
     st.subheader("ℹ️ 영상 기본 정보")
     with st.container(border=True):
         st.write(f"**📺 {title}**")
@@ -373,16 +364,12 @@ def render_report_full_ui(prob, db_count, title, channel, data, is_cached=False)
         with st.expander("상세 메타데이터 보기"):
             st.dataframe(pd.DataFrame([data.get('meta', {})]), use_container_width=True, hide_index=True)
 
-    # 4. [EVIDENCE TABS] 상세 증거 자료 (탭으로 분리)
     st.subheader("🔍 상세 증거 및 분석 데이터")
     tab_news, tab_data, tab_ai = st.tabs(["📰 뉴스 팩트체크", "📊 데이터/여론", "🤖 AI 기술적 판단"])
     
-    # [Tab 1: News Check]
     with tab_news:
-        # [NEW] 검색 키워드 정보 표시 (3-Way)
         st.markdown("###### 🗝️ AI 검색 키워드 (3-Way Strategy)")
         if data.get('query_list'):
-            # 보기 좋게 포맷팅
             q_list_formatted = " | ".join([f"`{q}`" for q in data['query_list']])
             st.caption(f"AI가 추출한 3가지 전략 키워드:\n{q_list_formatted}")
         
@@ -400,7 +387,6 @@ def render_report_full_ui(prob, db_count, title, channel, data, is_cached=False)
         else:
             st.warning("관련된 신뢰할 수 있는 뉴스 기사를 찾지 못했습니다.")
 
-    # [Tab 2: Data & Sentiment]
     with tab_data:
         st.write("###### [증거 1] 데이터 유사도 분석")
         c1, c2 = st.columns(2)
@@ -420,7 +406,6 @@ def render_report_full_ui(prob, db_count, title, channel, data, is_cached=False)
         if data.get('top_cmt_kw'):
             st.write(f"🗣️ **주요 키워드:** {', '.join(data['top_cmt_kw'])}")
 
-    # [Tab 3: AI Logic]
     with tab_ai:
         st.write("###### [증거 4] AI 기술적 판단 로직")
         st.info(f"**🤖 Internal Logic:**\n{data.get('ai_reason', '판단 보류')}")
@@ -428,7 +413,6 @@ def render_report_full_ui(prob, db_count, title, channel, data, is_cached=False)
         st.write("###### 🔢 점수 산정 내역 (Score Breakdown)")
         if data.get('score_breakdown'):
             render_score_breakdown(data['score_breakdown'])
-
 
 def render_score_breakdown(data_list):
     style = """<style>table.score-table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; font-family: sans-serif; font-size: 14px; margin-top: 10px;} table.score-table th { background-color: #f8f9fa; color: #495057; font-weight: bold; padding: 12px 15px; text-align: left; border-bottom: 1px solid #e0e0e0; } table.score-table td { padding: 12px 15px; border-bottom: 1px solid #f0f0f0; color: #333; } table.score-table tr:last-child td { border-bottom: none; } .badge { padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 11px; display: inline-block; text-align: center; min-width: 45px; } .badge-danger { background-color: #ffebee; color: #d32f2f; } .badge-success { background-color: #e8f5e9; color: #2e7d32; } .badge-neutral { background-color: #f5f5f5; color: #757575; border: 1px solid #e0e0e0; }</style>"""
@@ -456,20 +440,21 @@ def run_forensic_main(url):
     st.session_state["debug_logs"] = []
     my_bar = st.progress(0, text="분석 엔진 가동 중...")
     
-    # ---------------------------------------------------------------
-    # [수정 전] 캐시된 데이터에서 개수(db_count)를 그대로 가져옴 (그래서 고정됨)
-    # db_count, dt, df = train_engine_wrapper() 
+    # [수정 1: 숫자 카운트 고정 해결]
+    # 벡터만 캐시에서 로드하고, 개수는 무시합니다.
+    _, dt_vecs, df_vecs = train_engine_wrapper()
     
-    # [수정 후] 벡터(dt, df)는 캐시를 쓰고, '개수'는 실시간으로 조회합니다!
-    _, dt, df = train_engine_wrapper() 
-    
+    # 여기서 최신 개수를 실시간으로 다시 셉니다.
     try:
-        # DB에 "지금 몇 개야?" 하고 직접 물어보는 코드 (head=True라 빠름)
         res = supabase.table("analysis_history").select("id", count="exact", head=True).execute()
         db_count = res.count
     except:
-        db_count = 0 # 에러나면 0
-    # ---------------------------------------------------------------
+        db_count = 0
+    
+    # [수정 2: 유사도 0% 해결]
+    # 로드된 벡터를 엔진에 주입합니다. (캐시가 비어있을 경우 대비)
+    vector_engine.truth_vectors = dt_vecs
+    vector_engine.fake_vectors = df_vecs
     
     vid = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
     if not vid: st.error("올바른 유튜브 URL이 아닙니다."); return
@@ -477,7 +462,6 @@ def run_forensic_main(url):
 
     with yt_dlp.YoutubeDL({'quiet':True, 'skip_download':True}) as ydl:
         try:
-            # 1. 메타 데이터 수집
             info = ydl.extract_info(url, download=False)
             meta = {
                 "제목": info.get('title'),
@@ -494,8 +478,6 @@ def run_forensic_main(url):
             summary = full_text[:800] + "..."
             
             my_bar.progress(40, "키워드 추출 및 문맥 분석 중...")
-            
-            # [확인됨] 여기서 vector_context를 잘 받아오고 있습니다. (Good!)
             queries, vector_context, _ = get_keywords(meta['제목'], full_text)
             
             news_items = []
@@ -516,7 +498,7 @@ def run_forensic_main(url):
             top_kw, rel_score, rel_msg = analyze_comments(cmts, full_text)
             red_cnt, _ = check_red_flags(cmts)
             
-            # [수정 1] 단순 제목이 아니라, AI가 요약한 '문맥(Context)'으로 분석합니다.
+            # 문맥 기반 유사도 분석
             ts, fs = vector_engine.analyze(vector_context)
             t_impact, f_impact = int(ts*30)*-1, int(fs*30)
             
@@ -534,7 +516,6 @@ def run_forensic_main(url):
             
             final_prob = max(1, min(99, int(base_score*WEIGHT_ALGO + ai_score*WEIGHT_AI)))
             
-            # [추가] 최종 종합 리포트 생성
             risk_text, _ = determine_risk_level(final_prob)
             final_summary = generate_comprehensive_summary(meta['제목'], final_prob, news_ev, red_cnt, ai_reason, risk_text)
 
@@ -555,25 +536,25 @@ def run_forensic_main(url):
                 "final_summary": final_summary
             }
             
-            # [수정 2] 저장할 때 vector_context를 맨 뒤에 꼭 넘겨줘야 합니다!
             save_db(meta['채널명'], meta['제목'], final_prob, url, final_query, report, vector_context)
             
             my_bar.empty()
-            render_report_full_ui(final_prob, db_count, meta['제목'], meta['채널명'], report, is_cached=False)
+            # 화면 표시 전 +1 (사용자 경험)
+            render_report_full_ui(final_prob, db_count + 1, meta['제목'], meta['채널명'], report, is_cached=False)
             
         except Exception as e: st.error(f"Error: {e}")
-@st.cache_data(ttl=3600) # [핵심] 1시간 동안 메모리에 저장해둠 (새로고침해도 로딩 안 걸림)
+
+@st.cache_data(ttl=3600)
 def fetch_db_vectors():
-    # DB에서 'vector_json' 컬럼도 같이 가져옴
     try:
-        res = supabase.table("analysis_history").select("video_title, fake_prob, vector_json").execute()
+        # [수정 3: Null 데이터 제외] 빈 껍데기는 가져오지 않습니다.
+        res = supabase.table("analysis_history").select("video_title, fake_prob, vector_json").not_.is_("vector_json", "null").execute()
         if not res.data: return [], [], 0
         
         dt_vecs = []
         df_vecs = []
         
         for row in res.data:
-            # 벡터가 이미 저장되어 있다면 그걸 쓰고, 없다면(옛날 데이터) 건너뜀
             if row.get('vector_json'):
                 vec = json.loads(row['vector_json'])
                 if row['fake_prob'] < 40: dt_vecs.append(vec)
@@ -583,17 +564,14 @@ def fetch_db_vectors():
     except: return [], [], 0
 
 def train_engine_wrapper():
-    # 1. DB에서 벡터 로드 (API 호출 0회)
     dt_vecs, df_vecs, count = fetch_db_vectors()
     
-    # 2. 엔진에 주입
     vector_engine.truth_vectors = dt_vecs
     vector_engine.fake_vectors = df_vecs
     
-    # 3. 기본(Static) 데이터만 빠르게 추가 학습
     vector_engine.train_static(STATIC_TRUTH, STATIC_FAKE)
     
-    return count, [], [] # 리턴값 유지
+    return count, dt_vecs, df_vecs
 
 # --- [B2B Report Logic] ---
 def generate_b2b_report(df):
@@ -602,7 +580,6 @@ def generate_b2b_report(df):
     res = []
     for ch, g in df.groupby('channel_name'):
         avg = g['fake_prob'].mean()
-        # 키워드 flatten
         kws = []
         for k in g['keywords']:
             if isinstance(k, list): kws.extend([str(x) for x in k])
@@ -708,12 +685,3 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
-
-
-
-
-
-
-
-
-
