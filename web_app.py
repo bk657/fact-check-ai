@@ -143,12 +143,12 @@ OFFICIAL_CHANNELS = ['MBC','KBS','SBS','EBS','YTN','JTBC','TVCHOSUN','MBN','CHAN
 STATIC_TRUTH = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "선거 출마 선언"]
 STATIC_FAKE = ["충격 폭로 경악", "긴급 속보 소름", "구속 영장 발부", "사형 집행", "위독설"]
 
-import numpy as np # 벡터 연산을 위해 numpy가 필요합니다 (필수)
+import numpy as np
 
 class VectorEngine:
     def __init__(self):
-        self.truth_centroid = None # 진실 데이터들의 평균 좌표 (무게중심)
-        self.fake_centroid = None  # 가짜 데이터들의 평균 좌표 (무게중심)
+        self.truth_vectors = [] # 개별 벡터 리스트 유지
+        self.fake_vectors = []  # 개별 벡터 리스트 유지
         self.model_name = "models/text-embedding-004" 
 
     def get_embedding(self, text):
@@ -161,40 +161,20 @@ class VectorEngine:
                 content=text[:2000],
                 task_type="retrieval_document"
             )
-            return np.array(result['embedding']) # 계산을 위해 numpy 배열로 변환
+            return np.array(result['embedding'])
         except: return np.zeros(768)
 
     def load_pretrained_vectors(self, truth_vecs, fake_vecs):
         """
-        [핵심 알고리즘]
-        개별 데이터를 저장하는 게 아니라, '진실의 평균'과 '거짓의 평균'을 계산합니다.
-        이렇게 하면 '주제'는 사라지고 '스타일/형태소'만 남습니다.
+        [핵심 변경]
+        평균(Centroid)을 구하지 않고, 있는 그대로 다 저장합니다. (Raw Data)
         """
-        if truth_vecs:
-            # 모든 진실 벡터를 더해서 개수로 나눔 (평균 위치 계산)
-            self.truth_centroid = np.mean(truth_vecs, axis=0)
-        else:
-            self.truth_centroid = np.zeros(768)
-
-        if fake_vecs:
-            # 모든 가짜 벡터를 더해서 개수로 나눔
-            self.fake_centroid = np.mean(fake_vecs, axis=0)
-        else:
-            self.fake_centroid = np.zeros(768)
+        self.truth_vectors = [np.array(v) for v in truth_vecs]
+        self.fake_vectors = [np.array(v) for v in fake_vecs]
 
     def train_static(self, truth_text, fake_text):
-        # 정적 데이터도 평균 계산에 포함시키기 위해 임시 리스트 생성
-        t_vecs = [self.get_embedding(t) for t in truth_text]
-        f_vecs = [self.get_embedding(t) for t in fake_text]
-        
-        # 기존 중심점이 있으면 합쳐서 다시 평균 (가중 평균)
-        if self.truth_centroid is not None and np.any(self.truth_centroid):
-            t_vecs.append(self.truth_centroid)
-        if self.fake_centroid is not None and np.any(self.fake_centroid):
-            f_vecs.append(self.fake_centroid)
-            
-        self.truth_centroid = np.mean(t_vecs, axis=0)
-        self.fake_centroid = np.mean(f_vecs, axis=0)
+        self.truth_vectors.extend([self.get_embedding(t) for t in truth_text])
+        self.fake_vectors.extend([self.get_embedding(t) for t in fake_text])
 
     def cosine_similarity(self, v1, v2):
         if np.all(v1 == 0) or np.all(v2 == 0): return 0.0
@@ -205,35 +185,44 @@ class VectorEngine:
 
     def analyze(self, query_context):
         """
-        [Centroid Distance Method]
-        입력된 영상이 '진실의 중심'에 가까운지, '거짓의 중심'에 가까운지 측정합니다.
+        [Best Match (Max-Pooling) Algorithm]
+        평균이 아니라, DB 내에서 '가장 비슷한 단 하나의 데이터'를 찾습니다.
         """
         query_vec = self.get_embedding(query_context)
         
-        # 1. 중심점과의 거리(유사도) 계산
-        # (이 점수는 주제 점수가 아니라, 해당 진영의 '평균적 스타일'과의 유사도입니다)
-        score_to_truth = self.cosine_similarity(query_vec, self.truth_centroid)
-        score_to_fake = self.cosine_similarity(query_vec, self.fake_centroid)
+        # 1. 진실 DB 중 가장 비슷한 놈 찾기 (Max Score)
+        if not self.truth_vectors: max_t = 0.0
+        else: max_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors])
         
-        # 2. 결과 보정 (격차 강조)
-        # 벡터 공간에서는 거리가 미세하게 차이나므로, 이를 백분율로 확 벌려줍니다.
+        # 2. 가짜 DB 중 가장 비슷한 놈 찾기 (Max Score)
+        if not self.fake_vectors: max_f = 0.0
+        else: max_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors])
         
-        # 둘 다 관련성이 너무 없으면(0.4 미만) 0점 처리
-        if score_to_truth < 0.4 and score_to_fake < 0.4:
+        # -------------------------------------------------------------
+        # [3. 격차 증폭 (Contrast Boosting)]
+        # 주제 점수(Base)를 제거하고 차이를 극대화합니다.
+        # -------------------------------------------------------------
+        
+        # 둘 다 유사도가 낮으면(관련 데이터 없음) 0점
+        if max_t < 0.4 and max_f < 0.4:
             return 0.0, 0.0
             
-        # [Softmax와 유사한 비율 계산]
-        # 예: 진실(0.7), 가짜(0.8) -> 가짜 쪽으로 더 쏠리게 계산
-        # exp 함수를 써서 큰 값을 더 크게 만듭니다.
-        exp_t = np.exp(score_to_truth * 10) # 민감도 조절 (x10)
-        exp_f = np.exp(score_to_fake * 10)
+        gap = max_t - max_f
+        
+        # 격차가 작으면(5% 미만) -> 둘 다 낮은 점수로 억제 (헷갈림 방지)
+        if abs(gap) < 0.05:
+            return max_t * 0.5, max_f * 0.5 
+            
+        # 격차가 크면 -> 이긴 쪽에 몰아주기 (Softmax Style)
+        # 예: 진실(0.8) vs 가짜(0.5) -> 격차 0.3 -> 진실 100%에 가깝게
+        
+        sensitivity = 5.0 # 민감도
+        exp_t = np.exp(max_t * sensitivity)
+        exp_f = np.exp(max_f * sensitivity)
         
         total = exp_t + exp_f
         
-        final_t = exp_t / total
-        final_f = exp_f / total
-        
-        return final_t, final_f
+        return (exp_t / total), (exp_f / total)
         
 vector_engine = VectorEngine()
 
@@ -714,6 +703,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
