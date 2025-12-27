@@ -135,10 +135,10 @@ def call_triple_survivor(prompt, is_json=False):
     return None, "All Failed", logs
 
 # --- [5. Data & Engine] ---
-# [🚨 복구 완료] 누락되었던 가중치 및 설정 변수 복구
 WEIGHT_ALGO = 0.85
 WEIGHT_AI = 0.15
 OFFICIAL_CHANNELS = ['MBC','KBS','SBS','EBS','YTN','JTBC','TVCHOSUN','MBN','CHANNEL A','연합뉴스','YONHAP','한겨레','경향','조선','중앙','동아']
+# [중요] 정적 데이터는 캐시가 아닌 전역 변수로 관리
 STATIC_TRUTH = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "선거 출마 선언"]
 STATIC_FAKE = ["충격 폭로 경악", "긴급 속보 소름", "구속 영장 발부", "사형 집행", "위독설"]
 
@@ -148,7 +148,7 @@ class VectorEngine:
         self.fake_vectors = []
         self.model_name = "models/text-embedding-004"
         
-        # [절대 앵커] - 스타일 분석의 기준점
+        # [절대 앵커]
         self.fake_anchor_text = "충격 단독 속보 경악 실체 폭로 긴급 체포 구속 수사 결국 사망 뇌사 심정지 대통령 격노 뒤집어진 상황 눈물 바다 오열 통곡 전재산 탕진 빚더미 이혼 파경 별거 불화 숨겨진 자식 아이 출산 비밀 충격적인 근황 소름 돋는 방송 퇴출 영구 제명 미친 반전 실제 상황 의사 소견 진단 사형 집행"
         self.truth_anchor_text = "공식 입장 발표 사실 무근 법적 대응 예고 선처 없다 허위 사실 유포 강경 대응 단독 보도 팩트 체크 기자 회견 전문 공개 오보로 밝혀져 해프닝 검찰 조사 결과 무혐의 재판부 판결 선고 공판 공식 보도 자료 배포 사실 확인 결과 아님 루머 일축 근거 없음 해명 인터뷰 진행 관계자 확인"
         
@@ -159,31 +159,27 @@ class VectorEngine:
         try:
             genai.configure(api_key=GOOGLE_API_KEY_A)
             if not text or len(text) < 2: return np.zeros(768)
-            
             result = genai.embed_content(
-                model=self.model_name,
-                content=text[:2000],
-                task_type="retrieval_document"
+                model=self.model_name, content=text[:2000], task_type="retrieval_document"
             )
             return np.array(result['embedding'])
         except: return np.zeros(768)
 
-    def load_pretrained_vectors(self, truth_vecs, fake_vecs):
-        self.truth_vectors = [np.array(v) for v in truth_vecs]
-        self.fake_vectors = [np.array(v) for v in fake_vecs]
-        
-        # 앵커 벡터 초기화
-        if self.fake_anchor_vec is None:
+    # [핵심] 캐시로 인해 초기화가 안 될 수 있으므로, 실행 시마다 호출하는 함수 추가
+    def ensure_anchors(self):
+        if self.fake_anchor_vec is None or self.truth_anchor_vec is None:
             self.fake_anchor_vec = self.get_embedding(self.fake_anchor_text)
             self.truth_anchor_vec = self.get_embedding(self.truth_anchor_text)
 
+    def load_pretrained_vectors(self, truth_vecs, fake_vecs):
+        self.truth_vectors = [np.array(v) for v in truth_vecs]
+        self.fake_vectors = [np.array(v) for v in fake_vecs]
+
     def train_static(self, truth_text, fake_text):
+        # 앵커 생성 (캐시 안에서 호출되면 스킵될 위험 있음 -> ensure_anchors로 보완)
+        self.ensure_anchors()
         self.truth_vectors.extend([self.get_embedding(t) for t in truth_text])
         self.fake_vectors.extend([self.get_embedding(t) for t in fake_text])
-        
-        if self.fake_anchor_vec is None:
-            self.fake_anchor_vec = self.get_embedding(self.fake_anchor_text)
-            self.truth_anchor_vec = self.get_embedding(self.truth_anchor_text)
 
     def cosine_similarity(self, v1, v2):
         if np.all(v1 == 0) or np.all(v2 == 0): return 0.0
@@ -193,39 +189,35 @@ class VectorEngine:
         return dot / (norm_a * norm_b) if norm_a * norm_b != 0 else 0
 
     def analyze(self, query_context):
-        """
-        [Winner Takes All (승자 독식) 알고리즘]
-        """
+        """[승자 독식] 앵커 점수가 높은 쪽이 100% 점수 획득"""
+        self.ensure_anchors() # [안전장치] 앵커가 없으면 지금이라도 만드세요.
+        
         query_vec = self.get_embedding(query_context)
         
-        # 1. 절대 앵커 유사도 계산 (스타일 분석)
+        # 1. 앵커 유사도 (절대 평가)
         anchor_t = self.cosine_similarity(query_vec, self.truth_anchor_vec)
         anchor_f = self.cosine_similarity(query_vec, self.fake_anchor_vec)
         
-        # 2. DB 유사도 (참고용)
-        if not self.truth_vectors: db_t = 0.0
-        else: db_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
+        # 2. DB 유사도 (상대 평가)
+        db_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
+        db_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
         
-        if not self.fake_vectors: db_f = 0.0
-        else: db_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
-        
-        # 3. [핵심] 승자 독식 로직
+        # 3. 승자 독식 로직 (앵커 기준)
         final_t = 0.0
         final_f = 0.0
         
-        if anchor_f > anchor_t:
-            final_f = 0.8 + (anchor_f * 0.2)
-            final_t = 0.2 * anchor_t
-        elif anchor_t > anchor_f:
-            final_t = 0.8 + (anchor_t * 0.2)
-            final_f = 0.2 * anchor_f
-        else: 
-            final_t = 0.5
-            final_f = 0.5
+        # 차이가 미세하면(0.02 미만) -> 앵커 판단 보류 -> DB 점수 따라감
+        if abs(anchor_t - anchor_f) < 0.02:
+            final_t = db_t
+            final_f = db_f
+        # 차이가 나면 -> 이긴 쪽이 싹쓸이
+        elif anchor_f > anchor_t:
+            final_f = 0.95 # 가짜 확정
+            final_t = 0.05
+        else:
+            final_t = 0.95 # 진실 확정
+            final_f = 0.05
             
-        final_t = (final_t * 0.9) + (db_t * 0.1)
-        final_f = (final_f * 0.9) + (db_f * 0.1)
-        
         return final_t, final_f
 
 vector_engine = VectorEngine()
@@ -332,8 +324,6 @@ def analyze_comments(cmts, ctx):
 def save_db(ch, ti, pr, url, kw, detail, vec_ctx):
     try: 
         embedding = vector_engine.get_embedding(vec_ctx)
-        
-        # numpy array -> list 변환 (JSON 직렬화 오류 방지)
         if isinstance(embedding, np.ndarray):
             embedding = embedding.tolist()
             
@@ -454,6 +444,8 @@ def run_forensic_main(url):
         db_count = res.count
     except: db_count = 0
     
+    # [핵심] 앵커가 생성되어 있는지 확실하게 확인
+    vector_engine.ensure_anchors()
     vector_engine.truth_vectors = dt_vecs
     vector_engine.fake_vectors = df_vecs
     
@@ -576,10 +568,7 @@ def fetch_db_vectors():
 
 def train_engine_wrapper():
     dt_vecs, df_vecs, count = fetch_db_vectors()
-    
-    # [수정] 전역 변수 전달
     vector_engine.train_static(STATIC_TRUTH, STATIC_FAKE)
-    
     return count, dt_vecs, df_vecs
 
 # --- [B2B Report Logic] ---
