@@ -204,25 +204,38 @@ class VectorEngine:
 
 vector_engine = VectorEngine()
 
-# [수정] 3-Way 전략 명시 및 키워드 추출
+# [수정] 검색어(속도용)와 문맥(저장용)을 분리해서 추출
 def get_keywords(title, trans):
     prompt = f"""
     You are a Fact-Check Investigator.
     [Input] Title: {title}, Transcript: {trans[:10000]}
-    [Task] Generate 3 diverse Google News search queries to verify this video.
-    1. Specific: Entity + Exact Event (Specific Incident)
-    2. Broader: Main Subject + Status (Contextual)
-    3. Keywords: Core Nouns Combination
     
-    [Output JSON] {{ "queries": ["query1", "query2", "query3"] }}
+    [Task]
+    1. Generate 3 Google News search queries (Short & Specific) to verify facts.
+    2. Summarize the 'Core Claims' of this video in 3 sentences for vector database context.
+    
+    [Output JSON Format]
+    {{
+        "queries": ["query1", "query2", "query3"],
+        "vector_context": "The video claims that... (Summarized Context)"
+    }}
     """
     res, model, logs = call_triple_survivor(prompt, is_json=True)
     st.session_state["debug_logs"].extend([f"[Key] {l}" for l in logs])
+    
     parsed = parse_llm_json(res)
-    # 파싱 성공 시 쿼리 리스트 반환, 실패 시 제목 그대로 사용
-    if parsed and 'queries' in parsed and isinstance(parsed['queries'], list):
-        return parsed['queries'], model
-    return [title, title + " 뉴스", title + " 팩트체크"], model
+    
+    # 기본값 설정
+    default_queries = [title, title + " 팩트체크", "뉴스"]
+    default_context = title + " " + trans[:200]
+    
+    if parsed:
+        queries = parsed.get('queries', default_queries)
+        # [핵심] 여기서 vector_context를 따로 챙깁니다!
+        context = parsed.get('vector_context', default_context)
+        return queries, context, model
+        
+    return default_queries, default_context, model
 
 def scrape_news(url):
     try:
@@ -316,17 +329,20 @@ def analyze_comments(cmts, ctx):
     score = int(sum(1 for w,c in top if w in ctx_set)/len(top)*100) if top else 0
     return [f"{w}({c})" for w,c in top], score, "높음" if score>=60 else "보통" if score>=20 else "낮음"
 
-def save_db(ch, ti, pr, url, kw, detail):
+# [수정] 인자에 vec_ctx 추가
+def save_db(ch, ti, pr, url, kw, detail, vec_ctx):
     try: 
-        # [핵심] 저장하기 전에 타이틀+키워드를 벡터로 변환 (여기서 시간 조금 소요됨)
-        # 하지만 이건 분석 '끝난 후'라 사용자는 로딩으로 안 느낌
-        embedding = vector_engine.get_embedding(kw + " " + ti)
+        # [핵심 업그레이드] 
+        # 이제 '키워드(kw)'가 아니라 '핵심 요약(vec_ctx)'을 벡터로 만듭니다.
+        # AI가 훨씬 더 정확하게 유사도를 찾을 수 있게 됩니다.
+        embedding = vector_engine.get_embedding(vec_ctx)
         
         supabase.table("analysis_history").insert({
             "channel_name":ch, "video_title":ti, "fake_prob":pr, "video_url":url, 
-            "keywords":kw, "detail_json":json.dumps(detail, ensure_ascii=False),
+            "keywords":kw, # 검색어는 텍스트로만 저장 (참고용)
+            "detail_json":json.dumps(detail, ensure_ascii=False),
             "analysis_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            "vector_json": json.dumps(embedding) # 벡터 저장!
+            "vector_json": json.dumps(embedding)
         }).execute()
     except Exception as e: print(f"DB Error: {e}")
 
@@ -465,8 +481,10 @@ def run_forensic_main(url):
             full_text = trans if trans else info.get('description', '')
             summary = full_text[:800] + "..."
             
-            my_bar.progress(40, "키워드 추출 및 뉴스 검색 중...")
-            queries, _ = get_keywords(meta['제목'], full_text)
+            my_bar.progress(40, "키워드 추출 및 문맥 분석 중...")
+            
+            # [수정] queries 뿐만 아니라 vector_context도 받습니다.
+            queries, vector_context, _ = get_keywords(meta['제목'], full_text)
             
             news_items = []
             final_query = queries[0]
@@ -677,6 +695,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
