@@ -166,7 +166,6 @@ class VectorEngine:
         self.truth_vectors = truth_vecs
         self.fake_vectors = fake_vecs
 
-    # [중요] 아까 누락되었던 함수 복구 완료
     def train_static(self, truth_text, fake_text):
         self.truth_vectors.extend([self.get_embedding(t) for t in truth_text])
         self.fake_vectors.extend([self.get_embedding(t) for t in fake_text])
@@ -181,8 +180,8 @@ class VectorEngine:
 
     def analyze(self, raw_context):
         """
-        [Contrast Filter 적용]
-        미세한 차이를 증폭시켜 '주제'가 아닌 '성향'을 뚜렷하게 구분합니다.
+        [Topic Penalty & Relative Scoring]
+        공통 주제로 인한 거품을 제거하고, 상대적 우위를 계산합니다.
         """
         
         # 1. 프레이밍 쿼리 생성
@@ -192,39 +191,37 @@ class VectorEngine:
         truth_query = f"공식 입장 팩트체크 사실 검증: {raw_context}"
         vec_t_query = self.get_embedding(truth_query)
         
-        # 2. 유사도 측정
-        if not self.truth_vectors: score_t = 0
-        else: score_t = max([self.cosine_similarity(vec_t_query, v) for v in self.truth_vectors] or [0])
+        # 2. Raw Similarity (주제 점수 포함됨)
+        if not self.truth_vectors: raw_t = 0
+        else: raw_t = max([self.cosine_similarity(vec_t_query, v) for v in self.truth_vectors] or [0])
         
-        if not self.fake_vectors: score_f = 0
-        else: score_f = max([self.cosine_similarity(vec_f_query, v) for v in self.fake_vectors] or [0])
+        if not self.fake_vectors: raw_f = 0
+        else: raw_f = max([self.cosine_similarity(vec_f_query, v) for v in self.fake_vectors] or [0])
         
         # -------------------------------------------------------------
-        # [핵심] 콘트라스트 필터 (Contrast Filter)
-        # 주제(Topic) 점수는 빼고, 차이(Gap)를 증폭합니다.
+        # [핵심 1] Topic Penalty (주제 거품 빼기)
+        # 상대방 점수의 50%를 "주제 중복값"으로 보고 내 점수에서 뺍니다.
         # -------------------------------------------------------------
         
-        gap = score_t - score_f
+        pure_t = max(0, raw_t - (raw_f * 0.5))
+        pure_f = max(0, raw_f - (raw_t * 0.5))
         
-        # A. 차이가 너무 작으면(3% 미만) -> "판단 보류" (둘 다 낮춤)
-        # (예: 0.94 vs 0.93 -> 둘 다 0.1로 만듦. 벡터로는 구분 못한다는 뜻)
-        if abs(gap) < 0.03:
-            return score_t * 0.1, score_f * 0.1
-            
-        # B. 유의미한 차이가 있으면 -> "격차 증폭" (20배 뻥튀기)
-        # (예: 0.94 vs 0.92 -> 차이 0.02 * 20 = 0.4 포인트)
-        # 진실: 0.94 + 0.4 = 1.0 (최대)
-        # 가짜: 0.92 - 0.4 = 0.52
-        boost = abs(gap) * 20 
+        # -------------------------------------------------------------
+        # [핵심 2] Relative Scoring (상대 평가)
+        # 둘 다 0이면 0 리턴, 아니면 총합 1.0(100%)이 되도록 비율 계산
+        # 예: pure_t(0.1), pure_f(0.3) -> 25% vs 75%
+        # -------------------------------------------------------------
         
-        if gap > 0: # 진실 우세
-            final_t = min(1.0, score_t + boost)
-            final_f = max(0.0, score_f - boost)
-        else: # 가짜 우세
-            final_t = max(0.0, score_t - boost)
-            final_f = min(1.0, score_f + boost)
+        total = pure_t + pure_f
+        
+        if total < 0.01: # 둘 다 너무 낮으면 관련 없음(0) 처리
+            return 0.0, 0.0
             
+        final_t = pure_t / total
+        final_f = pure_f / total
+        
         return final_t, final_f
+        
 vector_engine = VectorEngine()
 
 def get_keywords(title, trans):
@@ -704,6 +701,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
