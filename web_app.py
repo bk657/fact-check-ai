@@ -505,7 +505,7 @@ def run_forensic_main(url):
             top_kw, rel_score, rel_msg = analyze_comments(cmts, full_text)
             red_cnt, _ = check_red_flags(cmts)
             
-            ts, fs = vector_engine.analyze(final_query + " " + meta['제목'])
+            ts, fs = vector_engine.analyze(vector_context)
             t_impact, f_impact = int(ts*30)*-1, int(fs*30)
             
             news_score = -40 if max_match>=80 else -15 if max_match>=70 else 10 if max_match>=60 else 30
@@ -695,6 +695,7 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
 
 
