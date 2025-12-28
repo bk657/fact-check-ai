@@ -138,7 +138,6 @@ def call_triple_survivor(prompt, is_json=False):
 WEIGHT_ALGO = 0.85
 WEIGHT_AI = 0.15
 OFFICIAL_CHANNELS = ['MBC','KBS','SBS','EBS','YTN','JTBC','TVCHOSUN','MBN','CHANNEL A','연합뉴스','YONHAP','한겨레','경향','조선','중앙','동아']
-# [중요] 정적 데이터는 캐시가 아닌 전역 변수로 관리
 STATIC_TRUTH = ["박나래 위장전입 무혐의", "임영웅 암표 대응", "정희원 저속노화", "선거 출마 선언"]
 STATIC_FAKE = ["충격 폭로 경악", "긴급 속보 소름", "구속 영장 발부", "사형 집행", "위독설"]
 
@@ -148,8 +147,9 @@ class VectorEngine:
         self.fake_vectors = []
         self.model_name = "models/text-embedding-004"
         
-        # [절대 앵커]
+        # [절대 앵커] - 가짜뉴스 말투의 기준점 (Red Team Anchor)
         self.fake_anchor_text = "충격 단독 속보 경악 실체 폭로 긴급 체포 구속 수사 결국 사망 뇌사 심정지 대통령 격노 뒤집어진 상황 눈물 바다 오열 통곡 전재산 탕진 빚더미 이혼 파경 별거 불화 숨겨진 자식 아이 출산 비밀 충격적인 근황 소름 돋는 방송 퇴출 영구 제명 미친 반전 실제 상황 의사 소견 진단 사형 집행"
+        # [절대 앵커] - 팩트체크 말투의 기준점 (Blue Team Anchor)
         self.truth_anchor_text = "공식 입장 발표 사실 무근 법적 대응 예고 선처 없다 허위 사실 유포 강경 대응 단독 보도 팩트 체크 기자 회견 전문 공개 오보로 밝혀져 해프닝 검찰 조사 결과 무혐의 재판부 판결 선고 공판 공식 보도 자료 배포 사실 확인 결과 아님 루머 일축 근거 없음 해명 인터뷰 진행 관계자 확인"
         
         self.fake_anchor_vec = None
@@ -166,6 +166,7 @@ class VectorEngine:
         except: return np.zeros(768)
 
     def ensure_anchors(self):
+        """캐싱으로 인해 앵커가 초기화되지 않는 문제를 방지"""
         if self.fake_anchor_vec is None or self.truth_anchor_vec is None:
             self.fake_anchor_vec = self.get_embedding(self.fake_anchor_text)
             self.truth_anchor_vec = self.get_embedding(self.truth_anchor_text)
@@ -186,73 +187,108 @@ class VectorEngine:
         norm_b = np.linalg.norm(v2)
         return dot / (norm_a * norm_b) if norm_a * norm_b != 0 else 0
 
-    def analyze(self, query_context):
+    def analyze(self, suspect_text, fact_text):
         """
-        [Ultimate Winner Takes All]
-        미세한 차이라도 감지되면 수학적으로 격차를 100배 벌려버립니다.
-        양쪽 점수가 비슷하게 나오는 것을 원천 봉쇄합니다.
+        [Keyword Spectrum Analysis & Ultimate Winner Takes All]
+        의심 키워드(Red Team)와 팩트 키워드(Blue Team)를 각각 분석하여 
+        진영 간의 우세를 계산하고, 미세한 차이라도 강력하게 증폭시킵니다.
         """
         self.ensure_anchors()
-        query_vec = self.get_embedding(query_context)
         
-        # 1. 점수 계산 (앵커 70% + DB 30%)
-        # 앵커 점수
-        a_t = self.cosine_similarity(query_vec, self.truth_anchor_vec)
-        a_f = self.cosine_similarity(query_vec, self.fake_anchor_vec)
+        # 1. 벡터화 (Red vs Blue)
+        vec_suspect = self.get_embedding(suspect_text) 
+        vec_fact = self.get_embedding(fact_text)       
         
-        # DB 점수
-        d_t = max([self.cosine_similarity(query_vec, v) for v in self.truth_vectors] or [0])
-        d_f = max([self.cosine_similarity(query_vec, v) for v in self.fake_vectors] or [0])
+        # 2. 앵커 유사도 측정 (절대 평가)
+        # Red Team이 가짜 앵커랑 얼마나 가까운가? (가짜 징후)
+        score_suspect_to_fake = self.cosine_similarity(vec_suspect, self.fake_anchor_vec)
         
-        # 종합 점수 (Raw Score)
-        raw_t = (a_t * 0.7) + (d_t * 0.3)
-        raw_f = (a_f * 0.7) + (d_f * 0.3)
+        # Blue Team이 진실 앵커랑 얼마나 가까운가? (진실 징후)
+        score_fact_to_truth = self.cosine_similarity(vec_fact, self.truth_anchor_vec)
         
-        # ---------------------------------------------------------
-        # [핵심] 격차 강제 벌리기 (Power Function)
-        # ---------------------------------------------------------
+        # 3. DB 유사도 측정 (상대 평가)
+        # (DB에 저장된 벡터들은 이제 모두 '말투/스타일' 벡터입니다)
+        db_score_truth = max([self.cosine_similarity(vec_fact, v) for v in self.truth_vectors] or [0])
+        db_score_fake = max([self.cosine_similarity(vec_suspect, v) for v in self.fake_vectors] or [0])
         
-        # 1. 일단 정규화 (합이 1.0이 되도록)
-        # 예: 0.92 vs 0.97 -> 0.48 vs 0.52 (차이가 미미함)
-        total = raw_t + raw_f
-        if total < 0.01: return 0.0, 0.0
+        # 4. 종합 점수 산출 (가중치: 앵커 70% + DB 30%)
+        # Red 점수가 높을수록 '가짜'일 확률이 높음
+        raw_fake_score = (score_suspect_to_fake * 0.7) + (db_score_fake * 0.3)
+        # Blue 점수가 높을수록 '진실'일 확률이 높음
+        raw_truth_score = (score_fact_to_truth * 0.7) + (db_score_truth * 0.3)
         
-        norm_t = raw_t / total
-        norm_f = raw_f / total
+        # 5. [Power Function] 격차 강제 벌리기
+        total = raw_fake_score + raw_truth_score
+        if total < 0.01: return 0.0, 0.0 # 둘 다 관련 없음
         
-        # 2. 멱수 법칙 적용 (제곱을 해서 큰 놈은 더 크게, 작은 놈은 더 작게)
-        # 0.52의 20제곱 vs 0.48의 20제곱 -> 차이가 엄청나게 벌어짐
-        power = 15 # 민감도 계수 (높을수록 승자독식 강해짐)
+        norm_f = raw_fake_score / total
+        norm_t = raw_truth_score / total
         
-        pow_t = math.pow(norm_t, power)
-        pow_f = math.pow(norm_f, power)
+        # 멱수 법칙 (Power Law) 적용 - 민감도 15
+        pow_f = math.pow(norm_f, 15)
+        pow_t = math.pow(norm_t, 15)
         
-        # 3. 다시 정규화 (0~100% 스케일로 변환)
-        new_total = pow_t + pow_f
+        new_total = pow_f + pow_t
         if new_total == 0: return 0.5, 0.5
         
-        final_t = pow_t / new_total
-        final_f = pow_f / new_total
+        final_fake = pow_f / new_total
+        final_truth = pow_t / new_total
         
-        return final_t, final_f
+        # 리턴: (진실 점수, 가짜 점수)
+        return final_truth, final_fake
+
 vector_engine = VectorEngine()
 
 # --- [나머지 함수들] ---
+
+def fallback_keyword_extraction(text):
+    """LLM 실패 시 제목 기반으로 키워드 추출 (동적 분석)"""
+    agitation_list = ['충격', '경악', '속보', '결국', '긴급', '실체', '폭로', '소름', '눈물', '오열', '발칵', '뒤집', '삭제', '유출', '찌라시', '거짓', '사기']
+    found_agitation = [w for w in agitation_list if w in text]
+    
+    suspect_fallback = " ".join(found_agitation) if found_agitation else ""
+    fact_fallback = re.sub(r'[^가-힣a-zA-Z0-9\s]', '', text)
+    
+    return suspect_fallback, fact_fallback
+
 def get_keywords(title, trans):
+    # [프롬프트] Red Team(의심)과 Blue Team(팩트) 분리 추출
     prompt = f"""
-    You are a Fact-Check Investigator.
+    You are a Forensic Investigator. Analyze the transcript.
     [Input] Title: {title}, Transcript: {trans[:10000]}
+    
     [Task]
-    1. Generate 3 Google News search queries (Short & Specific).
-    2. Summarize the 'Core Claims' of this video in 3 sentences for vector context.
-    [Output JSON] {{ "queries": ["q1", "q2", "q3"], "vector_context": "summary..." }}
+    1. Search Queries: Generate 3 specific search queries for Google News.
+    2. Suspect Keywords (Red Team): Extract ONLY words that sound exaggerated/emotional (e.g., Shocking, Urgent, Secret). IF NONE, RETURN EMPTY STRING.
+    3. Fact Keywords (Blue Team): Extract neutral nouns/verbs (e.g., Policy, Date, Names).
+    
+    [Output JSON] 
+    {{ 
+        "queries": ["q1", "q2", "q3"], 
+        "suspect_keywords": "word1 word2 ...", 
+        "fact_keywords": "word1 word2 ..." 
+    }}
     """
+    
     res, model, logs = call_triple_survivor(prompt, is_json=True)
     st.session_state["debug_logs"].extend([f"[Key] {l}" for l in logs])
+    
     parsed = parse_llm_json(res)
-    default = [title, title+" 팩트체크", "뉴스"]
-    if parsed: return parsed.get('queries', default), parsed.get('vector_context', title), model
-    return default, title, model
+    
+    # 동적 폴백 실행
+    fb_suspect, fb_fact = fallback_keyword_extraction(title)
+    default_q = [title, title+" 팩트체크", "뉴스"]
+    
+    if parsed: 
+        final_queries = parsed.get('queries', default_q)
+        final_suspect = parsed.get('suspect_keywords', fb_suspect)
+        final_fact = parsed.get('fact_keywords', fb_fact)
+        
+        if final_suspect is None: final_suspect = ""
+        
+        return final_queries, final_suspect, final_fact, model
+    
+    return default_q, fb_suspect, fb_fact, model
 
 def scrape_news(url):
     try:
@@ -267,17 +303,16 @@ def verify_news(summary, link, snippet):
     txt, real_url = scrape_news(link)
     ev = txt if txt else snippet
     
-    # [핵심 수정] 숫자(기수/서수)와 날짜 불일치 시 점수를 깎도록 강력하게 지시
+    # [엄격한 팩트체크] 숫자와 날짜 불일치 시 점수 삭감 지시
     prompt = f"""
     You are a Strict Fact-Checker. Compare Video Claim vs News Evidence.
-    
     [Video Claim]: {summary[:1000]}
     [News Evidence]: {ev[:1000]}
     
     [CRITICAL RULES]
-    1. **Numbers/Ordinals**: If Video says "4th(4차)" but News discusses "1st(1차)" or "2nd(2차)", SCORE MUST BE UNDER 20. (Mismatch)
+    1. **Numbers/Ordinals**: If Video says "4th(4차)" but News discusses "1st(1차)" or "2nd(2차)", SCORE MUST BE UNDER 20.
     2. **Dates**: If Video claims "December" but News is from "July" or "Last Year", SCORE MUST BE UNDER 20.
-    3. **Topic Only**: If only the topic (e.g., Support Fund) matches but details differ, treat as 'Related' (Score 40-50), NOT 'Match'.
+    3. **Topic Only**: If only the topic matches but details differ, treat as 'Related' (Score 40-50).
     
     Output JSON: {{ "score": int (0-100), "reason": "Explain the mismatch in numbers/dates in Korean" }}
     """
@@ -354,6 +389,7 @@ def analyze_comments(cmts, ctx):
 def save_db(ch, ti, pr, url, kw, detail, vec_ctx):
     try: 
         embedding = vector_engine.get_embedding(vec_ctx)
+        # [핵심] JSON 직렬화 오류 방지 (numpy -> list)
         if isinstance(embedding, np.ndarray):
             embedding = embedding.tolist()
             
@@ -474,7 +510,7 @@ def run_forensic_main(url):
         db_count = res.count
     except: db_count = 0
     
-    # [핵심] 앵커가 생성되어 있는지 확실하게 확인
+    # [핵심] 앵커 확인
     vector_engine.ensure_anchors()
     vector_engine.truth_vectors = dt_vecs
     vector_engine.fake_vectors = df_vecs
@@ -500,8 +536,16 @@ def run_forensic_main(url):
             full_text = trans if trans else info.get('description', '')
             summary = full_text[:800] + "..."
             
-            my_bar.progress(40, "키워드 추출 및 문맥 분석 중...")
-            queries, vector_context, _ = get_keywords(meta['제목'], full_text)
+            # [발골 작업] Red/Blue Team 키워드 추출
+            my_bar.progress(40, "키워드 스펙트럼 추출 중...")
+            queries, suspect_ctx, fact_ctx, _ = get_keywords(meta['제목'], full_text)
+            
+            # [키워드 진영 싸움] 벡터 분석
+            ts, fs = vector_engine.analyze(suspect_ctx, fact_ctx)
+            t_impact, f_impact = int(ts*30)*-1, int(fs*30)
+            
+            # DB 저장용 (나중에 분석할 때 유용하도록 합쳐서 저장)
+            vector_context_for_db = f"[SUSPECT]: {suspect_ctx} / [FACT]: {fact_ctx}"
             
             news_items = []
             final_query = queries[0]
@@ -529,20 +573,13 @@ def run_forensic_main(url):
             top_kw, rel_score, rel_msg = analyze_comments(cmts, full_text)
             red_cnt, _ = check_red_flags(cmts)
             
-            # [핵심] 제목(Title) + 문맥(Context)을 합쳐서 분석
-            hybrid_query = f"{meta['제목']} {vector_context}"
-            ts, fs = vector_engine.analyze(hybrid_query)
-            t_impact, f_impact = int(ts*30)*-1, int(fs*30)
-            
-# [수정] 키워드 순위 가중치 정의
-            tier_weight = 1.0 if query_tier == 0 else 0.5 if query_tier == 1 else 0.2
-
             # -------------------------------------------------------------
             # [수정 후] 엄격한 점수 체계 적용 (Strict Scoring System)
             # -------------------------------------------------------------
             
-            # 1. 뉴스 점수 (Journalism Score)
-            # 뉴스와 80% 이상 일치하지 않으면, 팩트가 확인되지 않은 것으로 간주하여 오히려 점수를 올림(위험)
+            tier_weight = 1.0 if query_tier == 0 else 0.5 if query_tier == 1 else 0.2
+            
+            # 1. 뉴스 점수 (Journalism Score) - 날짜/숫자 불일치 시 패널티
             if max_match >= 80:
                 news_score = -50 * tier_weight # 확실한 뉴스 있음 (안전)
             elif max_match >= 50:
@@ -558,14 +595,13 @@ def run_forensic_main(url):
             bait = 15 if agitation > 0 else 0
             
             # [핵심] 댓글 가중치 대폭 상향 (집단 지성 반영)
-            # 의심 댓글 1개당 5점씩, 최대 50점까지 반영 (기존 20점 -> 50점)
             sentiment_penalty = min(50, red_cnt * 5)
             
             # 3. 최종 기본 점수 합산
             base_score = 50 + t_impact + f_impact + news_score + sentiment_penalty + bait
             
             # -------------------------------------------------------------
-
+            
             my_bar.progress(80, "AI 최종 판결 중...")
             ai_score, ai_reason = judge_final(meta['제목'], full_text, news_ev)
             
@@ -591,7 +627,8 @@ def run_forensic_main(url):
                 "final_summary": final_summary
             }
             
-            save_db(meta['채널명'], meta['제목'], final_prob, url, final_query, report, vector_context)
+            # DB 저장 (스타일/팩트 분리된 컨텍스트 사용)
+            save_db(meta['채널명'], meta['제목'], final_prob, url, final_query, report, vector_context_for_db)
             
             my_bar.empty()
             render_report_full_ui(final_prob, db_count + 1, meta['제목'], meta['채널명'], report, is_cached=False)
@@ -733,5 +770,3 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
-
-
