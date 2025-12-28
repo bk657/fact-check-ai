@@ -266,7 +266,22 @@ def scrape_news(url):
 def verify_news(summary, link, snippet):
     txt, real_url = scrape_news(link)
     ev = txt if txt else snippet
-    prompt = f"Compare Video({summary[:1000]}) vs News({ev}). Match(90-100)/Related(40-60)/Mismatch(0-10). Output JSON: {{ \"score\": int, \"reason\": \"korean short\" }}"
+    
+    # [핵심 수정] 숫자(기수/서수)와 날짜 불일치 시 점수를 깎도록 강력하게 지시
+    prompt = f"""
+    You are a Strict Fact-Checker. Compare Video Claim vs News Evidence.
+    
+    [Video Claim]: {summary[:1000]}
+    [News Evidence]: {ev[:1000]}
+    
+    [CRITICAL RULES]
+    1. **Numbers/Ordinals**: If Video says "4th(4차)" but News discusses "1st(1차)" or "2nd(2차)", SCORE MUST BE UNDER 20. (Mismatch)
+    2. **Dates**: If Video claims "December" but News is from "July" or "Last Year", SCORE MUST BE UNDER 20.
+    3. **Topic Only**: If only the topic (e.g., Support Fund) matches but details differ, treat as 'Related' (Score 40-50), NOT 'Match'.
+    
+    Output JSON: {{ "score": int (0-100), "reason": "Explain the mismatch in numbers/dates in Korean" }}
+    """
+    
     res, _, logs = call_triple_survivor(prompt, is_json=True)
     st.session_state["debug_logs"].extend([f"[Verify] {l}" for l in logs])
     p = parse_llm_json(res)
@@ -519,18 +534,38 @@ def run_forensic_main(url):
             ts, fs = vector_engine.analyze(hybrid_query)
             t_impact, f_impact = int(ts*30)*-1, int(fs*30)
             
+# [수정] 키워드 순위 가중치 정의
             tier_weight = 1.0 if query_tier == 0 else 0.5 if query_tier == 1 else 0.2
-            raw_news_score = -40 if max_match>=80 else -15 if max_match>=70 else 10 if max_match>=60 else 30
-            if not news_ev: raw_news_score = 0
-            news_score = int(raw_news_score * tier_weight)
+
+            # -------------------------------------------------------------
+            # [수정 후] 엄격한 점수 체계 적용 (Strict Scoring System)
+            # -------------------------------------------------------------
             
-            if check_official(meta['채널명']): news_score = -50
+            # 1. 뉴스 점수 (Journalism Score)
+            # 뉴스와 80% 이상 일치하지 않으면, 팩트가 확인되지 않은 것으로 간주하여 오히려 점수를 올림(위험)
+            if max_match >= 80:
+                news_score = -50 * tier_weight # 확실한 뉴스 있음 (안전)
+            elif max_match >= 50:
+                news_score = -10 * tier_weight # 애매함 (소폭 안전)
+            else:
+                news_score = 20 # 관련 뉴스 없음 or 불일치 (위험 가중)
             
+            if not news_ev: news_score = 30 # 검색 결과 아예 없음 (매우 위험)
+            if check_official(meta['채널명']): news_score = -100 # 공식 채널 면제권
+            
+            # 2. 어그로 및 여론 (Sentiment Score)
             agitation = count_agitation(meta['제목'])
-            bait = 10 if agitation > 0 else -5
+            bait = 15 if agitation > 0 else 0
             
-            base_score = 50 + t_impact + f_impact + news_score + min(20, red_cnt*3) + bait
+            # [핵심] 댓글 가중치 대폭 상향 (집단 지성 반영)
+            # 의심 댓글 1개당 5점씩, 최대 50점까지 반영 (기존 20점 -> 50점)
+            sentiment_penalty = min(50, red_cnt * 5)
             
+            # 3. 최종 기본 점수 합산
+            base_score = 50 + t_impact + f_impact + news_score + sentiment_penalty + bait
+            
+            # -------------------------------------------------------------
+
             my_bar.progress(80, "AI 최종 판결 중...")
             ai_score, ai_reason = judge_final(meta['제목'], full_text, news_ev)
             
@@ -698,4 +733,5 @@ with st.expander("🔐 관리자 (Admin & B2B Report)"):
         if st.button("Login"):
             if pwd == ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
             else: st.error("Wrong Password")
+
 
